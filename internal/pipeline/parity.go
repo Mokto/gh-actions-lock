@@ -20,7 +20,8 @@ import (
 // still present, exact-version tag still at the commit. Mutable refs that
 // moved are not reported; the lock is sticky until --relock. With verify, a
 // commit on a mutable ref must still be in that ref's history: a fork-network
-// commit resolves under the upstream name, so existence alone proves nothing.
+// commit resolves under the upstream name, so existence alone proves nothing,
+// and the ref must still exist: the runner rejects a pin whose ref is gone.
 //
 // A pinned commit fixes the dependencies it declares, so the flattened
 // closure in the lockfile is checked in one batch with no recursion.
@@ -271,6 +272,10 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		f.Category = checks.UnreachablePin
 		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, ref.Ref, cmp.Or(st.TagOID, st.HeadOID)) + via
 		f.Remediation = checks.AcceptMovedRemediation
+	case pc.Head != "" && st.HeadOID == "":
+		f.Category = checks.UnreachablePin
+		f.Detail = fmt.Sprintf("ref %s no longer exists in %s; the runner will reject this pin%s", pc.Head, nwo, via)
+		f.Remediation = "point `uses:` at a tag or branch that exists, then run `gh actions-lock`"
 	case pc.Tag != "" && !strings.EqualFold(st.TagOID, pc.SHA):
 		f.Category = checks.UnreachablePin
 		f.ObservedSHA = st.TagOID
