@@ -276,6 +276,7 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		f.Category = checks.UnreachablePin
 		f.Detail = fmt.Sprintf("ref %s no longer exists in %s; the runner will reject this pin%s", pc.Head, nwo, via)
 		f.Remediation = "point `uses:` at a tag or branch that exists, then run `gh actions-lock`"
+		f.RefMissing = true
 	case pc.Tag != "" && !strings.EqualFold(st.TagOID, pc.SHA):
 		f.Category = checks.UnreachablePin
 		f.ObservedSHA = st.TagOID
@@ -301,7 +302,9 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 	default:
 		return checks.Finding{}, false
 	}
-	f.DocURL = DocURLFor(f.Category)
+	if !f.RefMissing {
+		f.DocURL = DocURLFor(f.Category)
+	}
 	return f, true
 }
 

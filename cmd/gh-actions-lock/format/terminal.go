@@ -148,7 +148,7 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 	}
 	out.TermDetail("%s %s %s", icon, out.TermDim(label), dep)
 	out.TermDetail("  %s", f.Detail)
-	if f.Category == checks.UnreachablePin && f.Dependency != nil {
+	if f.Category == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
 		owner, repo := f.Dependency.OwnerRepo()
 		if owner != "" {
 			out.TermDetail("  ↳ %s", out.TermDim(DepReleaseURL(f.Dependency.Hostname, owner+"/"+repo, nil)))
@@ -174,10 +174,14 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 	}
 }
 
-// findingLabel is categoryLabel with a terminal-only title for refs that
-// don't exist upstream, which share the not-pinned category in JSON.
+// findingLabel is categoryLabel with terminal-only titles for refs that
+// don't exist upstream, which share the not-pinned and unreachable-pin
+// categories in JSON.
 func findingLabel(f checks.Finding) string {
-	if f.RefMissing {
+	switch {
+	case f.RefMissing && f.Category == checks.UnreachablePin:
+		return "Ref no longer exists"
+	case f.RefMissing:
 		return "Ref does not exist"
 	}
 	return categoryLabel(f.Category)
@@ -294,7 +298,7 @@ func renderFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 	}
 	out.Detail("%s %s %s", icon, out.Dim(label), dep)
 	out.Detail("  %s", f.Detail)
-	if f.Category == checks.UnreachablePin && f.Dependency != nil {
+	if f.Category == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
 		owner, repo := f.Dependency.OwnerRepo()
 		if owner != "" {
 			out.Detail("  ↳ %s", out.Dim(DepReleaseURL(f.Dependency.Hostname, owner+"/"+repo, nil)))
