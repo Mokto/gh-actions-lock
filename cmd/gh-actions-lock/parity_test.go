@@ -835,6 +835,53 @@ jobs:
 	}
 }
 
+// TestParity_VerifyMissingMutableRefBlocks: under --verify a mutable ref
+// that no longer exists is a definitive answer the runner rejects, so it
+// blocks rather than passing on the commit alone.
+func TestParity_VerifyMissingMutableRefBlocks(t *testing.T) {
+	for _, proxy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			if proxy {
+				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+				useDefaultTransport(t, reg)
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+					"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+				}))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/v4$`), httpmock.StatusResponse(http.StatusNotFound))
+			} else {
+				reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
+					"data": map[string]any{"a0": map[string]any{
+						"nameWithOwner": "actions/checkout",
+						"commit":        map[string]any{"oid": parityTestSHA},
+						"head":          nil,
+					}},
+				}))
+			}
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+
+			stdout, stderr, err := runCommandWithHTTP(t, reg, "--verify", "--json=valid,findings", path)
+			require.ErrorIs(t, err, errSilent, stderr)
+			var p parityPayload
+			require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout+stderr)
+			require.Len(t, p.Findings, 1)
+			assert.Equal(t, "unreachable-pin", p.Findings[0].Category)
+			assert.Equal(t, "error", p.Findings[0].Severity)
+			assert.Equal(t, "ref v4 no longer exists in actions/checkout; the runner will reject this pin", p.Findings[0].Detail)
+			assert.Equal(t, "point `uses:` at a tag or branch that exists, then run `gh actions-lock`", p.Findings[0].Remediation)
+		})
+	}
+}
+
 // TestParity_VerifyRefCaseSensitive: refs differing only in case are
 // distinct refs to the runner, so each gets its own history check.
 func TestParity_VerifyRefCaseSensitive(t *testing.T) {
