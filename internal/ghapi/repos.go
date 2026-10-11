@@ -427,7 +427,12 @@ func (c *Client) CompareRefs(ctx context.Context, owner, repo, base, head string
 		url.PathEscape(owner), url.PathEscape(repo),
 		url.PathEscape(base), url.PathEscape(head))
 	var resp compareResponse
-	if err := c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if c.restOnly {
+		err = c.anonGet(ctx, path, &resp)
+	} else {
+		err = c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &resp)
+	}
+	if err != nil {
 		return "", "", err
 	}
 	return resp.Status, resp.MergeBaseCommit.SHA, nil
