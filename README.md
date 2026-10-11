@@ -53,6 +53,11 @@ To check without writing anything, for example in CI, run:
 gh actions-lock --verify
 ```
 
+`--verify` also checks that a commit locked under a branch or partial version
+(e.g. `main`, `v4`) is still in that ref's history. `--verify-local` runs
+offline and only checks that every ref has a lockfile entry, not that the
+entries are trustworthy; use `--verify` in CI for that.
+
 Pins to branches or partial versions (e.g. `main`, `v4`) are not advanced when
 upstream moves. To regenerate the lockfile from the current upstream commits,
 run:

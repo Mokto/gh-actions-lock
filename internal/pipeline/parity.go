@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -17,7 +18,10 @@ import (
 // checkParity re-checks every locked pin in each workflow's recorded closure
 // the way the runner does at job start: same repository identity, commit
 // still present, exact-version tag still at the commit. Mutable refs that
-// moved are not reported; the lock is sticky until --relock.
+// moved are not reported; the lock is sticky until --relock. With verify, a
+// commit on a mutable ref must still be in that ref's history: a fork-network
+// commit resolves under the upstream name, so existence alone proves nothing,
+// and the ref must still exist: the runner rejects a pin whose ref is gone.
 //
 // A pinned commit fixes the dependencies it declares, so the flattened
 // closure in the lockfile is checked in one batch with no recursion.
@@ -32,7 +36,7 @@ import (
 //
 // Under the Dependabot proxy any inconclusive check is an error: the run
 // aborts so Dependabot retries rather than shipping an unverified lock.
-func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(checks.Category) bool) error {
+func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(checks.Category) bool, verify bool) error {
 	gh := r.GHClient()
 	if gh == nil || store == nil {
 		return nil
@@ -52,15 +56,21 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				o.lp.Action.RepoID = store.RecordedRepoID(o.ref.Owner, o.ref.Repo)
 			}
 		}
-		key := strings.ToLower(o.lp.Pin.String() + ":" + lockedSHA(o.lp.Action.Commit))
+		// Pin.String folds owner/repo only: refs are case-sensitive, as
+		// the runner keys them.
+		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit))
 		i, seen := pinIdx[key]
 		if !seen {
 			i = len(pins)
 			pinIdx[key] = i
 			pins = append(pins, ghapi.PinCheck{Owner: o.lp.Pin.Owner, Repo: o.lp.Pin.Repo, SHA: lockedSHA(o.lp.Action.Commit)})
 		}
-		if !o.fresh && checks.IsImmutableRef(o.lp.Pin.Ref) {
+		switch {
+		case o.fresh:
+		case checks.IsImmutableRef(o.lp.Pin.Ref):
 			pins[i].Tag = o.lp.Pin.Ref
+		case verify && !parserlock.IsFullSha(o.lp.Pin.Ref):
+			pins[i].Head = o.lp.Pin.Ref
 		}
 		if j, dup := owned[[2]int{o.report, i}]; dup {
 			owners[i][j].fresh = owners[i][j].fresh || o.fresh
@@ -106,6 +116,18 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	states := gh.CheckPins(ctx, pins)
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	for i := range states {
+		st, pc := &states[i], pins[i]
+		if pc.Head == "" || st.Err != nil || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
+			continue
+		}
+		switch ancestry, detail := r.CheckAncestry(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); ancestry {
+		case resolve.AncestryNotAncestor:
+			st.CommitFound = false
+		case resolve.AncestryUnknown:
+			st.Err = fmt.Errorf("checking %s history: %s", pc.Head, detail)
+		}
 	}
 	if ghapi.DependabotProxy() {
 		for i, st := range states {
@@ -248,8 +270,13 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		}
 	case !st.CommitFound:
 		f.Category = checks.UnreachablePin
-		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, ref.Ref, st.TagOID) + via
+		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, ref.Ref, cmp.Or(st.TagOID, st.HeadOID)) + via
 		f.Remediation = checks.AcceptMovedRemediation
+	case pc.Head != "" && st.HeadOID == "":
+		f.Category = checks.UnreachablePin
+		f.Detail = fmt.Sprintf("ref %s no longer exists in %s; the runner will reject this pin%s", pc.Head, nwo, via)
+		f.Remediation = "point `uses:` at a tag or branch that exists, then run `gh actions-lock`"
+		f.RefMissing = true
 	case pc.Tag != "" && !strings.EqualFold(st.TagOID, pc.SHA):
 		f.Category = checks.UnreachablePin
 		f.ObservedSHA = st.TagOID
@@ -275,7 +302,9 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 	default:
 		return checks.Finding{}, false
 	}
-	f.DocURL = DocURLFor(f.Category)
+	if !f.RefMissing {
+		f.DocURL = DocURLFor(f.Category)
+	}
 	return f, true
 }
 

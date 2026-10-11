@@ -47,9 +47,10 @@ type Finding struct {
 	// finding (regardless of outcome). Lets renderers distinguish
 	// "we didn't look" from "we looked and found nothing."
 	RecommendedSearched bool
-	// RefMissing marks a not-pinned finding whose ref definitively does not
-	// exist upstream. Terminal output titles it separately; the JSON
-	// category stays not-pinned.
+	// RefMissing marks a not-pinned or unreachable-pin finding whose ref
+	// definitively does not exist upstream. Terminal output titles it
+	// separately and skips the release and doc links; the JSON category is
+	// unchanged.
 	RefMissing bool
 	// TrackedAction marks a not-pinned bare SHA whose owner/repo the
 	// workflow already locks at another ref. It is a ref change on a

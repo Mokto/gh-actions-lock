@@ -209,9 +209,10 @@ const nodeActionYAML = "name: Test Action\nruns:\n  using: node20\n"
 func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 	return map[string]any{
 		"nameWithOwner": nameWithOwner,
-		// commit and tag answer the parity query from the same fixture.
+		// commit, tag and head answer the parity query from the same fixture.
 		"commit": map[string]any{"oid": oid},
 		"tag":    map[string]any{"oid": oid},
+		"head":   map[string]any{"oid": oid},
 		"object": map[string]any{
 			"oid": oid,
 			"file": map[string]any{
@@ -248,6 +249,7 @@ func parityOK(req *http.Request) (*http.Response, error) {
 			"nameWithOwner": owner + "/" + body.Variables[fmt.Sprintf("name%d", i)].(string),
 			"commit":        oid,
 			"tag":           oid,
+			"head":          oid,
 		}
 	}
 	return httpmock.JSONResponse(map[string]any{"data": data})(req)
