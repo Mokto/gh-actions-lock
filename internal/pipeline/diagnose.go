@@ -101,6 +101,20 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 				})
 				blockingResolverError = true
 			}
+			for _, missing := range missingRefs(resolveErr) {
+				nwo := missing.Owner + "/" + missing.Repo
+				wr.Findings = append(wr.Findings, checks.Finding{
+					WorkflowPath: pw.Path,
+					Category:     checks.NotPinned,
+					Severity:     checks.SeverityError,
+					Confidence:   checks.ConfidenceHigh,
+					Dependency:   &dep.Dependency{NWO: nwo, Ref: missing.Ref},
+					Detail:       fmt.Sprintf("ref %s does not exist in %s", missing.Ref, nwo),
+					Remediation:  "point `uses:` at a tag or branch that exists",
+					DocURL:       DocURLFor(checks.NotPinned),
+				})
+				blockingResolverError = true
+			}
 			if blockingResolverError {
 				wr.BlockingResolverError = true
 				return wr
@@ -331,4 +345,21 @@ func hasIssues(ff []checks.Finding) bool {
 		}
 	}
 	return false
+}
+
+// missingRefs collects every ref the resolver definitively failed to find.
+func missingRefs(err error) []*ghapi.RefNotFoundError {
+	switch e := err.(type) {
+	case nil:
+		return nil
+	case *ghapi.RefNotFoundError:
+		return []*ghapi.RefNotFoundError{e}
+	case interface{ Unwrap() []error }:
+		var out []*ghapi.RefNotFoundError
+		for _, inner := range e.Unwrap() {
+			out = append(out, missingRefs(inner)...)
+		}
+		return out
+	}
+	return missingRefs(errors.Unwrap(err))
 }

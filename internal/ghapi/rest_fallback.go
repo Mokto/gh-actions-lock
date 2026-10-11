@@ -3,6 +3,7 @@ package ghapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -338,6 +339,10 @@ func (c *Client) resolveAnonymous(ctx context.Context, ref ActionFileRequest) Ac
 	)
 	sha, err := c.anonGetCommitSHA(ctx, commitURL)
 	if err != nil {
+		var missing *RefNotFoundError
+		if errors.As(err, &missing) {
+			missing.Owner, missing.Repo, missing.Ref = ref.Owner, ref.Repo, ref.Ref
+		}
 		result.Err = fmt.Errorf("anonymous fallback: %w", err)
 		return result
 	}
@@ -386,6 +391,9 @@ func (c *Client) anonGetCommitSHA(ctx context.Context, url string) (string, erro
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnprocessableEntity {
+		return "", &RefNotFoundError{Err: fmt.Errorf("HTTP %d resolving commit", resp.StatusCode)}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("HTTP %d resolving commit", resp.StatusCode)
 	}
