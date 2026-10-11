@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -358,6 +359,11 @@ func readTempLockfilePins(t *testing.T) string {
 
 func runCommandWithHTTP(t *testing.T, rt http.RoundTripper, args ...string) (string, string, error) {
 	t.Helper()
+	return runCommandWithHTTPContext(t, context.Background(), rt, args...)
+}
+
+func runCommandWithHTTPContext(t *testing.T, ctx context.Context, rt http.RoundTripper, args ...string) (string, string, error) {
+	t.Helper()
 
 	stdoutR, stdoutW, err := os.Pipe()
 	require.NoError(t, err)
@@ -372,7 +378,7 @@ func runCommandWithHTTP(t *testing.T, rt http.RoundTripper, args ...string) (str
 	cmd.SetOut(stdoutW)
 	cmd.SetErr(stderrW)
 	cmd.SetArgs(args)
-	runErr := cmd.Execute()
+	runErr := cmd.ExecuteContext(ctx)
 
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
