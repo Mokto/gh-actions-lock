@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -170,9 +171,10 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 		var actionYMLs []string
 		var err error
 		deps, actionYMLs, err = r.resolveWithActionYMLParallel(ctx, toResolve, depth, &resolveDone, &resolveTotal)
-		if depth > 0 {
+		if depth > 0 || ghapi.DependabotProxy() {
 			// A remote composite's `uses:` can't be rewritten here, and the
-			// runner looks it up as written, so keep the name it uses.
+			// runner looks it up as written, so keep the name it uses. Nor
+			// can Dependabot's, which reads back only actions.lock.
 			for i := range deps {
 				if len(deps[i].OriginalRefs) > 0 {
 					deps[i].NWO = deps[i].OriginalRefs[0].NWO()
@@ -377,6 +379,12 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 		batches = append(batches, b)
 	}
 
+	// The pool keeps only the first failing batch; collect every batch's
+	// errors so a 404 in one batch can't hide a 5xx in another.
+	var (
+		batchMu   sync.Mutex
+		batchErrs []error
+	)
 	poolErr := pinpool.RunTyped(r.Pool, ctx, "",
 		batches,
 		func(b actionBatch) string {
@@ -411,9 +419,18 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 				done := resolveDone.Add(1)
 				r.FireResolveProgress(int(done), int(resolveTotal.Load()))
 			}
-			return errors.Join(errs...)
+			err := errors.Join(errs...)
+			if err != nil {
+				batchMu.Lock()
+				batchErrs = append(batchErrs, err)
+				batchMu.Unlock()
+			}
+			return err
 		},
 	)
+	if len(batchErrs) > 0 {
+		poolErr = errors.Join(batchErrs...)
+	}
 
 	deps, ymls := flatten()
 	return deps, ymls, poolErr

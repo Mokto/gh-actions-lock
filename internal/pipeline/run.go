@@ -2,9 +2,11 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pinpool"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
@@ -99,8 +101,14 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 		if len(refs) > 0 {
 			endResolve := prof.Phase("  resolve refs")
-			resolved, parents, _ = r.ResolveAllRecursive(ctx, refs)
+			var err error
+			resolved, parents, err = r.ResolveAllRecursive(ctx, refs)
 			endResolve()
+			// Behind the proxy a pin that can't be resolved for a transient
+			// reason is a retry, not a not-pinned finding.
+			if err != nil && ghapi.DependabotProxy() && ghapi.IsTransient(err) {
+				return nil, fmt.Errorf("could not resolve actions: %w", err)
+			}
 		}
 
 		if ctx.Err() != nil {
@@ -126,10 +134,10 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			}
 		}
 		endParity := prof.Phase("  parity check")
-		checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep)
+		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep)
 		endParity()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if err != nil {
+			return nil, err
 		}
 	}
 

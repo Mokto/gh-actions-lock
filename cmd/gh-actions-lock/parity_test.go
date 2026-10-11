@@ -593,3 +593,126 @@ func useDefaultTransport(t *testing.T, rt http.RoundTripper) {
 	http.DefaultTransport = rt
 	t.Cleanup(func() { http.DefaultTransport = orig })
 }
+
+// TestParity_DependabotProxyInconclusiveAborts: under the Dependabot proxy
+// a rate limit or server error on a recorded pin aborts with exit 2 so
+// Dependabot retries, instead of passing on a warning. Outside the proxy
+// the same failure stays a warning.
+func TestParity_DependabotProxyInconclusiveAborts(t *testing.T) {
+	for name, tc := range map[string]struct {
+		resp   httpmock.Responder
+		status string
+	}{
+		"rate-limited 403":           {httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}), "HTTP 403"},
+		"secondary rate-limited 403": {httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"Retry-After": "60"}), "HTTP 403"},
+		"503":                        {httpmock.StatusResponse(http.StatusServiceUnavailable), "HTTP 503"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, args := range [][]string{nil, {"--verify"}} {
+				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+				reg := &httpmock.Registry{}
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), tc.resp)
+				useDefaultTransport(t, reg)
+				path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.1
+`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+				lockBefore := readTempLockfilePins(t)
+				wfBefore, err := os.ReadFile(path)
+				require.NoError(t, err)
+
+				_, stderr, err := runCommandWithHTTP(t, reg, append(args, path)...)
+				require.Error(t, err, stderr)
+				assert.NotErrorIs(t, err, errSilent, "a tool failure exits 2")
+				assert.Contains(t, err.Error(), tc.status)
+				assert.Contains(t, err.Error(), "actions/checkout")
+				assert.Equal(t, lockBefore, readTempLockfilePins(t))
+				wfAfter, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, string(wfBefore), string(wfAfter))
+			}
+		})
+	}
+}
+
+func TestParity_InconclusiveWarnsWithoutProxy(t *testing.T) {
+	reg := &httpmock.Registry{}
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.1
+`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+
+	_, stderr, err := runCommandWithHTTP(t, parityDown{reg}, "--verify", path)
+	require.NoError(t, err, stderr)
+	assert.Contains(t, stderr, "could not verify locked actions/checkout")
+}
+
+// TestParity_DependabotProxyKeepsRenamedName: Dependabot reads back only
+// actions.lock, so under the proxy a same-ID rename must not rewrite
+// `uses:` or re-key the pin; the warning still reaches --json.
+func TestParity_DependabotProxyKeepsRenamedName(t *testing.T) {
+	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
+		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
+	}))
+	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/commits/v2\.2\.2$`),
+		httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, transferWorkflow, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
+	wfBefore, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	stdout, stderr, err := runCommandWithHTTP(t, reg, "--no-onboard", "--no-narrow", "--no-interactive", "--json=findings", path)
+	require.NoError(t, err, stderr)
+	var p parityPayload
+	require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout)
+	var renamed bool
+	for _, f := range p.Findings {
+		renamed = renamed || f.Category == "repo-renamed"
+	}
+	assert.True(t, renamed, "%+v", p.Findings)
+	wfAfter, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, string(wfBefore), string(wfAfter))
+	lock := readTempLockfilePins(t)
+	assert.Contains(t, lock, "'krzema12/github-actions-typing@v2.2.2':")
+	assert.Contains(t, lock, "sha1-"+parityTestSHA)
+	assert.NotContains(t, lock, "typesafegithub")
+}
+
+// TestParity_DependabotProxyFirstRunKeepsRenamedName: the same holds when
+// resolution itself follows the rename on first generation.
+func TestParity_DependabotProxyFirstRunKeepsRenamedName(t *testing.T) {
+	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
+		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
+	}))
+	commit := httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})
+	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/commits/v2\.2\.2$`), commit)
+	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/commits/`+parityTestSHA+`$`), commit)
+	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/contents/action\.yml$`), httpmock.StatusResponse(http.StatusNotFound))
+	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/contents/action\.yaml$`), httpmock.StatusResponse(http.StatusNotFound))
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, transferWorkflow)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
+	require.NoError(t, err, stderr)
+	wf, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(transferWorkflow)+"\n", string(wf))
+	lock := readTempLockfilePins(t)
+	assert.Contains(t, lock, "'krzema12/github-actions-typing@v2.2.2':")
+	assert.NotContains(t, lock, "typesafegithub")
+}

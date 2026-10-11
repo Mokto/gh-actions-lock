@@ -233,6 +233,7 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 		namesake   bool
 		public     bool
 		mismatch   bool
+		outOfScope bool
 		wantError  bool
 	}{
 		{name: "inaccessible stale pin is removed"},
@@ -241,8 +242,8 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 		{name: "stale foreign host does not bind the resolver", foreign: true},
 		{name: "stale namesake cannot seed identity caches", namesake: true},
 		{name: "stale namesake cannot bind a conflicting host", namesake: true, public: true},
-		{name: "partial scan retains out of scope pins", args: []string{".github/workflows/workflow.yml"}, wantError: true},
-		{name: "readonly retains stale pins", args: []string{"--no-fix"}, wantError: true},
+		{name: "partial scan ignores out of scope pins", args: []string{".github/workflows/workflow.yml"}, outOfScope: true},
+		{name: "readonly ignores stale pins", args: []string{"--no-fix"}, outOfScope: true},
 		{name: "retained transitive pin is still verified", transitive: true, wantError: true},
 		{name: "retained identity mismatch leaves disk untouched", mismatch: true, wantError: true},
 	} {
@@ -293,6 +294,9 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 					staleCalls++
 					return httpmock.StatusResponse(http.StatusNotFound)(req)
 				case "/graphql":
+					if tt.mismatch {
+						return parityRepoID(req, http.StatusOK, 2)
+					}
 					return parityOK(req)
 				case "/repos/actions/checkout/tags", "/repos/actions/checkout/releases":
 					return httpmock.JSONResponse([]any{})(req)
@@ -304,16 +308,24 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 			args := append([]string{"--hostname", "tenant.ghe.com", "--no-interactive", "--no-narrow",
 				"--no-migrate-local-actions", "--json=valid,findings"}, tt.args...)
 			stdout, _, err := runCommandWithHTTP(t, transport, args...)
+			if tt.outOfScope {
+				require.NoError(t, err)
+				assert.Zero(t, staleCalls)
+				after, readErr := os.ReadFile(path)
+				require.NoError(t, readErr)
+				assert.Contains(t, string(after), "actions/setup-go")
+				return
+			}
 			if tt.wantError {
-				require.Error(t, err)
+				require.ErrorIs(t, err, errSilent)
 				after, readErr := os.ReadFile(path)
 				require.NoError(t, readErr)
 				assert.Equal(t, before, string(after))
 				if tt.mismatch {
-					assert.ErrorContains(t, err, "does not match its tenant.ghe.com repository IDs")
+					assert.Contains(t, stdout, "repo-hijacked")
 					assert.Zero(t, staleCalls)
 				} else {
-					assert.ErrorContains(t, err, "verifying repository identity")
+					assert.Contains(t, stdout, "repo-unavailable")
 					assert.Positive(t, staleCalls)
 				}
 				return

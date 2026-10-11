@@ -3,6 +3,7 @@ package ghapi
 import (
 	"errors"
 	"net/http"
+	"net/url"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 )
@@ -39,8 +40,9 @@ func IsPermissionDenied(err error) bool {
 	return code == http.StatusForbidden && !IsRateLimited(err)
 }
 
-// IsRateLimited reports whether err is a primary rate-limit response (HTTP 429)
-// or a secondary one (HTTP 403 with the rate-limit budget exhausted).
+// IsRateLimited reports whether err is a rate-limit response: HTTP 429, or a
+// 403 with the budget exhausted or a Retry-After (secondary rate limit), the
+// same rule retryTransport.shouldRetry uses.
 func IsRateLimited(err error) bool {
 	var httpErr *api.HTTPError
 	if !errors.As(err, &httpErr) {
@@ -50,7 +52,30 @@ func IsRateLimited(err error) bool {
 		return true
 	}
 	return httpErr.StatusCode == http.StatusForbidden &&
-		httpErr.Headers.Get("X-RateLimit-Remaining") == "0"
+		(httpErr.Headers.Get("X-RateLimit-Remaining") == "0" || httpErr.Headers.Get("Retry-After") != "")
+}
+
+// IsTransient reports whether err is a failure a retry may fix: a rate
+// limit, a 5xx, or a transport error. 404s, 422s and permission errors are
+// answers, not outages. A joined error is transient when any branch is, so
+// one 404 can't mask an outage elsewhere in the batch.
+func IsTransient(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range joined.Unwrap() {
+			if IsTransient(e) {
+				return true
+			}
+		}
+		return false
+	}
+	if IsRateLimited(err) {
+		return true
+	}
+	if code, ok := StatusCode(err); ok {
+		return code >= http.StatusInternalServerError
+	}
+	var urlErr *url.Error
+	return errors.As(err, &urlErr)
 }
 
 // RefNotFoundError reports a ref that does not exist in a repository that
