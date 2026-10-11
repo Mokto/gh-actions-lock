@@ -29,10 +29,13 @@ import (
 // transfer redirect to the same repo ID is a warning, also inside a
 // remote composite; a different ID or a name that doesn't resolve blocks. Fresh pins fail closed: an
 // inconclusive check keeps them out of the write.
-func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(checks.Category) bool) {
+//
+// Under the Dependabot proxy any inconclusive check is an error: the run
+// aborts so Dependabot retries rather than shipping an unverified lock.
+func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(checks.Category) bool) error {
 	gh := r.GHClient()
 	if gh == nil || store == nil {
-		return
+		return nil
 	}
 	reportIdx := make(map[string]int, len(report.Workflows))
 	for i, wr := range report.Workflows {
@@ -97,12 +100,19 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		}
 	}
 	if len(pins) == 0 {
-		return
+		return nil
 	}
 
 	states := gh.CheckPins(ctx, pins)
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
+	}
+	if ghapi.DependabotProxy() {
+		for i, st := range states {
+			if st.Err != nil {
+				return fmt.Errorf("could not verify locked %s/%s@%s: %w", pins[i].Owner, pins[i].Repo, parserlock.ShortSHA(pins[i].SHA), st.Err)
+			}
+		}
 	}
 	for i, st := range states {
 		for _, o := range owners[i] {
@@ -125,6 +135,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			wr.Findings = append(wr.Findings, f)
 		}
 	}
+	return nil
 }
 
 type parityOwner struct {
