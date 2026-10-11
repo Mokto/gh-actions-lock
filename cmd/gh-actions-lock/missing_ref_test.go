@@ -19,8 +19,9 @@ func TestMissingRefNamesTheCause(t *testing.T) {
 	for _, proxy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
 			reg := &httpmock.Registry{}
-			// Each resolve pass (plan, then diagnosis) asks again.
-			for range 3 {
+			// Each resolve pass (plan, then diagnosis) asks again, for both
+			// the JSON and the terminal run.
+			for range 6 {
 				registerMissingRef(reg, proxy)
 			}
 			if proxy {
@@ -51,6 +52,7 @@ jobs:
 					Severity    string `json:"severity"`
 					Detail      string `json:"detail"`
 					Remediation string `json:"remediation"`
+					DocURL      string `json:"doc_url"`
 				} `json:"findings"`
 			}
 			require.NoError(t, json.Unmarshal([]byte(stdout), &out), stdout)
@@ -60,6 +62,7 @@ jobs:
 					found = true
 					assert.Equal(t, "ref v999.0.0 does not exist in actions/checkout", f.Detail)
 					assert.Equal(t, "point `uses:` at a tag or branch that exists", f.Remediation)
+					assert.Empty(t, f.DocURL, "the security-hardening page doesn't explain a missing ref")
 				}
 			}
 			assert.True(t, found, stdout)
@@ -67,6 +70,15 @@ jobs:
 			after, err := os.ReadFile(path)
 			require.NoError(t, err)
 			assert.Equal(t, string(wf), string(after))
+
+			_, stderr, err := runCommandWithHTTP(t, reg,
+				"--no-onboard", "--no-narrow", "--no-interactive", path)
+			require.ErrorIs(t, err, errSilent)
+			assert.Contains(t, stderr, "Ref does not exist actions/checkout@v999.0.0")
+			assert.Contains(t, stderr, "ref v999.0.0 does not exist in actions/checkout")
+			assert.Contains(t, stderr, "point `uses:` at a tag or branch that exists")
+			assert.NotContains(t, stderr, "Not pinned")
+			assert.NotContains(t, stderr, "security-hardening")
 		})
 	}
 }
