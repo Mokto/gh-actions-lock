@@ -3,6 +3,7 @@ package ghapi
 import (
 	"errors"
 	"net/http"
+	"net/url"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 )
@@ -51,6 +52,20 @@ func IsRateLimited(err error) bool {
 	}
 	return httpErr.StatusCode == http.StatusForbidden &&
 		httpErr.Headers.Get("X-RateLimit-Remaining") == "0"
+}
+
+// IsTransient reports whether err is a failure a retry may fix: a rate
+// limit, a 5xx, or a transport error. 404s, 422s and permission errors are
+// answers, not outages.
+func IsTransient(err error) bool {
+	if IsRateLimited(err) {
+		return true
+	}
+	if code, ok := StatusCode(err); ok {
+		return code >= http.StatusInternalServerError
+	}
+	var urlErr *url.Error
+	return errors.As(err, &urlErr)
 }
 
 // RefNotFoundError reports a ref that does not exist in a repository that

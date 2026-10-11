@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -37,7 +39,7 @@ func TestNoOnboard_BareSHAOnTrackedAction(t *testing.T) {
 	for _, tt := range tests {
 		for _, proxy := range []bool{false, true} {
 			t.Run(tt.name+"/"+map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
-				reg := trackedSHAStubs(tt.uses, newSHA)
+				reg := trackedSHAStubs(&httpmock.Registry{}, tt.uses, newSHA)
 				if proxy {
 					t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 					useDefaultTransport(t, reg)
@@ -95,11 +97,73 @@ jobs:
 	}
 }
 
+// TestNoOnboard_ProxyTransientResolveAborts: behind the Dependabot proxy a
+// tracked SHA bump that can't be resolved or history-checked for a transient
+// reason is a retry (exit 2 naming the failure), not a not-pinned user error.
+// The bump targets a commit behind the branch head so the history check has
+// to call Compare.
+func TestNoOnboard_ProxyTransientResolveAborts(t *testing.T) {
+	const (
+		oldSHA = "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871"
+		newSHA = "d632683dd7b4114ad314bca15554477dd762a938"
+		head   = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	)
+	failures := []struct {
+		name string
+		resp httpmock.Responder
+		want string
+	}{
+		{"rate-limited 403", httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}), "HTTP 403"},
+		{"429", httpmock.StatusResponse(http.StatusTooManyRequests), "HTTP 429"},
+		{"503", httpmock.StatusResponse(http.StatusServiceUnavailable), "HTTP 503"},
+		{"connection refused", func(*http.Request) (*http.Response, error) { return nil, errors.New("connection refused") }, "connection refused"},
+	}
+	endpoints := map[string]string{
+		"repo":    `repos/actions/checkout$`,
+		"resolve": `repos/actions/checkout/commits/`,
+		"compare": `repos/actions/checkout/compare/`,
+	}
+	for _, fail := range failures {
+		for name, endpoint := range endpoints {
+			t.Run(fail.name+"/"+name, func(t *testing.T) {
+				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+				reg := &httpmock.Registry{}
+				for range 50 {
+					reg.Register(httpmock.REST("GET", endpoint), fail.resp)
+				}
+				trackedSHAStubs(reg, newSHA, head)
+				useDefaultTransport(t, reg)
+				path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+newSHA+`
+`, "actions/checkout@"+oldSHA+"=sha1-"+oldSHA)
+				lockBefore := readTempLockfilePins(t)
+
+				_, stderr, err := runCommandWithHTTP(t, reg,
+					"--no-onboard", "--no-narrow", "--no-interactive", "--json=findings", path)
+				require.Error(t, err, stderr)
+				assert.NotErrorIs(t, err, errSilent, "a transient failure is a retry, not a user error")
+				assert.Contains(t, err.Error(), fail.want)
+				assert.Equal(t, lockBefore, readTempLockfilePins(t), "nothing is written")
+				hit := false
+				for _, req := range reg.Requests {
+					hit = hit || regexp.MustCompile(endpoint).MatchString(req.URL.Path)
+				}
+				assert.True(t, hit, "the failing endpoint was called")
+			})
+		}
+	}
+}
+
 // trackedSHAStubs answers both the GraphQL and the anonymous REST paths for
 // actions/checkout, with head as the only branch and tag commit. Stubs are
 // one-shot, so each is registered once per pass the run makes.
-func trackedSHAStubs(uses, head string) *httpmock.Registry {
-	reg := &httpmock.Registry{}
+func trackedSHAStubs(reg *httpmock.Registry, uses, head string) *httpmock.Registry {
 	raw := func(body string) httpmock.Responder {
 		return func(req *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusOK, Request: req, Header: http.Header{},
