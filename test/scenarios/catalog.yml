@@ -1575,7 +1575,7 @@ scenarios:
 
   - name: partial_onboarding_counts_only_blocked_workflow
     category: multi_workflow
-    description: "Successful workflows are pinned while a blocked workflow stays untouched and is the only failure counted"
+    description: "A blocked workflow stops the whole run: nothing is written, and only the blocked workflow is counted as failed"
     needs_token: true
     fixtures:
       workflows:
@@ -1596,18 +1596,14 @@ scenarios:
     expect:
       exit: 1
       output_contains:
-        - "Pinned 3 actions across 3 workflows"
-        - "1 of 4 workflows failed: 1 local-action"
+        - "1 of 4 workflows failed"
+        - "local action"
+        - "Nothing was written"
       output_excludes:
         - "4 of 4 workflows failed"
-        - "not-pinned"
-      lockfile_contains:
-        - "nodeselector/actions-test-fixtures@main"
-        - "nodeselector/actions-test-fixtures@updated"
-        - "nodeselector/actions-test-fixtures@v1"
+        - "Not pinned"
       lockfile_excludes:
-        - "blocked.yml"
-        - "nodeselector/actions-test-fixtures@tampered"
+        - "nodeselector/actions-test-fixtures@"
 
   # ═══════════════════════════════════════════════════════════════════════
   # CATEGORY: lockfile (additional scenarios)

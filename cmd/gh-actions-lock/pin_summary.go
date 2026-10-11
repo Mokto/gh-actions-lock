@@ -45,6 +45,34 @@ func reportHasUnfixableErrors(report *checks.Report, acceptMoved bool) bool {
 	return false
 }
 
+// runHasBlockingErrors reports whether the run found anything it cannot fix
+// itself. Such a run must write nothing, so a partial fix never lands.
+func runHasBlockingErrors(report *checks.Report, record *pin.Record, acceptMoved bool) bool {
+	if reportHasUnfixableErrors(report, acceptMoved) || len(record.Investigated()) > 0 {
+		return true
+	}
+	for _, wr := range report.Workflows {
+		if wr.SkipCommit || wr.BlockingResolverError {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutPendingPins drops not-pinned findings a plain run would have
+// pinned, so a blocked run lists only the errors that stopped it.
+func withoutPendingPins(report *checks.Report) *checks.Report {
+	out := *report
+	out.Workflows = make([]checks.WorkflowReport, len(report.Workflows))
+	for i, wr := range report.Workflows {
+		wr.Findings = slices.DeleteFunc(slices.Clone(wr.Findings), func(f checks.Finding) bool {
+			return f.IsRemediableNotPinned()
+		})
+		out.Workflows[i] = wr
+	}
+	return &out
+}
+
 // reportHasNonInvestigatedUnfixableErrors is like reportHasUnfixableErrors
 // but only matches categories that renderInvestigationAlerts does NOT
 // handle (LocalAction). Use this to gate the PresentResults call so
