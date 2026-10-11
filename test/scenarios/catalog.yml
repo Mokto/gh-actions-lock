@@ -674,7 +674,7 @@ scenarios:
           actions: ["actions/checkout@v4"]
     expect:
       exit: 1
-      output_contains: ["Re-run without --no-fix"]
+      output_contains: ["Re-run without --verify"]
 
   - name: verify_pinned_stub
     category: output_modes
