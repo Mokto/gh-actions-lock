@@ -16,8 +16,10 @@ func noOnboardFlag(cmd *cobra.Command) bool {
 }
 
 // gateNoOnboard rewrites per-workflow NotPinned findings to OnboardingRequired
-// and drops their refs so Plan never pins them. Returns the refused entry labels
-// (e.g. "actions/checkout@v4 in .github/workflows/ci.yml").
+// and drops their refs so Plan never pins them. A bare SHA on an action the
+// workflow already locks is a ref change, not onboarding: it stays NotPinned
+// so the pin path resolves and history-checks it. Returns the refused entry
+// labels (e.g. "actions/checkout@v4 in .github/workflows/ci.yml").
 func gateNoOnboard(report *checks.Report) []string {
 	var refused []string
 	for wi := range report.Workflows {
@@ -25,7 +27,7 @@ func gateNoOnboard(report *checks.Report) []string {
 		refusedKeys := make(map[string]bool)
 		for fi := range wr.Findings {
 			f := &wr.Findings[fi]
-			if f.Category != checks.NotPinned || f.ActionRef == nil {
+			if f.Category != checks.NotPinned || f.ActionRef == nil || f.TrackedAction {
 				continue
 			}
 			ar := f.ActionRef

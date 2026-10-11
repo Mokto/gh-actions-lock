@@ -39,6 +39,7 @@ func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]
 		f := newRefFinding(pw, ref, NotPinned, SeverityError, ConfidenceHigh)
 		f.Detail = fmt.Sprintf("used in workflow but not pinned in lockfile (%s@%s)", formatUseName(ref.Owner, ref.Repo, ref.Path), ref.Ref)
 		f.Remediation = "pin with `gh actions-lock`"
+		f.TrackedAction = knownAction[nwoLower(ref.Owner, ref.Repo)]
 		out = append(out, f)
 	}
 	return out
