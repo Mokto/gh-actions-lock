@@ -105,6 +105,7 @@ func TestRun_CleanWorkflowPins(t *testing.T) {
 	b, err := os.ReadFile(clean)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "$/.github/actions/local")
+	assert.Contains(t, stderr, "Migrated 1 local action")
 }
 
 func TestRun_BlockingErrorWritesNothing(t *testing.T) {
@@ -130,6 +131,7 @@ jobs:
 			if name == "terminal" {
 				assert.Contains(t, stderr, "different repository than the one locked")
 				assert.Contains(t, stderr, "Nothing was written")
+				assert.NotContains(t, stderr, "Migrated")
 				assert.Contains(t, stderr, "1 of 2 workflows failed")
 				assert.NotContains(t, stderr, "Not pinned", "pins the run would have made are not errors")
 			}
@@ -149,4 +151,29 @@ func TestRun_UnloadableWorkflowWritesNothing(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
 	assert.Contains(t, stderr, "failed to load workflow")
 	assert.Contains(t, stderr, "Nothing was written")
+}
+
+// TestRun_UnresolvedWritesNothing: an action that can't be resolved aborts
+// the run, and the output must not claim the rolled-back migration landed.
+func TestRun_UnresolvedWritesNothing(t *testing.T) {
+	// acme/gone has no stub, so it can't be resolved.
+	reg := &httpmock.Registry{}
+	broken := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: acme/gone@v1.0.0
+`)
+	clean := writeCleanWorkflow(t, reg, true)
+	before := snapshotWorkflows(t)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, broken, clean)
+	require.ErrorIs(t, err, errSilent)
+	assert.Equal(t, before, snapshotWorkflows(t), "no file may change")
+	assert.Contains(t, stderr, "could not be resolved")
+	assert.Contains(t, stderr, "Nothing was written")
+	assert.NotContains(t, stderr, "Migrated")
 }
