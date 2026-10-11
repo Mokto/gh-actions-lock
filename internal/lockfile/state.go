@@ -214,7 +214,7 @@ func (s *State) SetMetadataResolver(meta MetadataResolver) {
 // up on their recorded host before they are trusted on Proxima. Older
 // producers used omission for dotcom, not the home tenant. Only inconclusive
 // lookups fail here; a missing repository or a changed repo ID is left to the
-// parity pass, which reports repo-unavailable or repo-hijacked.
+// parity pass, which reports repo-unavailable or repo-replaced.
 func (s *State) VerifyHosts(ctx context.Context, workflowKeys []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

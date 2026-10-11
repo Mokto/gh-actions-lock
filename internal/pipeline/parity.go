@@ -240,7 +240,7 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 			f.Remediation = access + "; " + moved
 		}
 	case idChanged(lp.Action.RepoID, st.RepoID):
-		f.Category = checks.RepoHijacked
+		f.Category = checks.RepoReplaced
 		f.Detail = fmt.Sprintf("%s%s now resolves to a different repository than the one locked (repo ID %d, locked %d)", nwo, via, st.RepoID, lp.Action.RepoID)
 		f.Remediation = "do not trust it: the locked repository was deleted and its name taken over, possibly by an attacker. Point `uses:` at a repository you have verified"
 		if f.ParentNWO != "" {
