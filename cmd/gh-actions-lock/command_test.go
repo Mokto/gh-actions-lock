@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -72,7 +74,7 @@ jobs:
 	)
 
 	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--rescan", "--no-fix", "--json=valid,findings", workflowPath,
+		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
 	)
 	require.NoError(t, err)
 
@@ -207,6 +209,9 @@ const nodeActionYAML = "name: Test Action\nruns:\n  using: node20\n"
 func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 	return map[string]any{
 		"nameWithOwner": nameWithOwner,
+		// commit and tag answer the parity query from the same fixture.
+		"commit": map[string]any{"oid": oid},
+		"tag":    map[string]any{"oid": oid},
 		"object": map[string]any{
 			"oid": oid,
 			"file": map[string]any{
@@ -217,6 +222,55 @@ func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 			"fileYaml": nil,
 		},
 	}
+}
+
+// registerParity stubs one parity query that reports every pin intact.
+func registerParity(reg *httpmock.Registry) {
+	reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOK)
+}
+
+// parityOK answers a parity query as if every locked pin still matches.
+func parityOK(req *http.Request) (*http.Response, error) {
+	var body struct {
+		Variables map[string]any `json:"variables"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	data := map[string]any{}
+	for i := 0; ; i++ {
+		owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+		if !ok {
+			break
+		}
+		oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+		data[fmt.Sprintf("a%d", i)] = map[string]any{
+			"nameWithOwner": owner + "/" + body.Variables[fmt.Sprintf("name%d", i)].(string),
+			"commit":        oid,
+			"tag":           oid,
+		}
+	}
+	return httpmock.JSONResponse(map[string]any{"data": data})(req)
+}
+
+// parityFallback answers parity queries the test did not stub as intact,
+// since fresh pins fail closed on an inconclusive check.
+type parityFallback struct{ rt http.RoundTripper }
+
+func (p parityFallback) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body == nil || !httpmock.GraphQL(`commit: object\(oid`)(req) {
+		return p.rt.RoundTrip(req)
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	if resp, err := p.rt.RoundTrip(req); err == nil {
+		return resp, nil
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	return parityOK(req)
 }
 
 // writeTempWorkflow writes a workflow YAML body to a scratch repo at
@@ -309,7 +363,7 @@ func runCommandWithHTTP(t *testing.T, rt http.RoundTripper, args ...string) (str
 	require.NoError(t, err)
 
 	newResolver := func(hostname string, pool *pinpool.Pool) (*resolve.Resolver, error) {
-		return resolve.New(hostname, pool, resolve.WithTransport(rt))
+		return resolve.New(hostname, pool, resolve.WithTransport(parityFallback{rt}))
 	}
 
 	cmd := newRootCmd(newResolver)
@@ -379,7 +433,7 @@ jobs:
 	)
 
 	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--rescan", "--no-fix", "--json=valid,findings", workflowPath,
+		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
 	)
 	require.NoError(t, err)
 
@@ -445,7 +499,7 @@ jobs:
 	)
 
 	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--rescan", "--no-fix", "--json=valid,findings", workflowPath,
+		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
 	)
 	require.ErrorIs(t, err, errSilent, "JSON mode should exit non-zero for forgery findings")
 
@@ -507,7 +561,7 @@ jobs:
 	)
 
 	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--rescan", "--no-fix", "--json=valid,findings", workflowPath,
+		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
 	)
 	require.NoError(t, err, "ref-moved is a warning, should not error")
 
@@ -565,7 +619,7 @@ jobs:
 	)
 
 	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--rescan", "--no-fix", "--json=valid,findings", workflowPath,
+		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
 	)
 	require.NoError(t, err, "ref-moved is a warning, should not error")
 
@@ -644,7 +698,7 @@ jobs:
 
 	// Test per-workflow dependencies view
 	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--rescan", "--no-fix", "--json=workflows", workflowPath,
+		"--relock", "--no-fix", "--json=workflows", workflowPath,
 	)
 	require.NoError(t, err)
 
@@ -719,7 +773,7 @@ jobs:
 	)
 
 	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--rescan", "--no-fix", "--json=workflows", workflowPath,
+		"--relock", "--no-fix", "--json=workflows", workflowPath,
 	)
 	require.NoError(t, err)
 
@@ -770,7 +824,7 @@ jobs:
 
 	// --json with no value should use the default fields (valid,findings,workflows)
 	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--rescan", "--no-fix", "--json", workflowPath,
+		"--relock", "--no-fix", "--json", workflowPath,
 	)
 	require.NoError(t, err)
 
@@ -834,7 +888,8 @@ jobs:
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lockYAML), 0o600))
 	t.Chdir(dir)
 
-	// Run WITHOUT --rescan so SeedFromLockfile is active.
+	// Locked checkout is only parity-checked, never re-resolved.
+	registerParity(reg)
 	stdout, _, err := runCommandWithHTTP(t, reg,
 		"--no-fix", "--json=valid,findings",
 		".github/workflows/workflow.yml",
@@ -987,11 +1042,11 @@ jobs:
 	assert.Contains(t, pins, "actions/setup-go", "autofix should have pinned setup-go")
 }
 
-// TestCheck_Rescan_DetectsRefMovementDespiteLockfile is a regression test
-// ensuring --rescan does NOT seed the resolution cache. If seeding occurred,
+// TestCheck_Relock_DetectsRefMovementDespiteLockfile is a regression test
+// ensuring --relock does NOT seed the resolution cache. If seeding occurred,
 // the resolver would return the stale lockfile SHA and the ref-moved finding
 // would be suppressed — exactly the bug we fixed.
-func TestCheck_Rescan_DetectsRefMovementDespiteLockfile(t *testing.T) {
+func TestCheck_Relock_DetectsRefMovementDespiteLockfile(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
@@ -1032,7 +1087,7 @@ jobs:
 	)
 
 	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--rescan", "--no-fix", "--json=valid,findings", workflowPath,
+		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
 	)
 	// ref-moved is a warning (valid=true), not an error.
 	require.NoError(t, err, "ref-moved is a warning, should not error")
@@ -1052,8 +1107,8 @@ jobs:
 		}
 	}
 	assert.True(t, hasRefMoved,
-		"--rescan must detect ref movement (stale lockfile SHA vs live SHA); "+
-			"if this fails, SeedFromLockfile is poisoning the resolution cache during rescan: %+v",
+		"--relock must detect ref movement (stale lockfile SHA vs live SHA); "+
+			"if this fails, SeedFromLockfile is poisoning the resolution cache during relock: %+v",
 		payload.Findings)
 }
 
@@ -1204,7 +1259,7 @@ func TestCheckCommand_LoadErrorFailsFixMode(t *testing.T) {
 
 // TestCheck_Relock_BumpsMovedBranchRef covers github/actions-dispatch#751:
 // a branch ref (main) whose upstream head advanced is trusted as-is on a
-// normal run and merely flagged ref-moved under --rescan. --relock must
+// normal run. --relock must
 // re-resolve it and rewrite the lockfile to the new live SHA.
 func TestCheck_Relock_BumpsMovedBranchRef(t *testing.T) {
 	reg := &httpmock.Registry{}
@@ -1335,4 +1390,77 @@ func TestCheck_MixedCaseUsesAcrossWorkflowsPinsEach(t *testing.T) {
 	want := []string{"actions/checkout@v4.2.2"}
 	assert.Equal(t, want, file.Workflows[".github/workflows/a.yml"])
 	assert.Equal(t, want, file.Workflows[".github/workflows/b.yml"])
+}
+
+// TestCheck_BareSHAOffHistoryRefuses: a bare SHA no upstream tag or branch
+// contains (a fork commit served under the upstream name) is refused with
+// its own finding, the same in the terminal and in --json, and nothing is
+// written.
+func TestCheck_BareSHAOffHistoryRefuses(t *testing.T) {
+	const (
+		impostor = "11d0dfc58a242e392d9695aa26812e1d1eb8e439"
+		head     = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	)
+	stubs := func() *httpmock.Registry {
+		reg := &httpmock.Registry{}
+		reg.Register(
+			httpmock.GraphQLForRepo("actions", "checkout"),
+			httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": testRepoResponse("actions/checkout", impostor, nodeActionYAML)},
+			}),
+		)
+		reg.Register(
+			httpmock.REST("GET", `repos/actions/checkout$`),
+			httpmock.JSONResponse(map[string]any{"default_branch": "main", "id": 2, "owner": map[string]any{"id": 1}}),
+		)
+		reg.Register(
+			httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+			httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}),
+		)
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v4.2.2", head)))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+		for range 4 {
+			reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+			reg.Register(
+				httpmock.REST("GET", `repos/actions/checkout/compare/`),
+				httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": head}}),
+			)
+		}
+		return reg
+	}
+	workflowPath := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+impostor+`
+`)
+
+	_, stderr, err := runCommandWithHTTP(t, stubs(), workflowPath)
+	require.ErrorIs(t, err, errSilent)
+	assert.Contains(t, stderr, "Pinned commit not in upstream history actions/checkout@"+impostor)
+	assert.Contains(t, stderr, "fork or impostor commit")
+	assert.NotContains(t, stderr, "could not be resolved")
+	assert.NotContains(t, stderr, "Not pinned")
+	assert.NoFileExists(t, filepath.Join(filepath.Dir(workflowPath), "actions.lock"))
+
+	stdout, _, err := runCommandWithHTTP(t, stubs(), "--json=valid,findings", workflowPath)
+	require.Error(t, err)
+	var payload struct {
+		Valid    bool             `json:"valid"`
+		Findings []format.Finding `json:"findings"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &payload), stdout)
+	assert.False(t, payload.Valid)
+	var cats []string
+	for _, f := range payload.Findings {
+		cats = append(cats, f.Category)
+	}
+	assert.Contains(t, cats, "unreachable-pin")
+	assert.NotContains(t, cats, "not-pinned")
+
+	_, _, err = runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", workflowPath)
+	require.ErrorIs(t, err, errSilent, "an unlocked bare SHA must not pass the offline gate")
 }

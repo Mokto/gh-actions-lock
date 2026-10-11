@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
@@ -639,4 +640,28 @@ func TestRenderPinnedEntries_PurelyTransitiveShown(t *testing.T) {
 	if !strings.Contains(out, "1 action") {
 		t.Errorf("expected '1 action' direct count, got:\n%s", out)
 	}
+}
+
+func TestRenderAcceptedOverrides_NamesEachOverride(t *testing.T) {
+	report := &checks.Report{Workflows: []checks.WorkflowReport{{
+		Path: ".github/workflows/ci.yml",
+		Findings: []checks.Finding{
+			{Category: checks.UnreachablePin, Dependency: &dep.Dependency{NWO: "actions/checkout", Ref: "v4.2.2", SHA: "1111111111111111111111111111111111111111"}},
+			{Category: checks.RefMoved, Dependency: &dep.Dependency{NWO: "actions/setup-node", Ref: "v4.4.0", SHA: "8f152de45cc393bb48ce5d89d36b731f54556e65"}},
+			{Category: checks.UnreachablePin, Dependency: &dep.Dependency{NWO: "octo/kept", Ref: "v1", SHA: "cccccccccccccccccccccccccccccccccccccccc"}},
+		},
+	}}}
+	pinned := []pin.Entry{
+		{NWO: "actions/checkout", Ref: "v4.2.2", SHA: "11bd71901bbe5b1630ceea73d27597364c9af683"},
+		{NWO: "actions/setup-node", Ref: "v4.4.0", SHA: "49933ea5288caeca8642d1e84afbd3f7d6820020"},
+		{NWO: "octo/kept", Ref: "v1", SHA: "cccccccccccccccccccccccccccccccccccccccc"},
+	}
+
+	var buf bytes.Buffer
+	renderAcceptedOverrides(ui.NewPlain(&buf), report, pinned)
+	out := buf.String()
+
+	assert.Contains(t, out, "Re-pinned actions/checkout@v4.2.2: 111111111111 → 11bd71901bbe (accepted)")
+	assert.Contains(t, out, "Re-pinned actions/setup-node@v4.4.0: 8f152de45cc3 → 49933ea5288c (accepted)")
+	assert.NotContains(t, out, "octo/kept", "an unchanged pin is not an override")
 }

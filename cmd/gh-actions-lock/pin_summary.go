@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/resolve"
@@ -17,7 +20,8 @@ import (
 // severity findings that the autofix cannot resolve. Pinning resolves
 // not-pinned findings, so those are expected in the pre-fix report and
 // don't count. LocalAction and UnreachablePin errors are unfixable --
-// the workflow or lockfile must be investigated.
+// the workflow or lockfile must be investigated. ReachabilityUnknown is
+// an error only when a fresh pin's identity couldn't be confirmed.
 func reportHasUnfixableErrors(report *checks.Report, acceptMoved bool) bool {
 	for _, wr := range report.Workflows {
 		for _, f := range wr.Findings {
@@ -25,7 +29,7 @@ func reportHasUnfixableErrors(report *checks.Report, acceptMoved bool) bool {
 				continue
 			}
 			switch f.Category {
-			case checks.LocalAction, checks.InvalidSelfRepositoryRef:
+			case checks.LocalAction, checks.InvalidSelfRepositoryRef, checks.RepoRenamed, checks.RepoHijacked, checks.RepoUnavailable, checks.ReachabilityUnknown:
 				return true
 			case checks.NotPinned:
 				if !f.IsRemediableNotPinned() {
@@ -54,6 +58,10 @@ func reportHasNonInvestigatedUnfixableErrors(report *checks.Report) bool {
 			}
 			if f.Category == checks.LocalAction ||
 				f.Category == checks.InvalidSelfRepositoryRef ||
+				f.Category == checks.RepoRenamed ||
+				f.Category == checks.RepoHijacked ||
+				f.Category == checks.RepoUnavailable ||
+				f.Category == checks.ReachabilityUnknown ||
 				f.Category == checks.NotPinned && !f.IsRemediableNotPinned() {
 				return true
 			}
@@ -65,10 +73,20 @@ func reportHasNonInvestigatedUnfixableErrors(report *checks.Report) bool {
 // renderPinSummary prints the terminal summary after pin.Plan + pin.Commit.
 // It groups pinned entries by NWO@Ref, shows investigation alerts, unresolved
 // warnings, and the all-valid message when nothing changed.
-func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, report *checks.Report, r *resolve.Resolver, skippedRescan int, hasInconclusive bool, refusedLabels []string, noNarrow bool, acceptMoved bool, originalVersion string, prunedWorkflows []string) error {
+func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, report *checks.Report, r *resolve.Resolver, refusedLabels []string, noNarrow bool, acceptMoved bool, originalVersion string, prunedWorkflows []string) error {
 	pinned := record.Pinned()
 	investigated := record.Investigated()
 	narrowed := record.Narrowed()
+
+	for _, wp := range record.Workflows {
+		for _, oldUse := range slices.Sorted(maps.Keys(wp.RequiredRewrites)) {
+			where := strings.Join(wp.RewrittenIn[oldUse], ", ")
+			if !slices.Equal(wp.RewrittenIn[oldUse], []string{wp.Path}) {
+				where += " (via " + wp.Path + ")"
+			}
+			console.TermSuccess("Rewrote %s → %s in %s (repository renamed or transferred)", oldUse, wp.RequiredRewrites[oldUse], where)
+		}
+	}
 
 	if len(pinned) > 0 {
 		console.TermBlank()
@@ -81,9 +99,14 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	if len(narrowed) > 0 {
 		renderNarrowedEntries(console, narrowed)
 	}
+	if acceptMoved {
+		renderAcceptedOverrides(console, report, pinned)
+	}
 
 	renderFullScanWarnings(console, pinned)
 	renderCooldownFindings(console, report)
+	presentErrors := reportHasNonInvestigatedUnfixableErrors(report) ||
+		len(investigated) == 0 && reportHasUnfixableErrors(report, acceptMoved)
 	if !noNarrow {
 		renderVersionRefNudge(ctx, console, record, r)
 	}
@@ -116,20 +139,9 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	onboardingRefused := len(refusedLabels)
 	allClean := len(pinned) == 0 && len(investigated) == 0 && len(unresolvedEntries) == 0
 	hasUnfixable := reportHasUnfixableErrors(report, acceptMoved)
-	if allClean && !hasUnfixable && onboardingRefused == 0 && !hasInconclusive {
+	if allClean && !hasUnfixable && onboardingRefused == 0 {
 		console.TermBlank()
 		console.TermSuccess("All %d %s valid", total, ui.Pluralize(total, "workflow", "workflows"))
-		if noNarrow && skippedRescan > 0 {
-			// Mutable refs (v4, main) were trusted without a live check.
-			// With narrowing on, the version-ref nudge above already tells
-			// the user to pin precisely — which also buys live
-			// re-verification — so we don't add a competing --rescan line.
-			// Under --no-narrow that nudge is suppressed, so this is the
-			// only place the trust gap and its escape hatch surface.
-			console.TermDetail("%d mutable %s trusted without a live check — branch or partial-version pins (e.g. v4, main) that can move; run `gh actions-lock --rescan` to re-verify %s.",
-				skippedRescan, ui.Pluralize(skippedRescan, "ref", "refs"),
-				ui.Pluralize(skippedRescan, "it", "them"))
-		}
 		return nil
 	}
 
@@ -152,10 +164,13 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	//
 	// Exclude findings already handled elsewhere and pre-fix not-pinned
 	// findings that may have been committed for other workflows.
-	if reportHasNonInvestigatedUnfixableErrors(report) {
+	if presentErrors {
+		excluded := []checks.Category{checks.NotPinned}
+		if len(investigated) > 0 {
+			excluded = append(excluded, checks.UnreachablePin)
+		}
 		console.SetLog(nil)
-		format.PresentResults(console, report, false, false,
-			checks.UnreachablePin, checks.NotPinned)
+		format.PresentResults(console, report, false, false, excluded...)
 	}
 
 	if len(investigated) > 0 || len(unresolvedEntries) > 0 || hasUnfixable {
@@ -182,6 +197,27 @@ func renderNarrowedEntries(console *ui.UI, narrowed []pin.Entry) {
 		len(narrowed), ui.Pluralize(len(narrowed), "ref", "refs"))
 	for _, e := range narrowed {
 		console.TermDetail(" %s@%s → %s", e.NWO, e.AutoFixedRef, e.Ref)
+	}
+}
+
+// renderAcceptedOverrides names each untrusted pin --accept-moved replaced,
+// so an override never reads like a routine pin.
+func renderAcceptedOverrides(console *ui.UI, report *checks.Report, pinned []pin.Entry) {
+	seen := map[string]bool{}
+	for _, wr := range report.Workflows {
+		for _, f := range wr.Findings {
+			d := f.Dependency
+			if f.Category != checks.UnreachablePin && f.Category != checks.RefMoved || d == nil || seen[d.Key()] {
+				continue
+			}
+			for _, e := range pinned {
+				if strings.EqualFold(e.NWO, d.NWO) && e.Ref == d.Ref && !strings.EqualFold(e.SHA, d.SHA) {
+					seen[d.Key()] = true
+					console.TermWarn("Re-pinned %s@%s: %s → %s (accepted)", e.NWO, e.Ref, parserlock.ShortSHA(d.SHA), parserlock.ShortSHA(e.SHA))
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -714,4 +750,43 @@ func looksLikeSHA(ref string) bool {
 		}
 	}
 	return true
+}
+
+// replaceOffHistoryFindings swaps the generic not-pinned finding for a bare
+// SHA that no upstream tag or branch contains with a finding that says so,
+// so the refusal doesn't read like a network failure. It returns the
+// unresolved entries it didn't convert.
+func replaceOffHistoryFindings(report *checks.Report, unresolved []pin.Entry) []pin.Entry {
+	var rest []pin.Entry
+	for _, e := range unresolved {
+		if e.Issue != "reverse-lookup" || !resolve.LooksLikeSHA(e.Ref) {
+			rest = append(rest, e)
+			continue
+		}
+		for _, wf := range e.Workflows {
+			for i := range report.Workflows {
+				wr := &report.Workflows[i]
+				if wr.Path != wf {
+					continue
+				}
+				kept := wr.Findings[:0]
+				for _, f := range wr.Findings {
+					if f.Category == checks.NotPinned && f.ActionRef != nil && strings.EqualFold(f.ActionRef.Owner+"/"+f.ActionRef.Repo, e.NWO) && f.ActionRef.Ref == e.Ref {
+						continue
+					}
+					kept = append(kept, f)
+				}
+				wr.Findings = append(kept, checks.Finding{
+					WorkflowPath: wf,
+					Category:     checks.UnreachablePin,
+					Severity:     checks.SeverityError,
+					Confidence:   checks.ConfidenceHigh,
+					Dependency:   &dep.Dependency{NWO: e.NWO, Ref: e.Ref, SHA: e.SHA},
+					Detail:       fmt.Sprintf("commit %s is not on any tag or branch of %s: it may be a fork or impostor commit served under the upstream name", parserlock.ShortSHA(e.SHA), e.NWO),
+					Remediation:  "use a current upstream tag instead",
+				})
+			}
+		}
+	}
+	return rest
 }

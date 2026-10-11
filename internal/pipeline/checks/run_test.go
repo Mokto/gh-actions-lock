@@ -166,6 +166,33 @@ func TestRunChecks(t *testing.T) {
 			wantCategories: []Category{ShaAsRef},
 		},
 		{
+			name:           "not-pinned: unlocked bare SHA blocks",
+			lockfile:       map[string][]string{},
+			workflowRefs:   []parserlock.ActionRef{checkRef("actions", "checkout", shaImpostor)},
+			wantCategories: []Category{NotPinned, ShaAsRef},
+		},
+		{
+			name: "not-pinned: unlocked bare SHA blocks even when the repo is pinned at another ref",
+			lockfile: map[string][]string{
+				wfPath: {checkPinKey("actions", "checkout", "v4", shaCheckoutV4)},
+			},
+			workflowRefs: []parserlock.ActionRef{
+				checkRef("actions", "checkout", "v4"),
+				checkRef("actions", "checkout", shaImpostor),
+			},
+			noResolver:     true,
+			wantCategories: []Category{NotPinned, ShaAsRef},
+		},
+		{
+			name: "sha-as-ref: bare SHA locked under its tag stays a warning",
+			lockfile: map[string][]string{
+				wfPath: {checkPinKey("actions", "checkout", "v4", shaCheckoutV4)},
+			},
+			workflowRefs:   []parserlock.ActionRef{checkRef("actions", "checkout", shaCheckoutV4)},
+			noResolver:     true,
+			wantCategories: []Category{ShaAsRef},
+		},
+		{
 			name: "ref-changed + stale: lockfile pins v4, workflow uses v3",
 			lockfile: map[string][]string{
 				wfPath: {checkPinKey("actions", "checkout", "v4", shaCheckoutV4)},
@@ -253,6 +280,9 @@ func TestRunChecks(t *testing.T) {
 						}
 						if f.Dependency == nil || f.Dependency.SHA != shaImpostor {
 							t.Fatalf("Dependency.SHA: want pinned %s, got %#v", shaImpostor, f.Dependency)
+						}
+						if f.Remediation != AcceptMovedRemediation {
+							t.Fatalf("Remediation: got %q, want the --accept-moved step --relock refuses to take", f.Remediation)
 						}
 					}
 				}

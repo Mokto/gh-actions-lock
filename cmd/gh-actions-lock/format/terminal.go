@@ -115,14 +115,17 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 	}
 
 	out.TermBlank()
-	out.TermError("%d of %d %s failed verification",
+	out.TermError("%d of %d %s failed",
 		failedCount, checked, ui.Pluralize(checked, "workflow", "workflows"))
+	blocked := false
 	for _, key := range order {
 		g := groups[key]
 		out.TermBlank()
 		for _, f := range g.findings {
 			if IsAutoFixable(f.Category) {
 				hasFixable = true
+			} else if f.Severity == checks.SeverityError {
+				blocked = true
 			}
 			renderTermFindingDetail(out, f, key)
 		}
@@ -130,7 +133,8 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 			out.TermDetail("  ↳ %s", out.TermDim(wf))
 		}
 	}
-	return hasFixable
+	// A plain re-run writes nothing while an unfixable error remains.
+	return hasFixable && !blocked
 }
 
 // renderTermFindingDetail is the Term* twin of renderFindingDetail: it
@@ -138,9 +142,9 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 // narration log) so read-only modes surface the same detail as fix mode.
 func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 	label := categoryLabel(f.Category)
-	icon := "!"
-	if IsAlertedCategory(f.Category) {
-		icon = "✗"
+	icon := out.TermYellow(ui.IconWarning)
+	if f.Severity == checks.SeverityError {
+		icon = out.TermRed(ui.IconError)
 	}
 	out.TermDetail("%s %s %s", icon, out.TermDim(label), dep)
 	out.TermDetail("  %s", f.Detail)
@@ -151,7 +155,7 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 		}
 	}
 	if IsAlertedCategory(f.Category) && f.Remediation != "" {
-		out.TermDetail("  %s %s", ui.IconWarning, f.Remediation)
+		out.TermDetail("  %s %s", out.TermYellow(ui.IconWarning), f.Remediation)
 	}
 	if f.RecommendedTag != "" {
 		nwo := ""
@@ -166,12 +170,12 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 			nwo, f.RecommendedTag, sha)
 	}
 	if f.DocURL != "" {
-		out.TermDetail("  see: %s", out.TermDim(out.TermLink("how to fix this", f.DocURL)))
+		out.TermDetail("  see: %s", out.DocLink(f.DocURL))
 	}
 }
 
 // categoryLabel returns a human-readable label for a finding category,
-// e.g. "unreachable-pin" -> "Unreachable pin". Falls back to a
+// e.g. "repo-renamed" -> "Repository renamed". Falls back to a
 // hyphen-to-space title for unmapped categories so new slugs still read
 // cleanly.
 func categoryLabel(c checks.Category) string {
@@ -183,7 +187,13 @@ func categoryLabel(c checks.Category) string {
 	case checks.MisleadingSHA:
 		return "Misleading SHA"
 	case checks.UnreachablePin:
-		return "Unreachable pin"
+		return "Pinned commit not in upstream history"
+	case checks.RepoRenamed:
+		return "Repository renamed"
+	case checks.RepoHijacked:
+		return "Repository identity changed (possible hijack)"
+	case checks.RepoUnavailable:
+		return "Repository missing or inaccessible"
 	case checks.Stale:
 		return "Unused lockfile entry"
 	}
@@ -249,7 +259,7 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 
 	parts := []string{}
 	for _, cat := range []checks.Category{
-		checks.UnreachablePin,
+		checks.RepoHijacked, checks.RepoUnavailable, checks.RepoRenamed, checks.UnreachablePin,
 		checks.RefChanged, checks.NotPinned, checks.OnboardingRequired,
 		checks.LocalAction, checks.InvalidSelfRepositoryRef,
 		checks.Stale, checks.MisleadingSHA,
@@ -268,10 +278,10 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 // renderFindingDetail prints a single non-valid finding with its category
 // icon, detail text, remediation, and doc links.
 func renderFindingDetail(out *ui.UI, f checks.Finding, dep string) {
-	label := strings.ToUpper(string(f.Category))
-	icon := "!"
-	if IsAlertedCategory(f.Category) {
-		icon = "✗"
+	label := categoryLabel(f.Category)
+	icon := out.Yellow(ui.IconWarning)
+	if f.Severity == checks.SeverityError {
+		icon = out.Red(ui.IconError)
 	}
 	out.Detail("%s %s %s", icon, out.Dim(label), dep)
 	out.Detail("  %s", f.Detail)
@@ -282,7 +292,7 @@ func renderFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 		}
 	}
 	if IsAlertedCategory(f.Category) && f.Remediation != "" {
-		out.Detail("  %s %s", ui.IconWarning, f.Remediation)
+		out.Detail("  %s %s", out.Yellow(ui.IconWarning), f.Remediation)
 	}
 	if f.RecommendedTag != "" {
 		nwo := ""
@@ -361,12 +371,8 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 				bareSHADeps = append(bareSHADeps, key)
 			}
 		case f.Category == checks.RefMoved:
-			// TODO: surface ref-moved warnings once the `gh actions-lock
-			// update` path exists. Today the guidance ("run gh actions-lock
-			// to update") is wrong — a plain re-run trusts the lockfile and
-			// repins nothing; only --rescan even detects the movement. Until
-			// there's a command that actually advances a moved ref, swallow
-			// these rather than print misleading instructions.
+			// Moved mutable refs are sticky; --relock advances them, so
+			// there is nothing actionable to print here.
 		case f.Category.IsInconclusive() &&
 			strings.Contains(f.Remediation, "transitive dependency"):
 			// transitive reachability unknown: silently swallowed
@@ -417,6 +423,22 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 			}
 		}
 	}
+	renderRedirects(out, report, willRemediate)
+}
+
+// renderRedirects lists pins whose repository was renamed or transferred
+// but kept its repo ID. The runner follows the redirect, so it's a warning
+// with the replacement `uses:` line. A fix run rewrites workflow refs and
+// reports that instead.
+func renderRedirects(out *ui.UI, report *checks.Report, willRemediate bool) {
+	for _, wr := range report.Workflows {
+		for _, f := range wr.Findings {
+			if f.Category == checks.RepoRenamed && f.IsWarning() && !willRemediate {
+				out.TermWarn("%s: %s", f.WorkflowPath, f.Detail)
+				out.TermDetail("↳ %s", f.Remediation)
+			}
+		}
+	}
 }
 
 // IsAlertedCategory reports whether a finding category has no auto-fix and
@@ -424,7 +446,7 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 // remediator should not re-print it in non-interactive mode).
 func IsAlertedCategory(c checks.Category) bool {
 	switch c {
-	case checks.UnreachablePin, checks.MisleadingSHA, checks.OnboardingRequired:
+	case checks.UnreachablePin, checks.MisleadingSHA, checks.OnboardingRequired, checks.RepoRenamed, checks.RepoHijacked, checks.RepoUnavailable:
 		return true
 	}
 	return false
