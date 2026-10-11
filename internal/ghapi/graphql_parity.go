@@ -59,6 +59,9 @@ func (c *Client) CheckPins(ctx context.Context, pins []PinCheck) []PinState {
 			client, err := c.ForRepo(ctx, p.Owner, p.Repo)
 			if err != nil {
 				states[i].Err = err
+				if IsNotFound(err) {
+					states[i] = PinState{RepoMissing: true}
+				}
 				continue
 			}
 			groups[client] = append(groups[client], p)

@@ -129,7 +129,7 @@ jobs:
 }
 
 func TestProximaOmittedPinsCannotMoveToDotcomOrTenantNamesakes(t *testing.T) {
-	for _, status := range []int{200, 401, 403, 404} {
+	for _, status := range []int{200, 401, 403, 404, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			path := writeTempWorkflow(t, `
 name: ci
@@ -146,8 +146,11 @@ jobs:
 			require.NoError(t, os.WriteFile(parserlock.Path, []byte(raw), 0o600))
 			transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
 				assert.Equal(t, "api.tenant.ghe.com", req.URL.Host, "omitted pins must not fall back to dotcom")
-				assert.Equal(t, "/repos/actions/public", req.URL.Path)
 				assert.NotEmpty(t, req.Header.Get("Authorization"))
+				if req.URL.Path == "/graphql" {
+					return parityRepoID(req, status, 333)
+				}
+				assert.Equal(t, "/repos/actions/public", req.URL.Path)
 				if status != 200 {
 					return httpmock.StatusResponse(status)(req)
 				}
@@ -155,17 +158,44 @@ jobs:
 					"visibility": "internal", "id": 333, "owner": map[string]any{"id": 33},
 				})(req)
 			})
-			_, _, err := runCommandWithHTTP(t, transport,
+			stdout, _, err := runCommandWithHTTP(t, transport,
 				"--hostname", "tenant.ghe.com", "--no-narrow", "--no-migrate-local-actions", "--json", path)
-			require.Error(t, err)
-			if status == 200 {
-				assert.ErrorContains(t, err, "does not match its tenant.ghe.com repository IDs")
-			} else {
-				assert.ErrorContains(t, err, "verifying repository identity")
+			switch status {
+			case 200:
+				require.ErrorIs(t, err, errSilent)
+				assert.Contains(t, stdout, "repo-hijacked")
+			case 404:
+				require.ErrorIs(t, err, errSilent)
+				assert.Contains(t, stdout, "repo-unavailable")
+			default:
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, errSilent, "inconclusive identity must exit 2")
+				assert.ErrorContains(t, err, fmt.Sprintf("HTTP %d", status))
 			}
 			assert.Equal(t, raw, readTempLockfilePins(t))
 		})
 	}
+}
+
+// parityRepoID answers a parity query as a pin whose repository now has
+// repoID, or as a missing repository when status is 404.
+func parityRepoID(req *http.Request, status int, repoID int) (*http.Response, error) {
+	var body struct {
+		Variables map[string]any `json:"variables"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	if status == http.StatusNotFound {
+		return httpmock.JSONResponse(map[string]any{"data": map[string]any{"a0": nil}})(req)
+	}
+	oid := map[string]any{"oid": body.Variables["oid0"]}
+	return httpmock.JSONResponse(map[string]any{"data": map[string]any{"a0": map[string]any{
+		"nameWithOwner": fmt.Sprintf("%s/%s", body.Variables["owner0"], body.Variables["name0"]),
+		"databaseId":    repoID,
+		"commit":        oid,
+		"tag":           oid,
+	}}})(req)
 }
 
 func TestProximaIncompleteGenerationDoesNotWrite(t *testing.T) {
@@ -217,13 +247,14 @@ jobs:
 				raw = strings.ReplaceAll(raw, "repo_id: 1", "repo_id: 222")
 			}
 			require.NoError(t, os.WriteFile(parserlock.Path, []byte(raw), 0o600))
-			_, _, err := runCommandWithHTTP(t, proximaFixture(t, 200),
+			stdout, _, err := runCommandWithHTTP(t, proximaFixture(t, 200),
 				"--hostname", "tenant.ghe.com", "--no-narrow", "--no-migrate-local-actions", "--json", path)
 			if matches {
 				require.NoError(t, err)
 				assert.Contains(t, readTempLockfilePins(t), "hostname: 'github.com'")
 			} else {
-				require.ErrorContains(t, err, "regenerate the lockfile")
+				require.ErrorIs(t, err, errSilent)
+				assert.Contains(t, stdout, "repo-hijacked")
 				assert.Equal(t, raw, readTempLockfilePins(t))
 			}
 		})
