@@ -114,6 +114,7 @@ func TestNoOnboard_ProxyTransientResolveAborts(t *testing.T) {
 		want string
 	}{
 		{"rate-limited 403", httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}), "HTTP 403"},
+		{"secondary rate-limited 403", httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"Retry-After": "60"}), "HTTP 403"},
 		{"429", httpmock.StatusResponse(http.StatusTooManyRequests), "HTTP 429"},
 		{"503", httpmock.StatusResponse(http.StatusServiceUnavailable), "HTTP 503"},
 		{"connection refused", func(*http.Request) (*http.Response, error) { return nil, errors.New("connection refused") }, "connection refused"},

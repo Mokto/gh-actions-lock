@@ -40,8 +40,9 @@ func IsPermissionDenied(err error) bool {
 	return code == http.StatusForbidden && !IsRateLimited(err)
 }
 
-// IsRateLimited reports whether err is a primary rate-limit response (HTTP 429)
-// or a secondary one (HTTP 403 with the rate-limit budget exhausted).
+// IsRateLimited reports whether err is a rate-limit response: HTTP 429, or a
+// 403 with the budget exhausted or a Retry-After (secondary rate limit), the
+// same rule retryTransport.shouldRetry uses.
 func IsRateLimited(err error) bool {
 	var httpErr *api.HTTPError
 	if !errors.As(err, &httpErr) {
@@ -51,7 +52,7 @@ func IsRateLimited(err error) bool {
 		return true
 	}
 	return httpErr.StatusCode == http.StatusForbidden &&
-		httpErr.Headers.Get("X-RateLimit-Remaining") == "0"
+		(httpErr.Headers.Get("X-RateLimit-Remaining") == "0" || httpErr.Headers.Get("Retry-After") != "")
 }
 
 // IsTransient reports whether err is a failure a retry may fix: a rate
