@@ -21,6 +21,9 @@ type PinCheck struct {
 	SHA   string
 	// Tag, when set, must still peel to SHA.
 	Tag string
+	// Head, when set, is a mutable ref whose current commit is reported as
+	// HeadOID so the caller can check SHA is still in its history.
+	Head string
 }
 
 // PinState is the host's view of a PinCheck. Err marks an inconclusive check.
@@ -37,7 +40,9 @@ type PinState struct {
 	CommitFound bool
 	// TagOID is the commit Tag peels to; empty when the tag is gone.
 	TagOID string
-	Err    error
+	// HeadOID is the commit Head peels to; empty when the ref is gone.
+	HeadOID string
+	Err     error
 }
 
 // pinCheckBatchSize is larger than the action-file batch because each alias
@@ -145,6 +150,11 @@ func buildPinCheckQuery(pins []PinCheck) (string, map[string]any) {
 			fmt.Fprintf(&decl, ", $tag%d: String!", i)
 			fmt.Fprintf(&body, " tag: object(expression: $tag%d) { oid }", i)
 		}
+		if p.Head != "" {
+			vars[fmt.Sprintf("head%d", i)] = p.Head + "^{commit}"
+			fmt.Fprintf(&decl, ", $head%d: String!", i)
+			fmt.Fprintf(&body, " head: object(expression: $head%d) { oid }", i)
+		}
 		body.WriteString(" }")
 	}
 	body.WriteString(" }")
@@ -199,6 +209,9 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 			Tag *struct {
 				OID string `json:"oid"`
 			} `json:"tag"`
+			Head *struct {
+				OID string `json:"oid"`
+			} `json:"head"`
 		}
 		if err := json.Unmarshal(raw, &repo); err != nil {
 			states[i].Err = fmt.Errorf("failed to parse: %w", err)
@@ -212,6 +225,9 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 		}
 		if repo.Tag != nil {
 			states[i].TagOID = repo.Tag.OID
+		}
+		if repo.Head != nil {
+			states[i].HeadOID = repo.Head.OID
 		}
 	}
 	return states
@@ -236,7 +252,7 @@ func aliasError(gqlErr *api.GraphQLError, alias string) error {
 		if len(item.Path) == 0 || item.Path[0] != alias {
 			continue
 		}
-		if item.Type == "NOT_FOUND" && len(item.Path) >= 2 && (item.Path[1] == "commit" || item.Path[1] == "tag") {
+		if item.Type == "NOT_FOUND" && len(item.Path) >= 2 && (item.Path[1] == "commit" || item.Path[1] == "tag" || item.Path[1] == "head") {
 			continue
 		}
 		return errors.New(item.Message)
@@ -246,7 +262,7 @@ func aliasError(gqlErr *api.GraphQLError, alias string) error {
 
 // checkPinsREST costs one repos/{owner}/{repo} call per unique repo plus one
 // commits call per intact pin: the tag when one is set (a match proves the
-// commit exists), otherwise the SHA.
+// commit exists), otherwise the SHA. A Head costs one more commits call.
 func (c *Client) checkPinsREST(ctx context.Context, pins []PinCheck) []PinState {
 	states := make([]PinState, len(pins))
 	for i, p := range pins {
@@ -282,6 +298,11 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 	_, s.CommitFound, err = c.restCommit(ctx, p.Owner, p.Repo, p.SHA)
 	if err != nil {
 		return PinState{Err: err}
+	}
+	if p.Head != "" && s.CommitFound {
+		if s.HeadOID, _, err = c.restCommit(ctx, p.Owner, p.Repo, p.Head); err != nil {
+			return PinState{Err: err}
+		}
 	}
 	return s
 }

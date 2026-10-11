@@ -716,3 +716,121 @@ func TestParity_DependabotProxyFirstRunKeepsRenamedName(t *testing.T) {
 	assert.Contains(t, lock, "'krzema12/github-actions-typing@v2.2.2':")
 	assert.NotContains(t, lock, "typesafegithub")
 }
+
+// TestParity_VerifyMutableRefHistory: --verify checks that a commit locked
+// under a mutable ref is still in that ref's history, since a fork-network
+// commit exists under the upstream name. A legitimately moved ref stays
+// sticky and silent. Plain runs make no extra calls.
+func TestParity_VerifyMutableRefHistory(t *testing.T) {
+	const live = "cccccccccccccccccccccccccccccccccccccccc"
+	compareURL := `repos/actions/checkout/compare/` + parityTestSHA + `\.\.\.` + live
+	tests := []struct {
+		name    string
+		compare httpmock.Responder
+		// want is the finding category, "" for a clean pass.
+		want string
+	}{
+		{"impostor blocks", httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": parityTestMoved}}), "unreachable-pin"},
+		{"moved forward passes", httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}), ""},
+		{"compare 503 is inconclusive", httpmock.StatusResponse(http.StatusServiceUnavailable), "reachability-unknown"},
+	}
+	for _, tt := range tests {
+		for _, proxy := range []bool{false, true} {
+			t.Run(tt.name+"/"+map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
+				reg := &httpmock.Registry{}
+				if proxy {
+					t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+					useDefaultTransport(t, reg)
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+						"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+					}))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/v4$`), httpmock.JSONResponse(map[string]any{"sha": live}))
+				} else {
+					reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
+						"data": map[string]any{"a0": map[string]any{
+							"nameWithOwner": "actions/checkout",
+							"commit":        map[string]any{"oid": parityTestSHA},
+							"head":          map[string]any{"oid": live},
+						}},
+					}))
+				}
+				for range 10 {
+					reg.Register(httpmock.REST("GET", compareURL), tt.compare)
+				}
+				path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+
+				stdout, stderr, err := runCommandWithHTTP(t, reg, "--verify", "--json=valid,findings", path)
+				if proxy && tt.want == "reachability-unknown" {
+					require.Error(t, err, stderr)
+					assert.NotErrorIs(t, err, errSilent, "inconclusive under the proxy is a retry")
+					assert.Contains(t, err.Error(), "HTTP 503")
+					return
+				}
+				var p parityPayload
+				require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout+stderr)
+				switch tt.want {
+				case "":
+					require.NoError(t, err, stderr)
+					assert.Empty(t, p.Findings, "a moved mutable ref stays sticky and silent")
+				case "unreachable-pin":
+					require.ErrorIs(t, err, errSilent)
+					require.Len(t, p.Findings, 1)
+					assert.Equal(t, "unreachable-pin", p.Findings[0].Category)
+					assert.Equal(t, "error", p.Findings[0].Severity)
+					assert.Contains(t, p.Findings[0].Detail, "is not in actions/checkout's history")
+					assert.Contains(t, p.Findings[0].Detail, "v4 currently points at cccccccccccc")
+				default:
+					require.NoError(t, err, stderr)
+					require.Len(t, p.Findings, 1)
+					assert.Equal(t, tt.want, p.Findings[0].Category)
+					assert.Equal(t, "warning", p.Findings[0].Severity)
+				}
+			})
+		}
+	}
+
+	for _, proxy := range []bool{false, true} {
+		t.Run("plain run makes no extra calls/"+map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			if proxy {
+				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+				useDefaultTransport(t, reg)
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+					"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+				}))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+			} else {
+				reg.Register(httpmock.GraphQL(`head: object\(expression`), func(*http.Request) (*http.Response, error) {
+					t.Error("a plain run must not resolve mutable refs")
+					return nil, io.EOF
+				})
+				registerParity(reg)
+			}
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+
+			_, stderr, err := runCommandWithHTTP(t, reg, "--no-onboard", "--no-narrow", "--no-interactive", path)
+			require.NoError(t, err, stderr)
+			for _, req := range reg.Requests {
+				assert.NotContains(t, req.URL.Path, "/compare/")
+				assert.NotContains(t, req.URL.Path, "/commits/v4")
+			}
+		})
+	}
+}

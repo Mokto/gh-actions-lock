@@ -22,6 +22,9 @@ type RunOptions struct {
 	Pool          *pinpool.Pool
 	// Relock re-resolves every ref live instead of trusting the lockfile.
 	Relock bool
+	// Verify also checks that each pin on a mutable ref is still in that
+	// ref's history, at one Compare call per ref that moved.
+	Verify bool
 
 	// Resolver UX hooks — set these for interactive spinner mode.
 	OnResolveProgress func(done, total int)
@@ -134,7 +137,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			}
 		}
 		endParity := prof.Phase("  parity check")
-		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep)
+		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep, opts.Verify)
 		endParity()
 		if err != nil {
 			return nil, err
