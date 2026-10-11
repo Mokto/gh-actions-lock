@@ -221,7 +221,11 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if err := r.SeedHosts(store.AllDeps()); err != nil {
 		return err
 	}
-	if err := store.VerifyHosts(ctx); err != nil {
+	scope := make([]string, len(paths))
+	for i, p := range paths {
+		scope[i] = workflowfile.KeyFromPath(p)
+	}
+	if err := store.VerifyHosts(ctx, scope); err != nil {
 		return err
 	}
 	r.SeedBranchHints(store.AllDeps())

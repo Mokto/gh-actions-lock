@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cli/go-gh/v2/pkg/api"
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/stretchr/testify/assert"
@@ -123,7 +124,7 @@ func TestLegacyAndOmittedHostnames(t *testing.T) {
 			assert.Equal(t, host, deps[0].Hostname)
 			assert.Equal(t, strings.Repeat("a", 40), deps[0].SHA)
 			store.SetMetadataResolver(hostMetadata{})
-			require.NoError(t, store.VerifyHosts(context.Background()))
+			require.NoError(t, store.VerifyHosts(context.Background(), []string{".github/workflows/ci.yml"}))
 			require.NoError(t, store.Save())
 			raw, err := os.ReadFile(path)
 			require.NoError(t, err)
@@ -133,21 +134,26 @@ func TestLegacyAndOmittedHostnames(t *testing.T) {
 			} else {
 				assert.Contains(t, string(raw), "hostname: 'github.com'")
 			}
-			action := store.file.Dependencies["o/r@v1"]
-			for _, field := range []string{"owner", "repo"} {
-				t.Run("rejects changed "+field+" ID", func(t *testing.T) {
-					changed := action
-					if field == "owner" {
-						changed.OwnerID = 200
-					} else {
-						changed.RepoID = 200
-					}
-					store.file.Dependencies["o/r@v1"] = changed
-					require.ErrorContains(t, store.VerifyHosts(context.Background()), "regenerate the lockfile")
-				})
-			}
+			t.Run("leaves changed IDs to parity", func(t *testing.T) {
+				changed := store.file.Dependencies["o/r@v1"]
+				changed.OwnerID, changed.RepoID = 200, 200
+				store.file.Dependencies["o/r@v1"] = changed
+				require.NoError(t, store.VerifyHosts(context.Background(), []string{".github/workflows/ci.yml"}))
+			})
+			t.Run("fails on inconclusive lookups in scope only", func(t *testing.T) {
+				store.SetMetadataResolver(failingMetadata{})
+				err := store.VerifyHosts(context.Background(), []string{".github/workflows/ci.yml"})
+				require.ErrorContains(t, err, "HTTP 503")
+				require.NoError(t, store.VerifyHosts(context.Background(), []string{".github/workflows/other.yml"}))
+			})
 		})
 	}
+}
+
+type failingMetadata struct{}
+
+func (failingMetadata) RepoIDs(context.Context, string, string, string) (int64, int64, error) {
+	return 0, 0, &api.HTTPError{StatusCode: 503}
 }
 
 func TestSaveRejectsForeignTenant(t *testing.T) {

@@ -210,15 +210,41 @@ func (s *State) SetMetadataResolver(meta MetadataResolver) {
 	s.meta = meta
 }
 
-// VerifyHosts checks recorded identities before trusting pins on Proxima.
-// Older producers used omission for dotcom, not the home tenant.
-func (s *State) VerifyHosts(ctx context.Context) error {
+// VerifyHosts confirms that the pins reachable from workflowKeys can be looked
+// up on their recorded host before they are trusted on Proxima. Older
+// producers used omission for dotcom, not the home tenant. Only inconclusive
+// lookups fail here; a missing repository or a changed repo ID is left to the
+// parity pass, which reports repo-unavailable or repo-hijacked.
+func (s *State) VerifyHosts(ctx context.Context, workflowKeys []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !ghapi.IsProxima(s.hostname) || s.originalVersion == "" {
 		return nil
 	}
-	for key, action := range s.file.Dependencies {
+	seen := map[string]bool{}
+	var keys []string
+	var walk func(string)
+	walk = func(key string) {
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		action, ok := s.file.Dependencies[key]
+		if !ok {
+			return
+		}
+		keys = append(keys, key)
+		for _, child := range action.Uses {
+			walk(child)
+		}
+	}
+	for _, wk := range workflowKeys {
+		for _, key := range s.file.Workflows[wk] {
+			walk(key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
 		if s.meta == nil {
 			return fmt.Errorf("metadata resolver not configured")
 		}
@@ -226,13 +252,9 @@ func (s *State) VerifyHosts(ctx context.Context) error {
 		if !ok {
 			return fmt.Errorf("invalid dependency %q", key)
 		}
-		hostname := s.hostOrHome(action.Hostname)
-		ownerID, repoID, err := s.meta.RepoIDs(ctx, hostname, pin.Owner, pin.Repo)
-		if err != nil {
-			return fmt.Errorf("verifying repository identity for %s on %s: %w", key, hostname, err)
-		}
-		if ownerID != action.OwnerID || repoID != action.RepoID {
-			return fmt.Errorf("dependency %s does not match its %s repository IDs; restore a lockfile for this host or regenerate the lockfile after reviewing the dependency", key, hostname)
+		hostname := s.hostOrHome(s.file.Dependencies[key].Hostname)
+		if _, _, err := s.meta.RepoIDs(ctx, hostname, pin.Owner, pin.Repo); err != nil && !ghapi.IsNotFound(err) {
+			return fmt.Errorf("could not verify %s on %s: %w", key, hostname, err)
 		}
 	}
 	return nil
