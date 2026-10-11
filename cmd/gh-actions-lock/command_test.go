@@ -1391,3 +1391,76 @@ func TestCheck_MixedCaseUsesAcrossWorkflowsPinsEach(t *testing.T) {
 	assert.Equal(t, want, file.Workflows[".github/workflows/a.yml"])
 	assert.Equal(t, want, file.Workflows[".github/workflows/b.yml"])
 }
+
+// TestCheck_BareSHAOffHistoryRefuses: a bare SHA no upstream tag or branch
+// contains (a fork commit served under the upstream name) is refused with
+// its own finding, the same in the terminal and in --json, and nothing is
+// written.
+func TestCheck_BareSHAOffHistoryRefuses(t *testing.T) {
+	const (
+		impostor = "11d0dfc58a242e392d9695aa26812e1d1eb8e439"
+		head     = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	)
+	stubs := func() *httpmock.Registry {
+		reg := &httpmock.Registry{}
+		reg.Register(
+			httpmock.GraphQLForRepo("actions", "checkout"),
+			httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": testRepoResponse("actions/checkout", impostor, nodeActionYAML)},
+			}),
+		)
+		reg.Register(
+			httpmock.REST("GET", `repos/actions/checkout$`),
+			httpmock.JSONResponse(map[string]any{"default_branch": "main", "id": 2, "owner": map[string]any{"id": 1}}),
+		)
+		reg.Register(
+			httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+			httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}),
+		)
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v4.2.2", head)))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+		for range 4 {
+			reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+			reg.Register(
+				httpmock.REST("GET", `repos/actions/checkout/compare/`),
+				httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": head}}),
+			)
+		}
+		return reg
+	}
+	workflowPath := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+impostor+`
+`)
+
+	_, stderr, err := runCommandWithHTTP(t, stubs(), workflowPath)
+	require.ErrorIs(t, err, errSilent)
+	assert.Contains(t, stderr, "Pinned commit not in upstream history actions/checkout@"+impostor)
+	assert.Contains(t, stderr, "fork or impostor commit")
+	assert.NotContains(t, stderr, "could not be resolved")
+	assert.NotContains(t, stderr, "Not pinned")
+	assert.NoFileExists(t, filepath.Join(filepath.Dir(workflowPath), "actions.lock"))
+
+	stdout, _, err := runCommandWithHTTP(t, stubs(), "--json=valid,findings", workflowPath)
+	require.Error(t, err)
+	var payload struct {
+		Valid    bool             `json:"valid"`
+		Findings []format.Finding `json:"findings"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &payload), stdout)
+	assert.False(t, payload.Valid)
+	var cats []string
+	for _, f := range payload.Findings {
+		cats = append(cats, f.Category)
+	}
+	assert.Contains(t, cats, "unreachable-pin")
+	assert.NotContains(t, cats, "not-pinned")
+
+	_, _, err = runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", workflowPath)
+	require.ErrorIs(t, err, errSilent, "an unlocked bare SHA must not pass the offline gate")
+}

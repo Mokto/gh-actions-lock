@@ -9,6 +9,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/resolve"
@@ -749,4 +750,43 @@ func looksLikeSHA(ref string) bool {
 		}
 	}
 	return true
+}
+
+// replaceOffHistoryFindings swaps the generic not-pinned finding for a bare
+// SHA that no upstream tag or branch contains with a finding that says so,
+// so the refusal doesn't read like a network failure. It returns the
+// unresolved entries it didn't convert.
+func replaceOffHistoryFindings(report *checks.Report, unresolved []pin.Entry) []pin.Entry {
+	var rest []pin.Entry
+	for _, e := range unresolved {
+		if e.Issue != "reverse-lookup" || !resolve.LooksLikeSHA(e.Ref) {
+			rest = append(rest, e)
+			continue
+		}
+		for _, wf := range e.Workflows {
+			for i := range report.Workflows {
+				wr := &report.Workflows[i]
+				if wr.Path != wf {
+					continue
+				}
+				kept := wr.Findings[:0]
+				for _, f := range wr.Findings {
+					if f.Category == checks.NotPinned && f.ActionRef != nil && strings.EqualFold(f.ActionRef.Owner+"/"+f.ActionRef.Repo, e.NWO) && f.ActionRef.Ref == e.Ref {
+						continue
+					}
+					kept = append(kept, f)
+				}
+				wr.Findings = append(kept, checks.Finding{
+					WorkflowPath: wf,
+					Category:     checks.UnreachablePin,
+					Severity:     checks.SeverityError,
+					Confidence:   checks.ConfidenceHigh,
+					Dependency:   &dep.Dependency{NWO: e.NWO, Ref: e.Ref, SHA: e.SHA},
+					Detail:       fmt.Sprintf("commit %s is not on any tag or branch of %s: it may be a fork or impostor commit served under the upstream name", parserlock.ShortSHA(e.SHA), e.NWO),
+					Remediation:  "use a current upstream tag instead",
+				})
+			}
+		}
+	}
+	return rest
 }

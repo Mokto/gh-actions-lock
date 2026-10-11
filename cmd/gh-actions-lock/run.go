@@ -408,6 +408,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	}
 	if planErr != nil {
 		console.StopProgress()
+		unresolved := replaceOffHistoryFindings(report, record.Unresolved())
 		if opts.jsonFields != "" {
 			if err := format.WriteJSON(out, report, false, opts.jsonFields, cliVersion(), store.File().Version, r.Hostname()); err != nil {
 				return err
@@ -416,7 +417,12 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		if len(record.Unresolved()) > 0 {
 			record.Repo = &pin.RepoInfo{Owner: repoOwner, Name: repoName, Host: r.Hostname()}
 			if opts.jsonFields == "" {
-				renderUnresolvedWarnings(console, record.Unresolved())
+				if len(unresolved) < len(record.Unresolved()) {
+					format.PresentReadOnlyFailures(console, report)
+				}
+				if len(unresolved) > 0 {
+					renderUnresolvedWarnings(console, unresolved)
+				}
 			}
 			if path, err := record.WriteJSON(); err == nil && opts.jsonFields == "" {
 				console.TermDetail("Resolution record: %s", path)
