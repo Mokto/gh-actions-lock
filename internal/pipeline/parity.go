@@ -125,7 +125,9 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				continue
 			}
 			wr := &report.Workflows[o.report]
-			if f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning && o.lp.Parent == "" {
+			// Dependabot reads back only actions.lock, so a rewritten `uses:`
+			// would never ship; keep the pin under the name the workflow uses.
+			if f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning && o.lp.Parent == "" && !ghapi.DependabotProxy() {
 				r.Redirect(o.lp.Pin.Owner, o.lp.Pin.Repo, o.ref, st.NameWithOwner)
 			}
 			if f.Severity == checks.SeverityError {
