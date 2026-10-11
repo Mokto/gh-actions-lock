@@ -195,3 +195,40 @@ func trackedSHAStubs(reg *httpmock.Registry, uses, head string) *httpmock.Regist
 	}
 	return reg
 }
+
+// TestProxyTransientNotMaskedByMissingRef: when one fresh ref is a 404 and
+// another hits an outage, the run is still a retry. A 404 in one batch must
+// not hide a 5xx in another.
+func TestProxyTransientNotMaskedByMissingRef(t *testing.T) {
+	const (
+		oldSHA = "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871"
+		newSHA = "d632683dd7b4114ad314bca15554477dd762a938"
+		head   = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	)
+	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+	reg := &httpmock.Registry{}
+	for range 50 {
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/commits/`), httpmock.StatusResponse(http.StatusServiceUnavailable))
+		reg.Register(httpmock.REST("GET", `repos/nope/gone`), httpmock.StatusResponse(http.StatusNotFound))
+	}
+	trackedSHAStubs(reg, newSHA, head)
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: nope/gone@v1
+      - uses: actions/checkout@`+newSHA+`
+`, "actions/checkout@"+oldSHA+"=sha1-"+oldSHA)
+	lockBefore := readTempLockfilePins(t)
+
+	_, stderr, err := runCommandWithHTTP(t, reg,
+		"--no-onboard", "--no-narrow", "--no-interactive", "--json=findings", path)
+	require.Error(t, err, stderr)
+	assert.NotErrorIs(t, err, errSilent, "an outage is a retry even beside a missing ref")
+	assert.Contains(t, err.Error(), "HTTP 503")
+	assert.Equal(t, lockBefore, readTempLockfilePins(t), "nothing is written")
+}

@@ -65,3 +65,26 @@ func TestRateLimitVsPermission(t *testing.T) {
 		t.Fatal("rate-limit 403 should not be reported as permission-denied")
 	}
 }
+
+func TestIsTransient(t *testing.T) {
+	notFound := fmt.Errorf("a/b@v1: %w", httpErr(http.StatusNotFound, nil))
+	unavailable := fmt.Errorf("c/d@v1: %w", httpErr(http.StatusServiceUnavailable, nil))
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"5xx", unavailable, true},
+		{"404", notFound, false},
+		{"404 joined before 5xx", errors.Join(notFound, unavailable), true},
+		{"nested joins", errors.Join(errors.Join(notFound), errors.Join(unavailable)), true},
+		{"only answers", errors.Join(notFound, httpErr(http.StatusUnprocessableEntity, nil)), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsTransient(tt.err); got != tt.want {
+				t.Errorf("IsTransient = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

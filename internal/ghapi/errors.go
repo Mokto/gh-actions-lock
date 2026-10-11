@@ -57,8 +57,17 @@ func IsRateLimited(err error) bool {
 
 // IsTransient reports whether err is a failure a retry may fix: a rate
 // limit, a 5xx, or a transport error. 404s, 422s and permission errors are
-// answers, not outages.
+// answers, not outages. A joined error is transient when any branch is, so
+// one 404 can't mask an outage elsewhere in the batch.
 func IsTransient(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range joined.Unwrap() {
+			if IsTransient(e) {
+				return true
+			}
+		}
+		return false
+	}
 	if IsRateLimited(err) {
 		return true
 	}
