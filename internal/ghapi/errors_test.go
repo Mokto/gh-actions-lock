@@ -50,6 +50,11 @@ func TestRateLimitVsPermission(t *testing.T) {
 	if !IsRateLimited(tooMany) || !IsRateLimited(secondary) {
 		t.Fatal("429 and budget-exhausted 403 should be rate-limited")
 	}
+	retryAfter := http.Header{}
+	retryAfter.Set("Retry-After", "60")
+	if !IsRateLimited(httpErr(http.StatusForbidden, retryAfter)) || IsPermissionDenied(httpErr(http.StatusForbidden, retryAfter)) {
+		t.Fatal("403 with Retry-After is a secondary rate limit, not permission-denied")
+	}
 	if IsRateLimited(plainForbidden) {
 		t.Fatal("403 with budget remaining should not be rate-limited")
 	}

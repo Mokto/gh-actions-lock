@@ -603,8 +603,9 @@ func TestParity_DependabotProxyInconclusiveAborts(t *testing.T) {
 		resp   httpmock.Responder
 		status string
 	}{
-		"rate-limited 403": {httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}), "HTTP 403"},
-		"503":              {httpmock.StatusResponse(http.StatusServiceUnavailable), "HTTP 503"},
+		"rate-limited 403":           {httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}), "HTTP 403"},
+		"secondary rate-limited 403": {httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"Retry-After": "60"}), "HTTP 403"},
+		"503":                        {httpmock.StatusResponse(http.StatusServiceUnavailable), "HTTP 503"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, args := range [][]string{nil, {"--verify"}} {
