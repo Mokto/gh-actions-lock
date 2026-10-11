@@ -789,6 +789,7 @@ jobs:
 					assert.Equal(t, "error", p.Findings[0].Severity)
 					assert.Contains(t, p.Findings[0].Detail, "is not in actions/checkout's history")
 					assert.Contains(t, p.Findings[0].Detail, "v4 currently points at cccccccccccc")
+					assert.NotEmpty(t, p.Findings[0].DocURL, "the impostor keeps its doc link")
 				default:
 					require.NoError(t, err, stderr)
 					require.Len(t, p.Findings, 1)
@@ -846,19 +847,24 @@ func TestParity_VerifyMissingMutableRefBlocks(t *testing.T) {
 			if proxy {
 				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 				useDefaultTransport(t, reg)
-				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
-					"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
-				}))
-				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
-				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/v4$`), httpmock.StatusResponse(http.StatusNotFound))
-			} else {
-				reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
-					"data": map[string]any{"a0": map[string]any{
-						"nameWithOwner": "actions/checkout",
-						"commit":        map[string]any{"oid": parityTestSHA},
-						"head":          nil,
-					}},
-				}))
+			}
+			// One pass for --json, one for the terminal.
+			for range 2 {
+				if proxy {
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+						"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+					}))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/v4$`), httpmock.StatusResponse(http.StatusNotFound))
+				} else {
+					reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
+						"data": map[string]any{"a0": map[string]any{
+							"nameWithOwner": "actions/checkout",
+							"commit":        map[string]any{"oid": parityTestSHA},
+							"head":          nil,
+						}},
+					}))
+				}
 			}
 			path := writeTempWorkflow(t, `
 name: ci
@@ -879,6 +885,17 @@ jobs:
 			assert.Equal(t, "error", p.Findings[0].Severity)
 			assert.Equal(t, "ref v4 no longer exists in actions/checkout; the runner will reject this pin", p.Findings[0].Detail)
 			assert.Equal(t, "point `uses:` at a tag or branch that exists, then run `gh actions-lock`", p.Findings[0].Remediation)
+			assert.Empty(t, p.Findings[0].DocURL, "the hardening guide is unrelated to a missing ref")
+
+			stdout, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
+			require.ErrorIs(t, err, errSilent)
+			term := stdout + stderr
+			assert.Contains(t, term, "Ref no longer exists actions/checkout@v4")
+			assert.Contains(t, term, "ref v4 no longer exists in actions/checkout; the runner will reject this pin")
+			assert.Contains(t, term, "point `uses:` at a tag or branch that exists, then run `gh actions-lock`")
+			assert.NotContains(t, term, "not in upstream history")
+			assert.NotContains(t, term, "/releases")
+			assert.NotContains(t, term, "see:")
 		})
 	}
 }
