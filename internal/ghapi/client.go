@@ -109,6 +109,13 @@ func New(hostname string, opts ...ClientOption) (*Client, error) {
 	return &Client{Hostname: hostname, local: local, public: public, pinned: map[Repo]string{}}, nil
 }
 
+// DependabotProxy reports whether the CLI runs inside Dependabot, behind its
+// REST-only proxy. Dependabot retries on exit 2 and reads back only
+// actions.lock.
+func DependabotProxy() bool {
+	return os.Getenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY") == "1"
+}
+
 func newClient(hostname string, opts ...ClientOption) (*Client, error) {
 	var cfg clientConfig
 	for _, o := range opts {
@@ -117,7 +124,7 @@ func newClient(hostname string, opts ...ClientOption) (*Client, error) {
 
 	c := &Client{
 		Hostname: hostname,
-		restOnly: os.Getenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY") == "1",
+		restOnly: DependabotProxy(),
 	}
 
 	apiOpts := api.ClientOptions{Host: hostname}

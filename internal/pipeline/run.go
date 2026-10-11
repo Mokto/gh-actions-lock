@@ -126,10 +126,10 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			}
 		}
 		endParity := prof.Phase("  parity check")
-		checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep)
+		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep)
 		endParity()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if err != nil {
+			return nil, err
 		}
 	}
 
