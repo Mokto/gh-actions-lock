@@ -122,7 +122,7 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 		g := groups[key]
 		out.TermBlank()
 		for _, f := range g.findings {
-			if IsAutoFixable(f.Category) {
+			if IsAutoFixable(f.Category) && !f.RefMissing {
 				hasFixable = true
 			} else if f.Severity == checks.SeverityError {
 				blocked = true

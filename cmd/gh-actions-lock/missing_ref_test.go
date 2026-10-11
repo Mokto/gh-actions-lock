@@ -18,21 +18,25 @@ import (
 // reachability warning.
 func TestMissingRefNamesTheCause(t *testing.T) {
 	refs := []struct {
-		name, ref, detail string
+		name, ref, detail, remedy string
 	}{
-		{"tag", "v999.0.0", "ref v999.0.0 does not exist in actions/checkout"},
-		{"commit", "7b403c9ec14bd3ae0bbf793c2bee8815a7ac920b", "commit 7b403c9ec14b does not exist in actions/checkout"},
+		{"tag", "v999.0.0", "ref v999.0.0 does not exist in actions/checkout",
+			"point `uses:` at a tag or branch that exists"},
+		{"commit", "7b403c9ec14bd3ae0bbf793c2bee8815a7ac920b", "commit 7b403c9ec14b does not exist or is not reachable in actions/checkout",
+			"pin a commit that exists in actions/checkout, or point `uses:` at a tag or branch"},
+		{"short sha", "7b403c9", "ref 7b403c9 does not resolve in actions/checkout",
+			"if this is a commit, use the full 40-character SHA; otherwise point `uses:` at a tag or branch that exists"},
 	}
 	for _, tt := range refs {
 		for _, proxy := range []bool{false, true} {
 			t.Run(tt.name+"/"+map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
-				testMissingRef(t, tt.ref, tt.detail, proxy)
+				testMissingRef(t, tt.ref, tt.detail, tt.remedy, proxy)
 			})
 		}
 	}
 }
 
-func testMissingRef(t *testing.T, ref, detail string, proxy bool) {
+func testMissingRef(t *testing.T, ref, detail, remedy string, proxy bool) {
 	t.Helper()
 	reg := &httpmock.Registry{}
 	// Each resolve pass (plan, then diagnosis) asks again, for both
@@ -77,7 +81,7 @@ jobs:
 		if f.Category == "not-pinned" && f.Severity == "error" {
 			found = true
 			assert.Equal(t, detail, f.Detail)
-			assert.Equal(t, "point `uses:` at a tag or branch that exists", f.Remediation)
+			assert.Equal(t, remedy, f.Remediation)
 			assert.Empty(t, f.DocURL, "the security-hardening page doesn't explain a missing ref")
 		}
 	}
@@ -92,7 +96,8 @@ jobs:
 	require.ErrorIs(t, err, errSilent)
 	assert.Contains(t, stderr, "Ref does not exist actions/checkout@"+ref)
 	assert.Contains(t, stderr, detail)
-	assert.Contains(t, stderr, "point `uses:` at a tag or branch that exists")
+	assert.Contains(t, stderr, remedy)
+	assert.NotContains(t, stderr, "Re-run without")
 	assert.NotContains(t, stderr, "Not pinned")
 	assert.NotContains(t, stderr, "security-hardening")
 }

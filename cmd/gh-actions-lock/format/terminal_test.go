@@ -661,6 +661,31 @@ func TestPresentReadOnlyFailures_LocalActionNotFixable(t *testing.T) {
 	}
 }
 
+// TestPresentReadOnlyFailures_MissingRefNotFixable keeps the "Re-run
+// without --no-fix" hint off a ref that doesn't exist: it shares the fixable
+// not-pinned category, but a re-run can't create the ref.
+func TestPresentReadOnlyFailures_MissingRefNotFixable(t *testing.T) {
+	u, _ := newTestUI()
+	report := &checks.Report{
+		Workflows: []checks.WorkflowReport{{
+			Path: ".github/workflows/ci.yml",
+			Findings: []checks.Finding{{
+				WorkflowPath: ".github/workflows/ci.yml",
+				Category:     checks.NotPinned,
+				Severity:     checks.SeverityError,
+				Confidence:   checks.ConfidenceHigh,
+				Dependency:   &dep.Dependency{NWO: "actions/checkout", Ref: "v999.0.0"},
+				Detail:       "ref v999.0.0 does not exist in actions/checkout",
+				RefMissing:   true,
+			}},
+		}},
+	}
+
+	if PresentReadOnlyFailures(u, report) {
+		t.Error("a missing ref is not auto-fixable; hasFixable should be false")
+	}
+}
+
 // TestPresentReadOnlyFailures_UnreachablePinShowsReleases verifies the
 // read-only renderer includes the upstream releases link for an
 // unreachable-pin finding, matching the detailed (fix-mode) renderer.

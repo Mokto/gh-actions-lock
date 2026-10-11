@@ -1977,7 +1977,7 @@ scenarios:
     expect:
       exit: 1
       stdout_is_json: true
-      stdout_contains: ["does not exist in nodeselector/actions-test-fixtures"]
+      stdout_contains: ["does not exist or is not reachable in nodeselector/actions-test-fixtures"]
       jq:
         - expr: '.findings | length'
           gt: 0

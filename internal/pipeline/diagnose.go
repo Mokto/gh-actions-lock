@@ -110,7 +110,7 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 					Confidence:   checks.ConfidenceHigh,
 					Dependency:   &dep.Dependency{NWO: nwo, Ref: missing.Ref},
 					Detail:       missingRefDetail(missing.Ref, nwo),
-					Remediation:  "point `uses:` at a tag or branch that exists",
+					Remediation:  missingRefRemediation(missing.Ref, nwo),
 					RefMissing:   true,
 				})
 				blockingResolverError = true
@@ -367,8 +367,27 @@ func missingRefs(err error) []*ghapi.RefNotFoundError {
 // missingRefDetail names a full commit SHA by its short form so the message
 // reads like the rest of the CLI's commit references.
 func missingRefDetail(ref, nwo string) string {
-	if (len(ref) == 40 || len(ref) == 64) && isHex(ref) {
-		return fmt.Sprintf("commit %s does not exist in %s", ref[:12], nwo)
+	switch {
+	case isFullSHA(ref):
+		return fmt.Sprintf("commit %s does not exist or is not reachable in %s", ref[:12], nwo)
+	case isHex(ref):
+		return fmt.Sprintf("ref %s does not resolve in %s", ref, nwo)
 	}
 	return fmt.Sprintf("ref %s does not exist in %s", ref, nwo)
+}
+
+// missingRefRemediation keeps the short-SHA hint: a truncated commit is a
+// different mistake from a tag that was never published.
+func missingRefRemediation(ref, nwo string) string {
+	switch {
+	case isFullSHA(ref):
+		return fmt.Sprintf("pin a commit that exists in %s, or point `uses:` at a tag or branch", nwo)
+	case isHex(ref):
+		return "if this is a commit, use the full 40-character SHA; otherwise point `uses:` at a tag or branch that exists"
+	}
+	return "point `uses:` at a tag or branch that exists"
+}
+
+func isFullSHA(ref string) bool {
+	return (len(ref) == 40 || len(ref) == 64) && isHex(ref)
 }
