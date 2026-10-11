@@ -101,6 +101,20 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 				})
 				blockingResolverError = true
 			}
+			for _, missing := range missingRefs(resolveErr) {
+				nwo := missing.Owner + "/" + missing.Repo
+				wr.Findings = append(wr.Findings, checks.Finding{
+					WorkflowPath: pw.Path,
+					Category:     checks.NotPinned,
+					Severity:     checks.SeverityError,
+					Confidence:   checks.ConfidenceHigh,
+					Dependency:   &dep.Dependency{NWO: nwo, Ref: missing.Ref},
+					Detail:       missingRefDetail(missing.Ref, nwo),
+					Remediation:  missingRefRemediation(missing.Ref, nwo),
+					RefMissing:   true,
+				})
+				blockingResolverError = true
+			}
 			if blockingResolverError {
 				wr.BlockingResolverError = true
 				return wr
@@ -331,4 +345,49 @@ func hasIssues(ff []checks.Finding) bool {
 		}
 	}
 	return false
+}
+
+// missingRefs collects every ref the resolver definitively failed to find.
+func missingRefs(err error) []*ghapi.RefNotFoundError {
+	switch e := err.(type) {
+	case nil:
+		return nil
+	case *ghapi.RefNotFoundError:
+		return []*ghapi.RefNotFoundError{e}
+	case interface{ Unwrap() []error }:
+		var out []*ghapi.RefNotFoundError
+		for _, inner := range e.Unwrap() {
+			out = append(out, missingRefs(inner)...)
+		}
+		return out
+	}
+	return missingRefs(errors.Unwrap(err))
+}
+
+// missingRefDetail names a full commit SHA by its short form so the message
+// reads like the rest of the CLI's commit references.
+func missingRefDetail(ref, nwo string) string {
+	switch {
+	case isFullSHA(ref):
+		return fmt.Sprintf("commit %s does not exist or is not reachable in %s", ref[:12], nwo)
+	case isHex(ref):
+		return fmt.Sprintf("ref %s does not resolve in %s", ref, nwo)
+	}
+	return fmt.Sprintf("ref %s does not exist in %s", ref, nwo)
+}
+
+// missingRefRemediation keeps the short-SHA hint: a truncated commit is a
+// different mistake from a tag that was never published.
+func missingRefRemediation(ref, nwo string) string {
+	switch {
+	case isFullSHA(ref):
+		return fmt.Sprintf("pin a commit that exists in %s, or point `uses:` at a tag or branch", nwo)
+	case isHex(ref):
+		return "if this is a commit, use the full 40-character SHA; otherwise point `uses:` at a tag or branch that exists"
+	}
+	return "point `uses:` at a tag or branch that exists"
+}
+
+func isFullSHA(ref string) bool {
+	return (len(ref) == 40 || len(ref) == 64) && isHex(ref)
 }

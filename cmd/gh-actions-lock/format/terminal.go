@@ -122,7 +122,7 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 		g := groups[key]
 		out.TermBlank()
 		for _, f := range g.findings {
-			if IsAutoFixable(f.Category) {
+			if IsAutoFixable(f.Category) && !f.RefMissing {
 				hasFixable = true
 			} else if f.Severity == checks.SeverityError {
 				blocked = true
@@ -141,7 +141,7 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 // prints a single non-valid finding to the terminal (bypassing the
 // narration log) so read-only modes surface the same detail as fix mode.
 func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
-	label := categoryLabel(f.Category)
+	label := findingLabel(f)
 	icon := out.TermYellow(ui.IconWarning)
 	if f.Severity == checks.SeverityError {
 		icon = out.TermRed(ui.IconError)
@@ -154,7 +154,7 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 			out.TermDetail("  ↳ %s", out.TermDim(DepReleaseURL(f.Dependency.Hostname, owner+"/"+repo, nil)))
 		}
 	}
-	if IsAlertedCategory(f.Category) && f.Remediation != "" {
+	if (IsAlertedCategory(f.Category) || f.RefMissing) && f.Remediation != "" {
 		out.TermDetail("  %s %s", out.TermYellow(ui.IconWarning), f.Remediation)
 	}
 	if f.RecommendedTag != "" {
@@ -172,6 +172,15 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 	if f.DocURL != "" {
 		out.TermDetail("  see: %s", out.DocLink(f.DocURL))
 	}
+}
+
+// findingLabel is categoryLabel with a terminal-only title for refs that
+// don't exist upstream, which share the not-pinned category in JSON.
+func findingLabel(f checks.Finding) string {
+	if f.RefMissing {
+		return "Ref does not exist"
+	}
+	return categoryLabel(f.Category)
 }
 
 // categoryLabel returns a human-readable label for a finding category,
@@ -278,7 +287,7 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 // renderFindingDetail prints a single non-valid finding with its category
 // icon, detail text, remediation, and doc links.
 func renderFindingDetail(out *ui.UI, f checks.Finding, dep string) {
-	label := categoryLabel(f.Category)
+	label := findingLabel(f)
 	icon := out.Yellow(ui.IconWarning)
 	if f.Severity == checks.SeverityError {
 		icon = out.Red(ui.IconError)
@@ -291,7 +300,7 @@ func renderFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 			out.Detail("  ↳ %s", out.Dim(DepReleaseURL(f.Dependency.Hostname, owner+"/"+repo, nil)))
 		}
 	}
-	if IsAlertedCategory(f.Category) && f.Remediation != "" {
+	if (IsAlertedCategory(f.Category) || f.RefMissing) && f.Remediation != "" {
 		out.Detail("  %s %s", out.Yellow(ui.IconWarning), f.Remediation)
 	}
 	if f.RecommendedTag != "" {

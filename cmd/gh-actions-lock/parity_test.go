@@ -584,3 +584,12 @@ jobs:
 	assert.Equal(t, 2, countGraphQL(ct), "resolve + parity: %v", ct.urls)
 	assert.Contains(t, readTempLockfilePins(t), "actions/checkout@v4.2.1")
 }
+
+// useDefaultTransport routes anonymous REST calls, which use
+// http.DefaultTransport, through rt for the rest of the test.
+func useDefaultTransport(t *testing.T, rt http.RoundTripper) {
+	t.Helper()
+	orig := http.DefaultTransport
+	http.DefaultTransport = rt
+	t.Cleanup(func() { http.DefaultTransport = orig })
+}

@@ -1965,7 +1965,7 @@ scenarios:
 
   - name: dbot_impostor_blocks
     category: dependabot
-    description: "Orphaned commit (no tag or branch) produces reachability-unknown warning in JSON findings"
+    description: "Commit that does not exist upstream blocks with a not-pinned error"
     needs_token: true
     tags: [smoke]
     flags: ["--no-onboard", "--no-narrow", "--no-interactive", "--no-fix", "--json=findings"]
@@ -1975,14 +1975,16 @@ scenarios:
           name: CI
           actions: ["nodeselector/actions-test-fixtures@7b403c9ec14bd3ae0bbf793c2bee8815a7ac920b"]
     expect:
-      exit: 0
+      exit: 1
       stdout_is_json: true
-      stdout_contains: ["does not exist or is not reachable"]
+      stdout_contains: ["does not exist or is not reachable in nodeselector/actions-test-fixtures"]
       jq:
         - expr: '.findings | length'
           gt: 0
         - expr: '.findings[0].category'
-          equals: 'reachability-unknown'
+          equals: 'not-pinned'
+        - expr: '.findings[0].severity'
+          equals: 'error'
 
   - name: dbot_forgery_blocks
     category: dependabot
