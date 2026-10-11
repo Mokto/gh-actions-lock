@@ -109,7 +109,7 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 					Severity:     checks.SeverityError,
 					Confidence:   checks.ConfidenceHigh,
 					Dependency:   &dep.Dependency{NWO: nwo, Ref: missing.Ref},
-					Detail:       fmt.Sprintf("ref %s does not exist in %s", missing.Ref, nwo),
+					Detail:       missingRefDetail(missing.Ref, nwo),
 					Remediation:  "point `uses:` at a tag or branch that exists",
 					RefMissing:   true,
 				})
@@ -362,4 +362,13 @@ func missingRefs(err error) []*ghapi.RefNotFoundError {
 		return out
 	}
 	return missingRefs(errors.Unwrap(err))
+}
+
+// missingRefDetail names a full commit SHA by its short form so the message
+// reads like the rest of the CLI's commit references.
+func missingRefDetail(ref, nwo string) string {
+	if (len(ref) == 40 || len(ref) == 64) && isHex(ref) {
+		return fmt.Sprintf("commit %s does not exist in %s", ref[:12], nwo)
+	}
+	return fmt.Sprintf("ref %s does not exist in %s", ref, nwo)
 }
