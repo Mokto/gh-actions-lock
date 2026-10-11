@@ -395,7 +395,7 @@ func (c *Client) anonGetCommitSHA(ctx context.Context, url string) (string, erro
 		return "", &RefNotFoundError{Err: fmt.Errorf("HTTP %d resolving commit", resp.StatusCode)}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d resolving commit", resp.StatusCode)
+		return "", fmt.Errorf("resolving commit: %w", &api.HTTPError{StatusCode: resp.StatusCode, RequestURL: req.URL, Headers: resp.Header})
 	}
 
 	var commit struct {
