@@ -21,6 +21,11 @@ func (u *UI) TermYellow(s string) string {
 	return u.paint("3", s)
 }
 
+// TermRed returns s in red for use in Term* output.
+func (u *UI) TermRed(s string) string {
+	return u.paint("1", s)
+}
+
 // TermDim returns s in dim/faint for use in Term* output.
 func (u *UI) TermDim(s string) string {
 	if u.noColor {

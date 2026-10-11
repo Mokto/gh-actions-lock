@@ -422,7 +422,7 @@ func TestPresentResults_ExcludeKeepsOtherFindings(t *testing.T) {
 	if strings.Contains(got, "Unreachable pin") {
 		t.Errorf("excluded unreachable-pin should not appear:\n%s", got)
 	}
-	if !strings.Contains(got, "! local action") {
+	if !strings.Contains(got, "✗ local action") {
 		t.Errorf("non-excluded local-action should still appear:\n%s", got)
 	}
 	if !strings.Contains(got, "1 of 2 workflows failed: 1 local-action") {
@@ -683,5 +683,33 @@ func TestPresentReadOnlyFailures_UnreachablePinShowsReleases(t *testing.T) {
 	PresentReadOnlyFailures(u, report)
 	if got := buf.String(); !strings.Contains(got, "https://github.com/octo/action/releases") {
 		t.Errorf("expected upstream releases link in read-only output:\n%s", got)
+	}
+}
+
+func TestFindingIconFollowsSeverity(t *testing.T) {
+	tests := []struct {
+		name     string
+		severity checks.Severity
+		want     string
+	}{
+		{name: "error is a cross", severity: checks.SeverityError, want: "✗ Repository renamed"},
+		{name: "warning is a bang", severity: checks.SeverityWarning, want: "! Repository renamed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := checks.Finding{Category: checks.RepoRenamed, Severity: tt.severity, Detail: "moved"}
+
+			var buf bytes.Buffer
+			renderFindingDetail(ui.NewPlain(&buf), f, "octo/a@v1")
+			if !strings.Contains(buf.String(), tt.want) {
+				t.Errorf("fix-mode row = %q, want %q", buf.String(), tt.want)
+			}
+
+			buf.Reset()
+			renderTermFindingDetail(ui.NewPlain(&buf), f, "octo/a@v1")
+			if !strings.Contains(buf.String(), tt.want) {
+				t.Errorf("read-only row = %q, want %q", buf.String(), tt.want)
+			}
+		})
 	}
 }

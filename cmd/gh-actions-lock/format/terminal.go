@@ -138,9 +138,9 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 // narration log) so read-only modes surface the same detail as fix mode.
 func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 	label := categoryLabel(f.Category)
-	icon := "!"
-	if IsAlertedCategory(f.Category) {
-		icon = "✗"
+	icon := out.TermYellow(ui.IconWarning)
+	if f.Severity == checks.SeverityError {
+		icon = out.TermRed(ui.IconError)
 	}
 	out.TermDetail("%s %s %s", icon, out.TermDim(label), dep)
 	out.TermDetail("  %s", f.Detail)
@@ -151,7 +151,7 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 		}
 	}
 	if IsAlertedCategory(f.Category) && f.Remediation != "" {
-		out.TermDetail("  %s %s", ui.IconWarning, f.Remediation)
+		out.TermDetail("  %s %s", out.TermYellow(ui.IconWarning), f.Remediation)
 	}
 	if f.RecommendedTag != "" {
 		nwo := ""
@@ -275,9 +275,9 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 // icon, detail text, remediation, and doc links.
 func renderFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 	label := categoryLabel(f.Category)
-	icon := "!"
-	if IsAlertedCategory(f.Category) {
-		icon = "✗"
+	icon := out.Yellow(ui.IconWarning)
+	if f.Severity == checks.SeverityError {
+		icon = out.Red(ui.IconError)
 	}
 	out.Detail("%s %s %s", icon, out.Dim(label), dep)
 	out.Detail("  %s", f.Detail)
@@ -288,7 +288,7 @@ func renderFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 		}
 	}
 	if IsAlertedCategory(f.Category) && f.Remediation != "" {
-		out.Detail("  %s %s", ui.IconWarning, f.Remediation)
+		out.Detail("  %s %s", out.Yellow(ui.IconWarning), f.Remediation)
 	}
 	if f.RecommendedTag != "" {
 		nwo := ""
