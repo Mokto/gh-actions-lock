@@ -834,3 +834,55 @@ jobs:
 		})
 	}
 }
+
+// TestParity_VerifyRefCaseSensitive: refs differing only in case are
+// distinct refs to the runner, so each gets its own history check.
+func TestParity_VerifyRefCaseSensitive(t *testing.T) {
+	for _, proxy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			var heads []string
+			if proxy {
+				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+				useDefaultTransport(t, reg)
+				for range 2 {
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+						"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+					}))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+				}
+				for _, ref := range []string{"Main", "main"} {
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+ref+`$`), func(req *http.Request) (*http.Response, error) {
+						heads = append(heads, ref)
+						return httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})(req)
+					})
+				}
+			} else {
+				reg.Register(httpmock.GraphQL(`head: object\(expression`), func(req *http.Request) (*http.Response, error) {
+					body, _ := io.ReadAll(req.Body)
+					for _, ref := range []string{"Main", "main"} {
+						if strings.Contains(string(body), `"`+ref+`^{commit}"`) {
+							heads = append(heads, ref)
+						}
+					}
+					repo := map[string]any{"nameWithOwner": "actions/checkout", "commit": map[string]any{"oid": parityTestSHA}, "head": map[string]any{"oid": parityTestSHA}}
+					return httpmock.JSONResponse(map[string]any{"data": map[string]any{"a0": repo, "a1": repo}})(req)
+				})
+			}
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@Main
+      - uses: actions/checkout@main
+`, "actions/checkout@Main=sha1-"+parityTestSHA, "actions/checkout@main=sha1-"+parityTestSHA)
+
+			_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
+			require.NoError(t, err, stderr)
+			assert.ElementsMatch(t, []string{"Main", "main"}, heads)
+		})
+	}
+}
