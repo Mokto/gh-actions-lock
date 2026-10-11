@@ -55,7 +55,9 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				o.lp.Action.RepoID = store.RecordedRepoID(o.ref.Owner, o.ref.Repo)
 			}
 		}
-		key := strings.ToLower(o.lp.Pin.String() + ":" + lockedSHA(o.lp.Action.Commit))
+		// Pin.String folds owner/repo only: refs are case-sensitive, as
+		// the runner keys them.
+		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit))
 		i, seen := pinIdx[key]
 		if !seen {
 			i = len(pins)
