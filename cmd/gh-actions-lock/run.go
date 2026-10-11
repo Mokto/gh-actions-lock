@@ -243,8 +243,11 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	// before scanning, so the diagnosis sees compliant refs. Runs by default on
 	// fix runs; opt out with --no-migrate-local-actions. Read-only runs
 	// (--no-fix) never touch disk.
+	migrated := 0
 	if !opts.noMigrateLocalActions && !opts.noFix {
-		migrated, undo, err := migrateLocalActions(opts.workflowPaths)
+		var undo func()
+		var err error
+		migrated, undo, err = migrateLocalActions(opts.workflowPaths)
 		defer func() {
 			if !committed {
 				undo()
@@ -252,9 +255,6 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		}()
 		if err != nil {
 			return err
-		}
-		if migrated > 0 && opts.jsonFields == "" {
-			console.TermSuccess("Migrated %d local %s to `$/…`", migrated, ui.Pluralize(migrated, "action", "actions"))
 		}
 	}
 
@@ -444,6 +444,11 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 				if len(unresolved) > 0 {
 					renderUnresolvedWarnings(console, unresolved)
 				}
+				console.TermBlank()
+				console.TermError("Nothing was written: fix the errors above and re-run")
+				if fullScan {
+					console.TermDetail("To lock only some workflows, pass their paths: gh actions-lock <workflow>...")
+				}
 			}
 			return errSilent
 		}
@@ -479,6 +484,9 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	endCommit()
 
 	console.StopProgress()
+	if migrated > 0 && opts.jsonFields == "" {
+		console.TermSuccess("Migrated %d local %s to `$/…`", migrated, ui.Pluralize(migrated, "action", "actions"))
+	}
 
 	// Record the prune in the report so --json consumers see what was
 	// dropped. The terminal surface reports it via the pin summary instead.
