@@ -38,10 +38,10 @@ const (
 	// fix mode rewrites `uses:` to the new name and keeps the locked commit.
 	// Inside a remote composite the pin keeps the name the composite uses.
 	RepoRenamed Category = "repo-renamed"
-	// RepoHijacked means a locked dependency's name resolves to a different
+	// RepoReplaced means a locked dependency's name resolves to a different
 	// repo ID. The runner rejects the pin, and re-locking under the old name
 	// cannot fix it.
-	RepoHijacked Category = "repo-hijacked"
+	RepoReplaced Category = "repo-replaced"
 	// RepoUnavailable means a locked dependency's repository returned 404.
 	// That covers both deleted repositories and ones the token can't see.
 	RepoUnavailable Category = "repo-unavailable"

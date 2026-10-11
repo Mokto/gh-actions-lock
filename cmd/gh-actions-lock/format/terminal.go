@@ -199,8 +199,8 @@ func categoryLabel(c checks.Category) string {
 		return "Pinned commit not in upstream history"
 	case checks.RepoRenamed:
 		return "Repository renamed"
-	case checks.RepoHijacked:
-		return "Repository identity changed (possible hijack)"
+	case checks.RepoReplaced:
+		return "Repository replaced (identity changed)"
 	case checks.RepoUnavailable:
 		return "Repository missing or inaccessible"
 	case checks.Stale:
@@ -268,7 +268,7 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 
 	parts := []string{}
 	for _, cat := range []checks.Category{
-		checks.RepoHijacked, checks.RepoUnavailable, checks.RepoRenamed, checks.UnreachablePin,
+		checks.RepoReplaced, checks.RepoUnavailable, checks.RepoRenamed, checks.UnreachablePin,
 		checks.RefChanged, checks.NotPinned, checks.OnboardingRequired,
 		checks.LocalAction, checks.InvalidSelfRepositoryRef,
 		checks.Stale, checks.MisleadingSHA,
@@ -455,7 +455,7 @@ func renderRedirects(out *ui.UI, report *checks.Report, willRemediate bool) {
 // remediator should not re-print it in non-interactive mode).
 func IsAlertedCategory(c checks.Category) bool {
 	switch c {
-	case checks.UnreachablePin, checks.MisleadingSHA, checks.OnboardingRequired, checks.RepoRenamed, checks.RepoHijacked, checks.RepoUnavailable:
+	case checks.UnreachablePin, checks.MisleadingSHA, checks.OnboardingRequired, checks.RepoRenamed, checks.RepoReplaced, checks.RepoUnavailable:
 		return true
 	}
 	return false

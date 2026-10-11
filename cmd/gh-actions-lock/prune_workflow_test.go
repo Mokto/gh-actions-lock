@@ -322,7 +322,7 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 				require.NoError(t, readErr)
 				assert.Equal(t, before, string(after))
 				if tt.mismatch {
-					assert.Contains(t, stdout, "repo-hijacked")
+					assert.Contains(t, stdout, "repo-replaced")
 					assert.Zero(t, staleCalls)
 				} else {
 					assert.Contains(t, stdout, "repo-unavailable")

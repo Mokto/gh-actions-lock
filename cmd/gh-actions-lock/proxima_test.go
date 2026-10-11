@@ -163,7 +163,7 @@ jobs:
 			switch status {
 			case 200:
 				require.ErrorIs(t, err, errSilent)
-				assert.Contains(t, stdout, "repo-hijacked")
+				assert.Contains(t, stdout, "repo-replaced")
 			case 404:
 				require.ErrorIs(t, err, errSilent)
 				assert.Contains(t, stdout, "repo-unavailable")
@@ -254,7 +254,7 @@ jobs:
 				assert.Contains(t, readTempLockfilePins(t), "hostname: 'github.com'")
 			} else {
 				require.ErrorIs(t, err, errSilent)
-				assert.Contains(t, stdout, "repo-hijacked")
+				assert.Contains(t, stdout, "repo-replaced")
 				assert.Equal(t, raw, readTempLockfilePins(t))
 			}
 		})
