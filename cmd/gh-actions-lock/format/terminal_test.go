@@ -363,7 +363,7 @@ func TestPresentResults_ExcludeCategoriesSkipsImpostor(t *testing.T) {
 	PresentResults(u, report, false, false, checks.UnreachablePin)
 	got := buf.String()
 
-	if strings.Contains(got, "Unreachable pin") {
+	if strings.Contains(got, "Pinned commit not in upstream history") {
 		t.Errorf("excluded unreachable-pin should not appear:\n%s", got)
 	}
 	if strings.Contains(got, "lockfile entry was not a prior state") {
@@ -419,7 +419,7 @@ func TestPresentResults_ExcludeKeepsOtherFindings(t *testing.T) {
 	PresentResults(u, report, false, false, checks.UnreachablePin, checks.NotPinned)
 	got := buf.String()
 
-	if strings.Contains(got, "Unreachable pin") {
+	if strings.Contains(got, "Pinned commit not in upstream history") {
 		t.Errorf("excluded unreachable-pin should not appear:\n%s", got)
 	}
 	if !strings.Contains(got, "✗ local action") {
@@ -554,7 +554,7 @@ func TestPresentReadOnlyFailures_ForgeryReachesTerminal(t *testing.T) {
 	// Prove the pre-fix behavior: PresentResults leaves the error block in
 	// the discarded log, so nothing surfaces.
 	PresentResults(u, report, false, false)
-	if strings.Contains(buf.String(), "Unreachable pin") {
+	if strings.Contains(buf.String(), "Pinned commit not in upstream history") {
 		t.Fatalf("guard invalid: PresentResults unexpectedly surfaced the error block:\n%s", buf.String())
 	}
 
@@ -563,7 +563,7 @@ func TestPresentReadOnlyFailures_ForgeryReachesTerminal(t *testing.T) {
 
 	for _, want := range []string{
 		"1 of 1 workflow failed",
-		"Unreachable pin",
+		"Pinned commit not in upstream history",
 		"octo/action@main",
 		"pinned aaaa is not an ancestor of bbbb",
 		"investigate immediately",
@@ -709,6 +709,33 @@ func TestFindingIconFollowsSeverity(t *testing.T) {
 			renderTermFindingDetail(ui.NewPlain(&buf), f, "octo/a@v1")
 			if !strings.Contains(buf.String(), tt.want) {
 				t.Errorf("read-only row = %q, want %q", buf.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestPresentReadOnlyFailures_HintOnlyWhenPlainRunCanFix(t *testing.T) {
+	stale := checks.Finding{Category: checks.Stale, Severity: checks.SeverityError, Detail: "unused"}
+	unreachable := checks.Finding{
+		Category:   checks.UnreachablePin,
+		Severity:   checks.SeverityError,
+		Dependency: &dep.Dependency{NWO: "actions/checkout", Ref: "v4.2.2", SHA: "1111"},
+		Detail:     "not in history",
+	}
+	tests := []struct {
+		name     string
+		findings []checks.Finding
+		want     bool
+	}{
+		{name: "fixable alone offers a re-run", findings: []checks.Finding{stale}, want: true},
+		{name: "unfixable error suppresses the re-run hint", findings: []checks.Finding{stale, unreachable}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := &checks.Report{Workflows: []checks.WorkflowReport{{Path: ".github/workflows/ci.yml", Findings: tt.findings}}}
+			var buf bytes.Buffer
+			if got := PresentReadOnlyFailures(ui.NewPlain(&buf), report); got != tt.want {
+				t.Errorf("hasFixable = %v, want %v\n%s", got, tt.want, buf.String())
 			}
 		})
 	}

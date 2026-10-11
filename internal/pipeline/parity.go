@@ -235,17 +235,18 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		}
 	case !st.CommitFound:
 		f.Category = checks.UnreachablePin
-		f.Detail = fmt.Sprintf("locked commit %s no longer exists in %s%s", short, nwo, via)
-		f.Remediation = "investigate immediately (a force-push or deleted branch can drop a commit), then run `gh actions-lock --accept-moved` to re-pin"
+		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, ref.Ref, st.TagOID) + via
+		f.Remediation = checks.AcceptMovedRemediation
 	case pc.Tag != "" && !strings.EqualFold(st.TagOID, pc.SHA):
 		f.Category = checks.UnreachablePin
 		f.ObservedSHA = st.TagOID
 		if st.TagOID == "" {
 			f.Detail = fmt.Sprintf("tag %s no longer exists in %s; lockfile pins %s%s", pc.Tag, nwo, short, via)
+			f.Remediation = "point `uses:` at a tag that exists, then run `gh actions-lock`"
 		} else {
 			f.Detail = fmt.Sprintf("tag %s now points at %s, lockfile pins %s%s", pc.Tag, parserlock.ShortSHA(st.TagOID), short, via)
+			f.Remediation = "release tags should not move; " + checks.AcceptMovedRemediation
 		}
-		f.Remediation = "investigate immediately — release tags should not move; run `gh actions-lock --relock` once verified"
 	case st.NameWithOwner != "" && !strings.EqualFold(st.NameWithOwner, nwo):
 		f.Category = checks.RepoRenamed
 		f.Severity = checks.SeverityWarning

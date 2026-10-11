@@ -254,6 +254,9 @@ func TestRunChecks(t *testing.T) {
 						if f.Dependency == nil || f.Dependency.SHA != shaImpostor {
 							t.Fatalf("Dependency.SHA: want pinned %s, got %#v", shaImpostor, f.Dependency)
 						}
+						if f.Remediation != AcceptMovedRemediation {
+							t.Fatalf("Remediation: got %q, want the --accept-moved step --relock refuses to take", f.Remediation)
+						}
 					}
 				}
 				if !hasForgery {
