@@ -47,6 +47,10 @@ type Finding struct {
 	// finding (regardless of outcome). Lets renderers distinguish
 	// "we didn't look" from "we looked and found nothing."
 	RecommendedSearched bool
+	// RefMissing marks a not-pinned finding whose ref definitively does not
+	// exist upstream. Terminal output titles it separately; the JSON
+	// category stays not-pinned.
+	RefMissing bool
 }
 
 // InventoryEntry describes a single dependency with context.

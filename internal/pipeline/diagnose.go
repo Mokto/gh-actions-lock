@@ -111,7 +111,7 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 					Dependency:   &dep.Dependency{NWO: nwo, Ref: missing.Ref},
 					Detail:       fmt.Sprintf("ref %s does not exist in %s", missing.Ref, nwo),
 					Remediation:  "point `uses:` at a tag or branch that exists",
-					DocURL:       DocURLFor(checks.NotPinned),
+					RefMissing:   true,
 				})
 				blockingResolverError = true
 			}
