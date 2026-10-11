@@ -51,6 +51,11 @@ type Finding struct {
 	// exist upstream. Terminal output titles it separately; the JSON
 	// category stays not-pinned.
 	RefMissing bool
+	// TrackedAction marks a not-pinned bare SHA whose owner/repo the
+	// workflow already locks at another ref. It is a ref change on a
+	// tracked action, not onboarding, so --no-onboard lets it through to
+	// be resolved and history-checked.
+	TrackedAction bool
 }
 
 // InventoryEntry describes a single dependency with context.
