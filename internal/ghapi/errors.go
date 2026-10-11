@@ -52,3 +52,13 @@ func IsRateLimited(err error) bool {
 	return httpErr.StatusCode == http.StatusForbidden &&
 		httpErr.Headers.Get("X-RateLimit-Remaining") == "0"
 }
+
+// RefNotFoundError reports a ref that does not exist in a repository that
+// does. Unlike a transport or rate-limit failure, retrying will not help.
+type RefNotFoundError struct {
+	Owner, Repo, Ref string
+	Err              error
+}
+
+func (e *RefNotFoundError) Error() string { return e.Err.Error() }
+func (e *RefNotFoundError) Unwrap() error { return e.Err }
