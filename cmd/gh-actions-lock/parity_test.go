@@ -953,26 +953,39 @@ jobs:
 }
 
 // TestParity_CancelDuringAncestryAborts: a cancellation while --verify
-// checks history must not turn into a normal result.
+// checks history must not turn into a normal result or, behind the proxy,
+// into an inconclusive-lookup error.
 func TestParity_CancelDuringAncestryAborts(t *testing.T) {
 	const live = "cccccccccccccccccccccccccccccccccccccccc"
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	reg := &httpmock.Registry{}
-	reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": map[string]any{
-			"nameWithOwner": "actions/checkout",
-			"commit":        map[string]any{"oid": parityTestSHA},
-			"head":          map[string]any{"oid": live},
-		}},
-	}))
-	for range 10 {
-		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`), func(req *http.Request) (*http.Response, error) {
-			cancel()
-			return nil, ctx.Err()
-		})
-	}
-	path := writeTempWorkflow(t, `
+	for _, proxy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			reg := &httpmock.Registry{}
+			if proxy {
+				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+				useDefaultTransport(t, reg)
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+					"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+				}))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/v4$`), httpmock.JSONResponse(map[string]any{"sha": live}))
+			} else {
+				reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
+					"data": map[string]any{"a0": map[string]any{
+						"nameWithOwner": "actions/checkout",
+						"commit":        map[string]any{"oid": parityTestSHA},
+						"head":          map[string]any{"oid": live},
+					}},
+				}))
+			}
+			for range 10 {
+				reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`), func(req *http.Request) (*http.Response, error) {
+					cancel()
+					return nil, ctx.Err()
+				})
+			}
+			path := writeTempWorkflow(t, `
 name: ci
 on: push
 jobs:
@@ -981,9 +994,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 `, "actions/checkout@v4=sha1-"+parityTestSHA)
-	lockBefore := readTempLockfilePins(t)
+			lockBefore := readTempLockfilePins(t)
 
-	_, stderr, err := runCommandWithHTTPContext(t, ctx, reg, "--verify", path)
-	require.ErrorIs(t, err, context.Canceled, stderr)
-	assert.Equal(t, lockBefore, readTempLockfilePins(t))
+			_, stderr, err := runCommandWithHTTPContext(t, ctx, reg, "--verify", path)
+			require.ErrorIs(t, err, context.Canceled, stderr)
+			assert.NotContains(t, err.Error(), "could not", "the cancellation is reported, not the lookup it interrupted")
+			assert.Equal(t, lockBefore, readTempLockfilePins(t))
+		})
+	}
 }
