@@ -115,14 +115,17 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 	}
 
 	out.TermBlank()
-	out.TermError("%d of %d %s failed verification",
+	out.TermError("%d of %d %s failed",
 		failedCount, checked, ui.Pluralize(checked, "workflow", "workflows"))
+	blocked := false
 	for _, key := range order {
 		g := groups[key]
 		out.TermBlank()
 		for _, f := range g.findings {
 			if IsAutoFixable(f.Category) {
 				hasFixable = true
+			} else if f.Severity == checks.SeverityError {
+				blocked = true
 			}
 			renderTermFindingDetail(out, f, key)
 		}
@@ -130,7 +133,8 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 			out.TermDetail("  ↳ %s", out.TermDim(wf))
 		}
 	}
-	return hasFixable
+	// A plain re-run writes nothing while an unfixable error remains.
+	return hasFixable && !blocked
 }
 
 // renderTermFindingDetail is the Term* twin of renderFindingDetail: it
@@ -171,7 +175,7 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 }
 
 // categoryLabel returns a human-readable label for a finding category,
-// e.g. "unreachable-pin" -> "Unreachable pin". Falls back to a
+// e.g. "repo-renamed" -> "Repository renamed". Falls back to a
 // hyphen-to-space title for unmapped categories so new slugs still read
 // cleanly.
 func categoryLabel(c checks.Category) string {
@@ -183,7 +187,7 @@ func categoryLabel(c checks.Category) string {
 	case checks.MisleadingSHA:
 		return "Misleading SHA"
 	case checks.UnreachablePin:
-		return "Unreachable pin"
+		return "Pinned commit not in upstream history"
 	case checks.RepoRenamed:
 		return "Repository renamed"
 	case checks.RepoHijacked:

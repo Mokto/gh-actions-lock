@@ -119,8 +119,8 @@ func checkOneRefMoved(ctx context.Context, pw ParsedWorkflow, ref parserlock.Act
 		f.Category = UnreachablePin
 		f.Severity = SeverityError
 		f.Confidence = ConfidenceHigh
-		f.Detail = fmt.Sprintf("pinned %s is not an ancestor of %s — lockfile may have been tampered with", parserlock.ShortSHA(pin.SHA()), parserlock.ShortSHA(sha))
-		f.Remediation = "investigate immediately — verify the lockfile entry against upstream history"
+		f.Detail = NotInHistoryDetail(pin.SHA(), ref.Owner+"/"+ref.Repo, ref.Ref, sha)
+		f.Remediation = AcceptMovedRemediation
 	case resolve.AncestryUnknown:
 		f.Category = AncestryUnknown
 		f.Severity = SeverityWarning
@@ -135,6 +135,21 @@ func checkOneRefMoved(ctx context.Context, pw ParsedWorkflow, ref parserlock.Act
 		f.Remediation = "run `gh actions-lock --relock` to refresh the lock entry"
 	}
 	return f, true
+}
+
+// AcceptMovedRemediation is the single next step for a pin the runner
+// can't trust: --relock refuses these, so the override must be explicit.
+const AcceptMovedRemediation = "verify it, then run `gh actions-lock --accept-moved`"
+
+// NotInHistoryDetail describes a locked commit missing from upstream
+// history. It can't tell a force-push from a forged lockfile, so it names
+// both. live, when known, is where ref points now.
+func NotInHistoryDetail(locked, nwo, ref, live string) string {
+	d := fmt.Sprintf("locked commit %s is not in %s's history: it was force-pushed away, or the lockfile was edited", parserlock.ShortSHA(locked), nwo)
+	if live != "" {
+		d += fmt.Sprintf("; %s currently points at %s", ref, parserlock.ShortSHA(live))
+	}
+	return d
 }
 
 // suffixWith renders an optional detail as ": <detail>" for inline

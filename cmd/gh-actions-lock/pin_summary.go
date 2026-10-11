@@ -98,6 +98,9 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	if len(narrowed) > 0 {
 		renderNarrowedEntries(console, narrowed)
 	}
+	if acceptMoved {
+		renderAcceptedOverrides(console, report, pinned)
+	}
 
 	renderFullScanWarnings(console, pinned)
 	renderCooldownFindings(console, report)
@@ -193,6 +196,27 @@ func renderNarrowedEntries(console *ui.UI, narrowed []pin.Entry) {
 		len(narrowed), ui.Pluralize(len(narrowed), "ref", "refs"))
 	for _, e := range narrowed {
 		console.TermDetail(" %s@%s → %s", e.NWO, e.AutoFixedRef, e.Ref)
+	}
+}
+
+// renderAcceptedOverrides names each untrusted pin --accept-moved replaced,
+// so an override never reads like a routine pin.
+func renderAcceptedOverrides(console *ui.UI, report *checks.Report, pinned []pin.Entry) {
+	seen := map[string]bool{}
+	for _, wr := range report.Workflows {
+		for _, f := range wr.Findings {
+			d := f.Dependency
+			if f.Category != checks.UnreachablePin && f.Category != checks.RefMoved || d == nil || seen[d.Key()] {
+				continue
+			}
+			for _, e := range pinned {
+				if strings.EqualFold(e.NWO, d.NWO) && e.Ref == d.Ref && !strings.EqualFold(e.SHA, d.SHA) {
+					seen[d.Key()] = true
+					console.TermWarn("Re-pinned %s@%s: %s → %s (accepted)", e.NWO, e.Ref, parserlock.ShortSHA(d.SHA), parserlock.ShortSHA(e.SHA))
+					break
+				}
+			}
+		}
 	}
 }
 

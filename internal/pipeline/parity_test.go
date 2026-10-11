@@ -76,8 +76,19 @@ func TestParityFinding(t *testing.T) {
 		},
 		{name: "missing ID is not a change", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true}},
 		{name: "commit gone", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing"}, want: checks.UnreachablePin},
-		{name: "exact tag moved", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true, TagOID: other}, want: checks.UnreachablePin, wantObserve: other},
-		{name: "exact tag deleted", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true}, want: checks.UnreachablePin},
+		{
+			name: "commit gone names both causes and the tag's target", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", TagOID: other}, want: checks.UnreachablePin,
+			wantDetail: "locked commit aaaaaaaaaaaa is not in krzema12/github-actions-typing's history: it was force-pushed away, or the lockfile was edited; v2.2.2 currently points at bbbbbbbbbbbb",
+			wantRemedy: "verify it, then run `gh actions-lock --accept-moved`",
+		},
+		{
+			name: "exact tag moved points at accept-moved", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true, TagOID: other}, want: checks.UnreachablePin, wantObserve: other,
+			wantRemedy: "release tags should not move; verify it, then run `gh actions-lock --accept-moved`",
+		},
+		{
+			name: "deleted tag asks for a new ref", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true}, want: checks.UnreachablePin,
+			wantRemedy: "point `uses:` at a tag that exists, then run `gh actions-lock`",
+		},
 		{name: "network error is inconclusive", ref: "v2", state: ghapi.PinState{Err: errors.New("timeout")}, want: checks.ReachabilityUnknown},
 	}
 	for _, tt := range tests {
