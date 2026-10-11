@@ -142,6 +142,9 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		if err != nil {
 			return nil, err
 		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 	}
 
 	return &RunResult{Report: report, Valid: report.IsValid()}, nil

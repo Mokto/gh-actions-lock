@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -949,4 +950,40 @@ jobs:
 			assert.ElementsMatch(t, []string{"Main", "main"}, heads)
 		})
 	}
+}
+
+// TestParity_CancelDuringAncestryAborts: a cancellation while --verify
+// checks history must not turn into a normal result.
+func TestParity_CancelDuringAncestryAborts(t *testing.T) {
+	const live = "cccccccccccccccccccccccccccccccccccccccc"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": map[string]any{
+			"nameWithOwner": "actions/checkout",
+			"commit":        map[string]any{"oid": parityTestSHA},
+			"head":          map[string]any{"oid": live},
+		}},
+	}))
+	for range 10 {
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`), func(req *http.Request) (*http.Response, error) {
+			cancel()
+			return nil, ctx.Err()
+		})
+	}
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+	lockBefore := readTempLockfilePins(t)
+
+	_, stderr, err := runCommandWithHTTPContext(t, ctx, reg, "--verify", path)
+	require.ErrorIs(t, err, context.Canceled, stderr)
+	assert.Equal(t, lockBefore, readTempLockfilePins(t))
 }
