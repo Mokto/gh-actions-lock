@@ -126,6 +126,13 @@ structured results go to stdout and progress to stderr:
 
   gh actions-lock --no-fix --json 2>/dev/null | jq .valid
 
+ENVIRONMENT
+
+GH_ACTIONS_LOCK_REPO_ROOT names the repository root instead of
+searching parent directories for .git. Set it when relocking a
+partial checkout without .git. $/ actions resolve against it, and
+the directory must exist and contain the workflows.
+
 RUN LOGS
 
 Every run except --verify-local saves its full --json output, plus the

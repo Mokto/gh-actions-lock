@@ -27,14 +27,7 @@ jobs:
 // local action the run would migrate to `$/…` when withLocal is set.
 func writeCleanWorkflow(t *testing.T, reg *httpmock.Registry, withLocal bool) string {
 	t.Helper()
-	reg.Register(httpmock.GraphQLForRepo("actions", "setup-go"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("actions/setup-go", parityTestMoved, nodeActionYAML)},
-	}))
-	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/tags`),
-		httpmock.JSONResponse(httpmock.TagListResponse("v5.0.0", parityTestMoved)))
-	reg.Register(httpmock.REST("GET", `repos/actions/setup-go$`), httpmock.JSONResponse(map[string]any{
-		"default_branch": "main", "id": 2, "owner": map[string]any{"id": 1},
-	}))
+	registerSetupGo(reg)
 	require.NoError(t, os.MkdirAll(".git", 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(".github", "actions", "local"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(".github", "actions", "local", "action.yml"),
@@ -46,6 +39,18 @@ func writeCleanWorkflow(t *testing.T, reg *httpmock.Registry, withLocal bool) st
 	}
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return filepath.ToSlash(path)
+}
+
+// registerSetupGo stubs resolution of actions/setup-go@v5.0.0.
+func registerSetupGo(reg *httpmock.Registry) {
+	reg.Register(httpmock.GraphQLForRepo("actions", "setup-go"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("actions/setup-go", parityTestMoved, nodeActionYAML)},
+	}))
+	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/tags`),
+		httpmock.JSONResponse(httpmock.TagListResponse("v5.0.0", parityTestMoved)))
+	reg.Register(httpmock.REST("GET", `repos/actions/setup-go$`), httpmock.JSONResponse(map[string]any{
+		"default_branch": "main", "id": 2, "owner": map[string]any{"id": 1},
+	}))
 }
 
 // snapshotWorkflows reads every file under .github so a test can assert the

@@ -150,7 +150,10 @@ func (f *File) MigrateLocalActionsToSelfRepository() ([]byte, int, error) {
 		return append([]byte(nil), f.Content...), 0, nil
 	}
 
-	repoRoot := findRepoRoot(f.Path)
+	repoRoot, err := findRepoRoot(f.Path)
+	if err != nil {
+		return append([]byte(nil), f.Content...), 0, err
+	}
 	replacements := make(map[string]string, len(scan.LocalPaths))
 	for _, localPath := range scan.LocalPaths {
 		if !localActionExists(repoRoot, localPath) {
