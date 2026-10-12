@@ -523,6 +523,42 @@ func TestFindRepoRoot_EnvOverride(t *testing.T) {
 	}
 }
 
+// Callers run from the partial checkout with the override pointing at it,
+// possibly as "." or through a symlinked path such as macOS /tmp.
+func TestFindRepoRoot_EnvOverrideMatchesCwd(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(real, link))
+	require.NoError(t, os.MkdirAll(filepath.Join(real, ".github", "workflows"), 0o755))
+
+	tests := []struct {
+		name  string
+		cwd   string
+		env   string
+		start string
+	}{
+		{name: "relative dot root", cwd: real, env: ".", start: filepath.Join(".github", "workflows", "ci.yml")},
+		{name: "symlinked root, real start", cwd: real, env: link, start: filepath.Join(".github", "workflows", "ci.yml")},
+		{name: "real root, symlinked start", cwd: link, env: real, start: filepath.Join(".github", "workflows", "ci.yml")},
+		{name: "symlinked root, absolute real start", cwd: real, env: link, start: filepath.Join(real, ".github", "workflows", "ci.yml")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Chdir(tt.cwd)
+			t.Setenv(RepoRootEnv, tt.env)
+
+			root, err := FindRepoRoot(tt.start)
+
+			require.NoError(t, err)
+			want, err := filepath.EvalSymlinks(real)
+			require.NoError(t, err)
+			got, err := filepath.EvalSymlinks(root)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
 func TestScanSelfRepositoryActions_EnvRootBoundsEscape(t *testing.T) {
 	parent := t.TempDir()
 	repoRoot := filepath.Join(parent, "repo")

@@ -15,10 +15,11 @@ import (
 func TestRun_RepoRootEnvWithoutGit(t *testing.T) {
 	tests := []struct {
 		name    string
-		setRoot bool
+		root    string // "abs" uses the temp dir path; anything else is used verbatim
 		wantErr string
 	}{
-		{name: "env set locks composite deps", setRoot: true},
+		{name: "absolute root locks composite deps", root: "abs"},
+		{name: "relative root equal to cwd locks composite deps", root: "."},
 		{name: "env unset fails without .git", wantErr: "not in a git repository"},
 	}
 	for _, tt := range tests {
@@ -35,8 +36,14 @@ func TestRun_RepoRootEnvWithoutGit(t *testing.T) {
 				"name: ci\non: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: $/tools/act\n")
 			t.Chdir(dir)
 			t.Setenv("GH_ACTIONS_LOCK_REPO_ROOT", "")
-			if tt.setRoot {
+			switch tt.root {
+			case "abs":
+				// On macOS t.TempDir is under /var while the cwd resolves to
+				// /private/var, so this also covers symlink-equivalent paths.
 				t.Setenv("GH_ACTIONS_LOCK_REPO_ROOT", dir)
+			case "":
+			default:
+				t.Setenv("GH_ACTIONS_LOCK_REPO_ROOT", tt.root)
 			}
 			reg := &httpmock.Registry{}
 			registerSetupGo(reg)
