@@ -539,7 +539,7 @@ func walkYAMLNodesDepth(node *yaml.Node, fn func(keyNode, valueNode *yaml.Node),
 }
 
 // RepoRootEnv overrides `.git` discovery for callers relocking a partial
-// checkout without `.git`. Every path the CLI resolves must lie inside it.
+// checkout without `.git`. The workflow's directory must lie inside it.
 const RepoRootEnv = "GH_ACTIONS_LOCK_REPO_ROOT"
 
 // findRepoRoot returns the repository root containing startPath. It honours
@@ -551,7 +551,7 @@ func findRepoRoot(startPath string) (string, error) {
 		return "", nil
 	}
 	if root := os.Getenv(RepoRootEnv); root != "" {
-		return overrideRepoRoot(root, startPath, absPath)
+		return overrideRepoRoot(root, absPath)
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(absPath, ".git")); err == nil {
@@ -565,9 +565,7 @@ func findRepoRoot(startPath string) (string, error) {
 	}
 }
 
-// overrideRepoRoot checks startDir and, when it exists, startPath itself so a
-// symlinked workflow can't point outside the override.
-func overrideRepoRoot(root, startPath, startDir string) (string, error) {
+func overrideRepoRoot(root, startDir string) (string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("%s=%s: %w", RepoRootEnv, root, err)
@@ -579,14 +577,8 @@ func overrideRepoRoot(root, startPath, startDir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%s=%s: not a directory", RepoRootEnv, root)
 	}
-	candidates := []string{startDir}
-	if _, err := os.Lstat(startPath); err == nil {
-		candidates = append(candidates, startPath)
-	}
-	for _, c := range candidates {
-		if err := ValidatePathWithinRoot(absRoot, c); err != nil {
-			return "", fmt.Errorf("%s=%s does not contain %s", RepoRootEnv, root, c)
-		}
+	if err := ValidatePathWithinRoot(absRoot, startDir); err != nil {
+		return "", fmt.Errorf("%s=%s does not contain %s", RepoRootEnv, root, startDir)
 	}
 	return absRoot, nil
 }
