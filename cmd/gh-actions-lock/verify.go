@@ -6,7 +6,8 @@ package main
 //                  for every locked pin, without writing. Requires auth.
 //
 //   --verify-local Offline static coverage check. Every action ref must have
-//                  a lockfile entry. No network, no auth — ideal for pre-commit.
+//                  a lockfile entry. No network, no auth, no writes — ideal for
+//                  pre-commit. Same-repo `./…` refs are reported, not migrated.
 
 import (
 	"fmt"
@@ -30,25 +31,12 @@ func applyVerifyFlags(opts *checkOptions) {
 
 // runVerifyLocal performs the offline lockfile coverage check. It parses all
 // workflows and verifies that every action ref has a corresponding lockfile
-// entry — no network, no auth required.
+// entry — no network, no auth, never writes to disk.
 func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 	workflowsDir := os.Getenv("GH_ACTIONS_LOCK_WORKFLOWS_DIR")
 	paths, err := discoverWorkflowPaths(opts.workflowPaths, workflowsDir, false)
 	if err != nil {
 		return err
-	}
-
-	// Rewrite same-repo `./…` refs to `$/…` on disk before the coverage check
-	// sees them. Runs by default on fix runs even in this otherwise read-only
-	// mode; opt out with --no-migrate-local-actions, and never under --no-fix.
-	if !opts.noMigrateLocalActions && !opts.noFix {
-		migrated, _, mErr := migrateLocalActions(paths)
-		if mErr != nil {
-			return mErr
-		}
-		if migrated > 0 && opts.jsonFields == "" {
-			console.TermSuccess("Migrated %d local %s to `$/…`", migrated, ui.Pluralize(migrated, "action", "actions"))
-		}
 	}
 
 	// Load the lockfile without a resolver (no network).
@@ -80,7 +68,7 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 
 	if !valid {
 		if opts.jsonFields == "" {
-			console.TermDetail("Run without --verify-local to resolve and pin missing actions.")
+			console.TermDetail("Run without --verify-local to resolve and pin missing actions and migrate `./…` refs to `$/…`.")
 		}
 		return errSilent
 	}

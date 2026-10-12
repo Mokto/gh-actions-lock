@@ -253,26 +253,7 @@ func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.W
 	}
 
 	if len(pw.LocalPaths) > 0 {
-		wfKey := workflowfile.KeyFromPath(pw.Path)
-		if store != nil && store.HasWorkflow(wfKey) {
-			wr.Findings = append(wr.Findings, checks.Finding{
-				WorkflowPath: pw.Path,
-				Category:     checks.LocalAction,
-				Severity:     checks.SeverityError,
-				Confidence:   checks.ConfidenceHigh,
-				Detail:       "workflow uses local path actions which are not supported; remove local path actions to continue using the lockfile",
-				Remediation:  "rewrite same-repo `uses: ./…` to `uses: $/…` (automatic on fix runs; disable with --no-migrate-local-actions), or remove the `./…` steps",
-			})
-		} else {
-			wr.Findings = append(wr.Findings, checks.Finding{
-				WorkflowPath: pw.Path,
-				Category:     checks.LocalAction,
-				Severity:     checks.SeverityWarning,
-				Confidence:   checks.ConfidenceHigh,
-				Detail:       "workflow uses local path actions; lockfile onboarding is not supported",
-				Remediation:  "rewrite same-repo `uses: ./…` to `uses: $/…` (automatic on fix runs; disable with --no-migrate-local-actions)",
-			})
-		}
+		wr.Findings = append(wr.Findings, localActionFinding(pw, store))
 		hasTerminalFinding = true
 	}
 
@@ -311,6 +292,30 @@ func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.W
 	}
 
 	return wr, false
+}
+
+// localActionFinding reports same-repo `./…` refs: an error once the workflow
+// is onboarded to the lockfile, a warning before. Shared by --verify and
+// --verify-local so both modes agree.
+func localActionFinding(pw checks.ParsedWorkflow, store *lockfile.State) checks.Finding {
+	if store != nil && store.HasWorkflow(workflowfile.KeyFromPath(pw.Path)) {
+		return checks.Finding{
+			WorkflowPath: pw.Path,
+			Category:     checks.LocalAction,
+			Severity:     checks.SeverityError,
+			Confidence:   checks.ConfidenceHigh,
+			Detail:       "workflow uses local path actions which are not supported; remove local path actions to continue using the lockfile",
+			Remediation:  "rewrite same-repo `uses: ./…` to `uses: $/…` (automatic on fix runs; disable with --no-migrate-local-actions), or remove the `./…` steps",
+		}
+	}
+	return checks.Finding{
+		WorkflowPath: pw.Path,
+		Category:     checks.LocalAction,
+		Severity:     checks.SeverityWarning,
+		Confidence:   checks.ConfidenceHigh,
+		Detail:       "workflow uses local path actions; lockfile onboarding is not supported",
+		Remediation:  "rewrite same-repo `uses: ./…` to `uses: $/…` (automatic on fix runs; disable with --no-migrate-local-actions)",
+	}
 }
 
 func preserveExistingInventory(wr *checks.WorkflowReport, pw checks.ParsedWorkflow) {

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
@@ -101,5 +104,58 @@ func TestValidateOutputFlags_VerifyConflicts(t *testing.T) {
 				assert.NoError(t, err)
 			}
 		})
+	}
+}
+
+func TestVerifyLocalReportsLocalActionsWithoutWriting(t *testing.T) {
+	for _, extra := range [][]string{nil, {"--no-migrate-local-actions"}, {"--no-fix"}} {
+		for _, jsonOut := range []bool{true, false} {
+			t.Run(strings.Join(append(extra, fmt.Sprintf("json=%v", jsonOut)), " "), func(t *testing.T) {
+				path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: tenant/internal@v1
+      - uses: ./my-action
+  call:
+    uses: ./.github/workflows/reusable.yml
+`, "tenant/internal@v1=sha1-"+tenantSHA)
+				require.NoError(t, os.Mkdir(".git", 0o755))
+				require.NoError(t, os.Mkdir("my-action", 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join("my-action", "action.yml"), []byte("runs:\n  using: composite\n  steps: []\n"), 0o644))
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "reusable.yml"), []byte("on: workflow_call\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n"), 0o644))
+				before, err := os.ReadFile(path)
+				require.NoError(t, err)
+				lockBefore := readTempLockfilePins(t)
+
+				args := append([]string{"--verify-local", "--no-interactive"}, extra...)
+				if jsonOut {
+					args = append(args, "--json=valid,findings")
+				}
+				stdout, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, append(args, path)...)
+
+				require.ErrorIs(t, err, errSilent)
+				if jsonOut {
+					assert.Contains(t, stdout, `"valid": false`)
+					assert.Contains(t, stdout, `"category": "local-action"`)
+					assert.Contains(t, stdout, `"severity": "error"`)
+				} else {
+					out := stdout + stderr
+					assert.Contains(t, out, "local path actions")
+					assert.Contains(t, out, "Run without --verify-local")
+					assert.NotContains(t, out, "Migrated")
+				}
+				after, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, string(before), string(after))
+				action, err := os.ReadFile(filepath.Join("my-action", "action.yml"))
+				require.NoError(t, err)
+				assert.NotContains(t, string(action), "$/")
+				assert.Equal(t, lockBefore, readTempLockfilePins(t))
+			})
+		}
 	}
 }
