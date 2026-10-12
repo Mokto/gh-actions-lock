@@ -106,10 +106,11 @@ A trailing `@ref` (e.g. `$/actions/my-action@v1`) is rejected — the ref is alw
 the running commit.
 
 Same-repo `./…` composite action references are automatically converted to `$/…`
-on fix runs. `--verify` and `--verify-local` never migrate; they report `./…`
-refs as `local-action` findings instead. This rewrites `./…` steps both in your workflows and in your in-repo
-composite action definitions (`action.yml`). Only `./…` paths that resolve to an
-in-repo action file are rewritten. To leave `./…` refs untouched, opt out with
+on fix runs. The migration rewrites `./…` steps both in your workflows and in
+your in-repo composite action definitions (`action.yml`). Only `./…` paths that
+resolve to an in-repo action file are rewritten. `--verify` and `--verify-local`
+never migrate; they report `./…` refs as `local-action` findings instead. To
+leave `./…` refs untouched on fix runs, opt out with
 `--no-migrate-local-actions`:
 
 ```bash
