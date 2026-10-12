@@ -20,8 +20,8 @@ const (
 	// RefMoved means the upstream tag now resolves to a different
 	// SHA than what the lockfile has recorded.
 	RefMoved Category = "ref-moved"
-	// Stale means the pinned SHA no longer matches what the ref
-	// resolves to today.
+	// Stale means the lockfile pins a dependency for a workflow that no
+	// uses: in that workflow references.
 	Stale Category = "stale"
 	// MisleadingSHA means a ref looks like a SHA but resolves to a
 	// different commit.

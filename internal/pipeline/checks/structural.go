@@ -115,6 +115,8 @@ func checkRefChanged(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 // ref in the workflow references. If the workflow has already been
 // rewritten to pin by SHA, the lockfile entry (keyed by the original tag)
 // is still valid — surface keys both ways so we don't false-flag.
+// Stale is an error: a frozen check requires the lockfile to match the
+// workflows exactly, and a fix run prunes the entry.
 func checkStale(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 	if len(depPins) == 0 {
 		return nil
@@ -140,10 +142,10 @@ func checkStale(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 		f := Finding{
 			WorkflowPath: pw.Path,
 			Category:     Stale,
-			Severity:     SeverityWarning,
+			Severity:     SeverityError,
 			Confidence:   ConfidenceHigh,
 			Detail:       fmt.Sprintf("lockfile pins %s@%s but no uses: in this workflow references it", nwoLower(p.Owner, p.Repo), p.Ref),
-			Remediation:  "remove the entry or re-run `gh actions-lock`",
+			Remediation:  "run `gh actions-lock` to prune the unused entry",
 			Dependency: &dep.Dependency{
 				NWO: strings.ToLower(p.NWO),
 				Ref: p.Ref,

@@ -122,22 +122,11 @@ func (r *WorkflowReport) CountByCategory(c Category) int {
 	return n
 }
 
-// IsValid returns true for findings that don't represent integrity violations.
+// IsValid reports whether f leaves the verdict valid. Severity alone decides:
+// the JSON `valid` field and the exit code must agree with the severities
+// consumers see, so a blocking finding has to be emitted as an error.
 func (f *Finding) IsValid() bool {
-	if f.Severity == SeverityError {
-		return false
-	}
-	if f.Category.IsInconclusive() {
-		return true
-	}
-	switch f.Category {
-	case Valid, RunOnly, LocalAction, RepoRenamed, ShaAsRef, RefMoved, VersionRef, OnboardingRequired, StaleWorkflow, SelfRepositoryAction, FreshTag, CooldownConfigIgnored:
-		return true
-	case NotPinned:
-		return f.ActionRef == nil // workflow-level is a warning
-	default:
-		return false
-	}
+	return f.Severity != SeverityError
 }
 
 // IsWarning returns true for findings that should render as warnings (not errors).

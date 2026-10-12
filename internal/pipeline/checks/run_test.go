@@ -218,6 +218,11 @@ func TestRunChecks(t *testing.T) {
 			},
 			workflowRefs:   nil,
 			wantCategories: []Category{Stale},
+			extra: func(t *testing.T, got []Finding) {
+				if got[0].Severity != SeverityError {
+					t.Fatalf("expected error severity, got %s", got[0].Severity)
+				}
+			},
 		},
 		{
 			name: "no findings: pinned and current with reachable sha",

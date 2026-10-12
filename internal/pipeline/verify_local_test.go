@@ -236,3 +236,55 @@ func TestVerifyLocalCoverage_LocalPathsMatchVerify(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyLocalCoverage_ValidFollowsSeverity(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	lock := `version: 'v0.0.2'
+dependencies:
+  'actions/checkout@` + sha + `':
+    ref: '` + sha + `'
+    commit: 'sha1-` + sha + `'
+    owner_id: 1
+    repo_id: 1
+  'actions/setup-go@v5':
+    ref: 'v5'
+    commit: 'sha1-` + sha + `'
+    owner_id: 1
+    repo_id: 2
+workflows:
+  '.github/workflows/ci.yml':
+    - 'actions/checkout@` + sha + `'
+`
+	for _, tc := range []struct {
+		name      string
+		extraPins string
+		wantCats  []checks.Category
+		wantValid bool
+	}{
+		{name: "sha-as-ref warning only is valid", wantCats: []checks.Category{checks.ShaAsRef}, wantValid: true},
+		{name: "unused entry is an error", extraPins: "    - 'actions/setup-go@v5'\n", wantCats: []checks.Category{checks.ShaAsRef, checks.Stale}, wantValid: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := writeTestLockfile(t, t.TempDir(), lock+tc.extraPins)
+			parsed := []checks.ParsedWorkflow{{
+				Path: ".github/workflows/ci.yml",
+				Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}},
+			}}
+
+			report := VerifyLocalCoverage(parsed, store)
+
+			var cats []checks.Category
+			hasError := false
+			for _, f := range report.Workflows[0].Findings {
+				cats = append(cats, f.Category)
+				hasError = hasError || f.Severity == checks.SeverityError
+				if f.Category == checks.Stale {
+					assert.Equal(t, checks.SeverityError, f.Severity)
+				}
+			}
+			assert.ElementsMatch(t, tc.wantCats, cats)
+			assert.Equal(t, tc.wantValid, report.IsValid())
+			assert.Equal(t, !hasError, report.IsValid(), "valid must agree with severities")
+		})
+	}
+}
