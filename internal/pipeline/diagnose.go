@@ -263,8 +263,19 @@ func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.W
 	}
 
 	if len(pw.Refs) == 0 {
+		// No refs to resolve, but the workflow entry itself must still be
+		// present and carry no unused pins.
+		if store != nil {
+			for _, f := range checks.RunChecks(context.Background(), pw, store.File(), nil) {
+				f.DocURL = DocURLFor(f.Category)
+				wr.Findings = append(wr.Findings, f)
+			}
+		}
 		if len(pw.SelfRepositoryRefs) > 0 {
 			wr.Findings = append(wr.Findings, selfRepositoryFinding(pw))
+			return wr, true
+		}
+		if len(wr.Findings) > 0 {
 			return wr, true
 		}
 		wr.Findings = append(wr.Findings, checks.Finding{

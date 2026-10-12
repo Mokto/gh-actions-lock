@@ -90,11 +90,6 @@ func VerifyLocalCoverage(parsed []checks.ParsedWorkflow, store *lockfile.State) 
 			continue
 		}
 
-		if len(pw.Refs) == 0 {
-			results = append(results, wr)
-			continue
-		}
-
 		// Use RunChecks with a nil resolver to get structural-only findings
 		// (NotPinned, ShaAsRef, RefChanged, Stale). No network calls.
 		findings := checks.RunChecks(context.Background(), pw, lf, nil)

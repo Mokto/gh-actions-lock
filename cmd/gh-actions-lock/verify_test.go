@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -157,5 +160,216 @@ jobs:
 				assert.Equal(t, lockBefore, readTempLockfilePins(t))
 			})
 		}
+	}
+}
+
+// TestStaleEntry_SeverityMatchesVerdict pins the contract consumers rely on:
+// `valid` is false, and read-only modes exit non-zero, exactly when a finding
+// has error severity. An unused lockfile entry is an error in every mode; a
+// fix run prunes it and succeeds.
+func TestStaleEntry_SeverityMatchesVerdict(t *testing.T) {
+	const workflow = `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.1
+`
+	for _, tc := range []struct {
+		name    string
+		mode    []string
+		wantErr bool
+	}{
+		{name: "verify fails", mode: []string{"--verify"}, wantErr: true},
+		{name: "verify-local fails", mode: []string{"--verify-local"}, wantErr: true},
+		{name: "fix run prunes", wantErr: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, workflow,
+				"actions/checkout@v4.2.1=sha1-"+parityTestSHA,
+				"actions/setup-go@v5=sha1-"+parityTestSHA,
+			)
+			reg := &httpmock.Registry{}
+			args := append(slices.Clone(tc.mode), "--no-interactive", path)
+
+			p, err := runParity(t, reg, args...)
+			if tc.wantErr {
+				require.ErrorIs(t, err, errSilent)
+			} else {
+				require.NoError(t, err)
+			}
+
+			var stale []format.Finding
+			hasError := false
+			for _, f := range p.Findings {
+				hasError = hasError || f.Severity == string(checks.SeverityError)
+				if f.Category == string(checks.Stale) {
+					stale = append(stale, f)
+				}
+			}
+			require.Len(t, stale, 1, "%+v", p.Findings)
+			assert.Equal(t, "actions/setup-go@v5", stale[0].Dependency)
+			assert.Equal(t, string(checks.SeverityError), stale[0].Severity)
+			assert.Equal(t, !hasError, p.Valid, "valid must agree with severities")
+
+			pins := readTempLockfilePins(t)
+			if tc.wantErr {
+				assert.Contains(t, pins, "actions/setup-go@v5", "read-only modes must not prune")
+			} else {
+				assert.NotContains(t, pins, "actions/setup-go@v5", "fix run prunes the unused entry")
+			}
+		})
+	}
+}
+
+// TestStaleEntry_TerminalShowsRemediation checks a human sees the finding
+// and how to clear it in both read-only modes.
+func TestStaleEntry_TerminalShowsRemediation(t *testing.T) {
+	for _, mode := range []string{"--verify", "--verify-local"} {
+		t.Run(mode, func(t *testing.T) {
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.1
+`,
+				"actions/checkout@v4.2.1=sha1-"+parityTestSHA,
+				"actions/setup-go@v5=sha1-"+parityTestSHA,
+			)
+			_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, mode, "--no-interactive", path)
+			require.ErrorIs(t, err, errSilent)
+			assert.Contains(t, stderr, "Unused lockfile entry actions/setup-go@v5")
+			assert.Contains(t, stderr, "without "+mode)
+		})
+	}
+}
+
+// TestVerifyLocal_LocalActionVerdictFollowsSeverity: a local-action warning
+// on a workflow the lockfile doesn't cover yet is not a failure; once the
+// workflow is onboarded the same step is an error. JSON omits the warning
+// (skipFindingInJSON), so the terminal run proves it is still surfaced.
+func TestVerifyLocal_LocalActionVerdictFollowsSeverity(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		pins    []string
+		other   bool // lockfile exists but covers another workflow
+		wantErr bool
+	}{
+		{
+			name:  "not onboarded warns and passes",
+			body:  "      - uses: ./my-action\n",
+			other: true,
+		},
+		{
+			name:    "onboarded errors and fails",
+			body:    "      - uses: actions/checkout@v4.2.1\n      - uses: ./my-action\n",
+			pins:    []string{"actions/checkout@v4.2.1=sha1-" + parityTestSHA},
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+tc.body, tc.pins...)
+			if tc.other {
+				writeTempLockfile(t, ".", "other.yml", []string{"actions/checkout@v4.2.1=sha1-" + parityTestSHA})
+			}
+			require.NoError(t, os.Mkdir(".git", 0o755))
+			require.NoError(t, os.Mkdir("my-action", 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join("my-action", "action.yml"), []byte("runs:\n  using: composite\n  steps: []\n"), 0o644))
+			checkErr := func(err error) {
+				if tc.wantErr {
+					require.ErrorIs(t, err, errSilent)
+				} else {
+					require.NoError(t, err)
+				}
+			}
+
+			p, err := runParity(t, &httpmock.Registry{}, "--verify-local", "--no-interactive")
+			checkErr(err)
+			assert.Equal(t, !tc.wantErr, p.Valid)
+			if tc.wantErr {
+				require.Len(t, p.Findings, 1, "%+v", p.Findings)
+				assert.Equal(t, string(checks.LocalAction), p.Findings[0].Category)
+				assert.Equal(t, string(checks.SeverityError), p.Findings[0].Severity)
+			} else {
+				assert.Empty(t, p.Findings, "non-error local-action is omitted from JSON")
+			}
+
+			stdout, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", "--no-interactive")
+			checkErr(err)
+			assert.Contains(t, stdout+stderr, "local path actions")
+		})
+	}
+}
+
+// TestEmptyWorkflow_LockfileEntryRequired: enforcement requires every
+// workflow to be listed, so a workflow with no uses: still needs an entry
+// and that entry must not carry pins.
+func TestEmptyWorkflow_LockfileEntryRequired(t *testing.T) {
+	const workflow = `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+`
+	const pin = "actions/checkout@v4=sha1-" + parityTestSHA
+	for _, tc := range []struct {
+		name         string
+		mode         []string
+		otherPins    []string // lockfile covers only other.yml
+		ownPins      []string // lockfile covers workflow.yml
+		wantCategory checks.Category
+		wantErr      bool
+		wantEntry    string
+	}{
+		{name: "verify untracked", mode: []string{"--verify"}, otherPins: []string{pin}, wantCategory: checks.NotPinned, wantErr: true},
+		{name: "verify-local untracked", mode: []string{"--verify-local"}, otherPins: []string{pin}, wantCategory: checks.NotPinned, wantErr: true},
+		{name: "fix run adds entry", otherPins: []string{pin}, wantCategory: checks.NotPinned, wantEntry: "'.github/workflows/workflow.yml': []"},
+		{name: "no-onboard leaves it", mode: []string{"--no-onboard"}, otherPins: []string{pin}, wantCategory: checks.OnboardingRequired},
+		{name: "verify no-onboard opts out", mode: []string{"--verify", "--no-onboard"}, otherPins: []string{pin}, wantCategory: checks.OnboardingRequired},
+		{name: "verify unused pin", mode: []string{"--verify"}, ownPins: []string{pin}, wantCategory: checks.Stale, wantErr: true},
+		{name: "verify-local unused pin", mode: []string{"--verify-local"}, ownPins: []string{pin}, wantCategory: checks.Stale, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, workflow, tc.ownPins...)
+			if len(tc.otherPins) > 0 {
+				writeTempLockfile(t, ".", "other.yml", tc.otherPins)
+			}
+			args := append(slices.Clone(tc.mode), "--no-interactive", path)
+
+			p, err := runParity(t, &httpmock.Registry{}, args...)
+			if tc.wantErr {
+				require.ErrorIs(t, err, errSilent)
+			} else {
+				require.NoError(t, err)
+			}
+
+			hasError := false
+			var cats []string
+			for _, f := range p.Findings {
+				hasError = hasError || f.Severity == string(checks.SeverityError)
+				cats = append(cats, f.Category)
+			}
+			// Fix runs report the pre-fix diagnosis, so only the read-only
+			// modes tie errors to the exit code.
+			if len(tc.mode) > 0 {
+				assert.Equal(t, tc.wantErr, hasError, "%+v", p.Findings)
+			}
+			assert.Equal(t, !hasError, p.Valid, "valid must agree with severities")
+			if tc.wantCategory != "" {
+				assert.Contains(t, cats, string(tc.wantCategory))
+			}
+			if tc.wantEntry != "" {
+				assert.Contains(t, readTempLockfilePins(t), tc.wantEntry)
+			}
+		})
 	}
 }

@@ -20,10 +20,11 @@ import (
 // DocURL and ParentNWO are attached by the caller (diagnoseOneParsed)
 // because they need lookup tables runChecks doesn't carry.
 func RunChecks(ctx context.Context, pw ParsedWorkflow, lf parserlock.File, r CheckResolver) []Finding {
-	wfEntry, _ := lf.LookupWorkflow(workflowfile.KeyFromPath(pw.Path))
+	wfEntry, tracked := lf.LookupWorkflow(workflowfile.KeyFromPath(pw.Path))
 	depPins, depIndex := parseWorkflowDeps(wfEntry, lf.Dependencies)
 
 	var out []Finding
+	out = append(out, checkUntracked(pw, tracked)...)
 	out = append(out, checkNotPinned(pw, depPins, depIndex)...)
 	out = append(out, checkShaAsRef(pw, depIndex)...)
 	out = append(out, checkRefChanged(pw, depPins)...)
