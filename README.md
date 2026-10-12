@@ -55,8 +55,8 @@ gh actions-lock --verify
 
 `--verify` also checks that a commit locked under a branch or partial version
 (e.g. `main`, `v4`) is still in that ref's history. `--verify-local` runs
-offline and only checks that every ref has a lockfile entry, not that the
-entries are trustworthy; use `--verify` in CI for that.
+offline, never writes, and only checks that every ref has a lockfile entry,
+not that the entries are trustworthy; use `--verify` in CI for that.
 
 Pins to branches or partial versions (e.g. `main`, `v4`) are not advanced when
 upstream moves. To regenerate the lockfile from the current upstream commits,
@@ -106,9 +106,11 @@ A trailing `@ref` (e.g. `$/actions/my-action@v1`) is rejected — the ref is alw
 the running commit.
 
 Same-repo `./…` composite action references are automatically converted to `$/…`
-on fix runs. This rewrites `./…` steps both in your workflows and in your in-repo
-composite action definitions (`action.yml`). Only `./…` paths that resolve to an
-in-repo action file are rewritten. To leave `./…` refs untouched, opt out with
+on fix runs. The migration rewrites `./…` steps both in your workflows and in
+your in-repo composite action definitions (`action.yml`). Only `./…` paths that
+resolve to an in-repo action file are rewritten. `--verify` and `--verify-local`
+never migrate; they report `./…` refs as `local-action` findings instead. To
+leave `./…` refs untouched on fix runs, opt out with
 `--no-migrate-local-actions`:
 
 ```bash
