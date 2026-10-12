@@ -194,9 +194,13 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 		return scan
 	}
 
-	repoRoot := findRepoRoot(workflowPath)
+	repoRoot, err := findRepoRoot(workflowPath)
+	if err != nil {
+		scan.Errors = append(scan.Errors, fmt.Sprintf("can't inspect self repository actions: %v", err))
+		return scan
+	}
 	if repoRoot == "" {
-		scan.Errors = append(scan.Errors, "can't inspect self repository actions: not in a git repository")
+		scan.Errors = append(scan.Errors, "can't inspect self repository actions: not in a git repository (set "+RepoRootEnv+" to override)")
 		return scan
 	}
 
@@ -317,9 +321,10 @@ func DiscoverWorkflowsIn(dir string) ([]string, error) {
 	return paths, nil
 }
 
-// FindRepoRoot returns the git repository root containing startPath, or "" when
-// startPath is not inside a git repository.
-func FindRepoRoot(startPath string) string {
+// FindRepoRoot returns the repository root containing startPath, or "" when
+// startPath is not inside a git repository. RepoRootEnv overrides discovery;
+// an unusable override is an error.
+func FindRepoRoot(startPath string) (string, error) {
 	return findRepoRoot(startPath)
 }
 
@@ -373,7 +378,13 @@ func ExtractLocalCompositeRefs(workflowPath string, localPaths []string) ([]pars
 	var warnings []string
 	seen := make(map[string]bool)
 
-	repoRoot := findRepoRoot(workflowPath)
+	repoRoot, err := findRepoRoot(workflowPath)
+	if err != nil {
+		if len(localPaths) > 0 {
+			warnings = append(warnings, fmt.Sprintf("can't resolve local action paths: %v", err))
+		}
+		return nil, warnings
+	}
 	if repoRoot == "" {
 		if len(localPaths) > 0 {
 			warnings = append(warnings, "can't resolve local action paths: not in a git repository")
@@ -527,21 +538,49 @@ func walkYAMLNodesDepth(node *yaml.Node, fn func(keyNode, valueNode *yaml.Node),
 	}
 }
 
-func findRepoRoot(startPath string) string {
+// RepoRootEnv overrides `.git` discovery for callers relocking a partial
+// checkout without `.git`. Every path the CLI resolves must lie inside it.
+const RepoRootEnv = "GH_ACTIONS_LOCK_REPO_ROOT"
+
+// findRepoRoot returns the repository root containing startPath. It honours
+// RepoRootEnv when set; otherwise it walks up for `.git` and returns "" with a
+// nil error when none is found. A non-nil error means the override is unusable.
+func findRepoRoot(startPath string) (string, error) {
 	absPath, err := filepath.Abs(filepath.Dir(startPath))
 	if err != nil {
-		return ""
+		return "", nil
+	}
+	if root := os.Getenv(RepoRootEnv); root != "" {
+		return overrideRepoRoot(root, absPath)
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(absPath, ".git")); err == nil {
-			return absPath
+			return absPath, nil
 		}
 		parent := filepath.Dir(absPath)
 		if parent == absPath {
-			return ""
+			return "", nil
 		}
 		absPath = parent
 	}
+}
+
+func overrideRepoRoot(root, startDir string) (string, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("%s=%s: %w", RepoRootEnv, root, err)
+	}
+	info, err := os.Stat(absRoot)
+	if err != nil {
+		return "", fmt.Errorf("%s=%s: %w", RepoRootEnv, root, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s=%s: not a directory", RepoRootEnv, root)
+	}
+	if err := ValidatePathWithinRoot(absRoot, startDir); err != nil {
+		return "", fmt.Errorf("%s=%s does not contain %s", RepoRootEnv, root, startDir)
+	}
+	return absRoot, nil
 }
 
 func isWithinRoot(root, candidate string) bool {

@@ -479,3 +479,58 @@ runs:
 	assert.Contains(t, scan.Errors[0], "`uses:` can't contain an expression")
 	assert.Empty(t, scan.Refs)
 }
+
+func TestFindRepoRoot_EnvOverride(t *testing.T) {
+	gitRepo := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(gitRepo, ".git"), 0o755))
+	partial := t.TempDir()
+	outside := t.TempDir()
+
+	tests := []struct {
+		name     string
+		env      string
+		start    string
+		wantRoot string
+		wantErr  string
+	}{
+		{name: "unset walks up to .git", start: filepath.Join(gitRepo, ".github", "workflows", "ci.yml"), wantRoot: gitRepo},
+		{name: "unset without .git returns empty", start: filepath.Join(partial, ".github", "workflows", "ci.yml")},
+		{name: "set returns override without .git", env: partial, start: filepath.Join(partial, ".github", "workflows", "ci.yml"), wantRoot: partial},
+		{name: "set wins over .git", env: filepath.Join(gitRepo, ".github"), start: filepath.Join(gitRepo, ".github", "workflows", "ci.yml"), wantRoot: filepath.Join(gitRepo, ".github")},
+		{name: "nonexistent dir fails", env: filepath.Join(partial, "missing"), start: filepath.Join(partial, ".github", "workflows", "ci.yml"), wantErr: RepoRootEnv},
+		{name: "start outside root fails", env: partial, start: filepath.Join(outside, ".github", "workflows", "ci.yml"), wantErr: "does not contain"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, os.MkdirAll(filepath.Dir(tt.start), 0o755))
+			t.Setenv(RepoRootEnv, tt.env)
+
+			root, err := FindRepoRoot(tt.start)
+
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Empty(t, root)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantRoot, root)
+		})
+	}
+}
+
+func TestScanSelfRepositoryActions_EnvRootBoundsEscape(t *testing.T) {
+	parent := t.TempDir()
+	repoRoot := filepath.Join(parent, "repo")
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "ci.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(workflowPath), 0o755))
+	sibling := filepath.Join(parent, "sibling", "action.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(sibling), 0o755))
+	require.NoError(t, os.WriteFile(sibling, []byte("runs:\n  using: composite\n  steps:\n    - uses: evil/x@v1\n"), 0o644))
+	t.Setenv(RepoRootEnv, repoRoot)
+
+	scan := ScanSelfRepositoryActions(workflowPath, []string{"$/../sibling"})
+
+	require.Len(t, scan.Errors, 1)
+	assert.Contains(t, scan.Errors[0], "outside repo root")
+	assert.Empty(t, scan.Refs)
+}

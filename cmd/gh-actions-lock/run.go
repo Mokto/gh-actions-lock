@@ -639,7 +639,11 @@ func migrateLocalActions(paths []string) (int, func(), error) {
 	// a workflow path (they live under .github/workflows/); onboarding only
 	// runs when workflows exist, so an empty paths list means nothing to do.
 	if len(paths) > 0 {
-		if root := workflowfile.FindRepoRoot(paths[0]); root != "" {
+		root, err := workflowfile.FindRepoRoot(paths[0])
+		if err != nil {
+			return 0, undo, err
+		}
+		if root != "" {
 			actionFiles, err := workflowfile.DiscoverCompositeActionFiles(root)
 			if err != nil {
 				return 0, undo, err
@@ -660,7 +664,11 @@ func migrateLocalActions(paths []string) (int, func(), error) {
 		}
 		seen[absPath] = true
 
-		if root := workflowfile.FindRepoRoot(path); root != "" {
+		root, err := workflowfile.FindRepoRoot(path)
+		if err != nil {
+			return 0, undo, fmt.Errorf("refusing to migrate %s: %w", path, err)
+		}
+		if root != "" {
 			if err := workflowfile.ValidatePathWithinRoot(root, path); err != nil {
 				return 0, undo, fmt.Errorf("refusing to migrate %s: %w", path, err)
 			}
