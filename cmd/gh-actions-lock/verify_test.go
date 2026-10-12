@@ -334,6 +334,7 @@ jobs:
 		{name: "verify-local untracked", mode: []string{"--verify-local"}, otherPins: []string{pin}, wantCategory: checks.NotPinned, wantErr: true},
 		{name: "fix run adds entry", otherPins: []string{pin}, wantCategory: checks.NotPinned, wantEntry: "'.github/workflows/workflow.yml': []"},
 		{name: "no-onboard leaves it", mode: []string{"--no-onboard"}, otherPins: []string{pin}, wantCategory: checks.OnboardingRequired},
+		{name: "verify no-onboard opts out", mode: []string{"--verify", "--no-onboard"}, otherPins: []string{pin}, wantCategory: checks.OnboardingRequired},
 		{name: "verify unused pin", mode: []string{"--verify"}, ownPins: []string{pin}, wantCategory: checks.Stale, wantErr: true},
 		{name: "verify-local unused pin", mode: []string{"--verify-local"}, ownPins: []string{pin}, wantCategory: checks.Stale, wantErr: true},
 	} {
