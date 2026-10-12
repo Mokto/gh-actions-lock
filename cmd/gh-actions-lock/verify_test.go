@@ -306,3 +306,69 @@ func TestVerifyLocal_LocalActionVerdictFollowsSeverity(t *testing.T) {
 		})
 	}
 }
+
+// TestEmptyWorkflow_LockfileEntryRequired: enforcement requires every
+// workflow to be listed, so a workflow with no uses: still needs an entry
+// and that entry must not carry pins.
+func TestEmptyWorkflow_LockfileEntryRequired(t *testing.T) {
+	const workflow = `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+`
+	const pin = "actions/checkout@v4=sha1-" + parityTestSHA
+	for _, tc := range []struct {
+		name         string
+		mode         []string
+		otherPins    []string // lockfile covers only other.yml
+		ownPins      []string // lockfile covers workflow.yml
+		wantCategory checks.Category
+		wantErr      bool
+		wantEntry    string
+	}{
+		{name: "verify untracked", mode: []string{"--verify"}, otherPins: []string{pin}, wantCategory: checks.NotPinned, wantErr: true},
+		{name: "verify-local untracked", mode: []string{"--verify-local"}, otherPins: []string{pin}, wantCategory: checks.NotPinned, wantErr: true},
+		{name: "fix run adds entry", otherPins: []string{pin}, wantCategory: checks.NotPinned, wantEntry: "'.github/workflows/workflow.yml': []"},
+		{name: "no-onboard leaves it", mode: []string{"--no-onboard"}, otherPins: []string{pin}, wantCategory: checks.OnboardingRequired},
+		{name: "verify unused pin", mode: []string{"--verify"}, ownPins: []string{pin}, wantCategory: checks.Stale, wantErr: true},
+		{name: "verify-local unused pin", mode: []string{"--verify-local"}, ownPins: []string{pin}, wantCategory: checks.Stale, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, workflow, tc.ownPins...)
+			if len(tc.otherPins) > 0 {
+				writeTempLockfile(t, ".", "other.yml", tc.otherPins)
+			}
+			args := append(slices.Clone(tc.mode), "--no-interactive", path)
+
+			p, err := runParity(t, &httpmock.Registry{}, args...)
+			if tc.wantErr {
+				require.ErrorIs(t, err, errSilent)
+			} else {
+				require.NoError(t, err)
+			}
+
+			hasError := false
+			var cats []string
+			for _, f := range p.Findings {
+				hasError = hasError || f.Severity == string(checks.SeverityError)
+				cats = append(cats, f.Category)
+			}
+			// Fix runs report the pre-fix diagnosis, so only the read-only
+			// modes tie errors to the exit code.
+			if len(tc.mode) > 0 {
+				assert.Equal(t, tc.wantErr, hasError, "%+v", p.Findings)
+			}
+			assert.Equal(t, !hasError, p.Valid, "valid must agree with severities")
+			if tc.wantCategory != "" {
+				assert.Contains(t, cats, string(tc.wantCategory))
+			}
+			if tc.wantEntry != "" {
+				assert.Contains(t, readTempLockfilePins(t), tc.wantEntry)
+			}
+		})
+	}
+}

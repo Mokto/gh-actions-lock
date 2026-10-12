@@ -641,3 +641,39 @@ func TestRunChecks_AllFindingsCarryConfidence(t *testing.T) {
 		}
 	}
 }
+
+// TestRunChecks_UntrackedWorkflow: enforcement requires every workflow to be
+// listed, so a workflow with no uses: still needs an entry.
+func TestRunChecks_UntrackedWorkflow(t *testing.T) {
+	lf := checkNewLockfile(map[string][]string{
+		".github/workflows/empty.yml": {},
+	})
+	for _, tc := range []struct {
+		name string
+		pw   ParsedWorkflow
+		want []string
+	}{
+		{name: "tracked empty workflow", pw: checkParsedWF(".github/workflows/empty.yml")},
+		{name: "untracked empty workflow", pw: checkParsedWF(".github/workflows/new.yml"), want: []string{string(NotPinned)}},
+		{
+			name: "untracked workflow with refs reports per ref",
+			pw:   checkParsedWF(".github/workflows/new.yml", checkRef("actions", "checkout", "v4")),
+			want: []string{string(NotPinned)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RunChecks(context.Background(), tc.pw, lf, nil)
+			if cats := findingCategories(got); strings.Join(cats, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("categories: got %v, want %v", cats, tc.want)
+			}
+			for _, f := range got {
+				if f.Severity != SeverityError || !f.IsRemediableNotPinned() {
+					t.Errorf("want remediable error, got %+v", f)
+				}
+				if (f.ActionRef != nil) != (len(tc.pw.Refs) > 0) {
+					t.Errorf("ActionRef: got %v, want per-ref only when the workflow has refs", f.ActionRef)
+				}
+			}
+		})
+	}
+}

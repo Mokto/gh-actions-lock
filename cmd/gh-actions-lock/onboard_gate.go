@@ -27,7 +27,18 @@ func gateNoOnboard(report *checks.Report) []string {
 		refusedKeys := make(map[string]bool)
 		for fi := range wr.Findings {
 			f := &wr.Findings[fi]
-			if f.Category != checks.NotPinned || f.ActionRef == nil || f.TrackedAction {
+			if f.Category != checks.NotPinned || f.TrackedAction {
+				continue
+			}
+			if f.ActionRef == nil {
+				// A dependency-free workflow missing from the lockfile.
+				if f.Remediable && len(wr.ActionRefs) == 0 {
+					f.Category = checks.OnboardingRequired
+					f.Severity = checks.SeverityInfo
+					f.Detail = "workflow has no lockfile entry; --no-onboard refuses to add new workflows or actions"
+					f.Remediation = "onboard it first with `gh actions-lock` (without --no-onboard)"
+					refused = append(refused, wr.Path)
+				}
 				continue
 			}
 			ar := f.ActionRef

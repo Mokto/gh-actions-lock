@@ -23,6 +23,8 @@ dependencies:
 workflows:
   '.github/workflows/ci.yml':
     - 'actions/checkout@v4'
+  '.github/workflows/self.yml': []
+  '.github/workflows/empty.yml': []
 `
 
 func writeTestLockfile(t *testing.T, dir, content string) *lockfile.State {
@@ -160,20 +162,33 @@ func TestVerifyLocalCoverage_MissingPin(t *testing.T) {
 	assert.Contains(t, notPinned[0].Detail, "setup-go")
 }
 
+// TestVerifyLocalCoverage_EmptyWorkflow: lockfile enforcement covers every
+// workflow, so one with no uses: still needs an entry.
 func TestVerifyLocalCoverage_EmptyWorkflow(t *testing.T) {
-	dir := t.TempDir()
-	store := writeTestLockfile(t, dir, testLockfileContent)
+	store := writeTestLockfile(t, t.TempDir(), testLockfileContent)
 
-	parsed := []checks.ParsedWorkflow{
-		{
-			Path: ".github/workflows/empty.yml",
-			Refs: nil,
-		},
-	}
+	t.Run("tracked is valid", func(t *testing.T) {
+		report := VerifyLocalCoverage([]checks.ParsedWorkflow{{Path: ".github/workflows/empty.yml"}}, store)
+		assert.True(t, report.IsValid())
+		assert.Empty(t, report.Workflows[0].Findings)
+	})
 
-	report := VerifyLocalCoverage(parsed, store)
-	assert.True(t, report.IsValid())
-	assert.Empty(t, report.Workflows[0].Findings)
+	t.Run("untracked is a fixable error", func(t *testing.T) {
+		report := VerifyLocalCoverage([]checks.ParsedWorkflow{{Path: ".github/workflows/new.yml"}}, store)
+		assert.False(t, report.IsValid())
+		require.Len(t, report.Workflows[0].Findings, 1)
+		f := report.Workflows[0].Findings[0]
+		assert.Equal(t, checks.NotPinned, f.Category)
+		assert.Equal(t, checks.SeverityError, f.Severity)
+		assert.True(t, f.IsRemediableNotPinned())
+	})
+
+	t.Run("unused pin is stale", func(t *testing.T) {
+		report := VerifyLocalCoverage([]checks.ParsedWorkflow{{Path: ".github/workflows/ci.yml"}}, store)
+		assert.False(t, report.IsValid())
+		require.Len(t, report.Workflows[0].Findings, 1)
+		assert.Equal(t, checks.Stale, report.Workflows[0].Findings[0].Category)
+	})
 }
 
 func TestVerifyLocalCoverage_LoadError(t *testing.T) {

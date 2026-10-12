@@ -8,6 +8,25 @@ import (
 	"github.com/github/gh-actions-lock/internal/dep"
 )
 
+// checkUntracked emits NotPinned for a workflow with no uses: refs that
+// has no lockfile entry. Lockfile enforcement requires every workflow to be
+// listed, dependencies or not; workflows with refs already get per-ref
+// NotPinned findings.
+func checkUntracked(pw ParsedWorkflow, tracked bool) []Finding {
+	if tracked || len(pw.Refs) > 0 {
+		return nil
+	}
+	return []Finding{{
+		WorkflowPath: pw.Path,
+		Category:     NotPinned,
+		Severity:     SeverityError,
+		Confidence:   ConfidenceHigh,
+		Remediable:   true,
+		Detail:       "workflow has no lockfile entry",
+		Remediation:  "run `gh actions-lock` to add it",
+	}}
+}
+
 // checkNotPinned emits NotPinned for any uses: ref that has no
 // matching lockfile entry. When the lockfile has an entry for the same
 // action at a different ref, RefChanged wins, except for bare SHAs: an

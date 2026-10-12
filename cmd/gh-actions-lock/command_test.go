@@ -1204,18 +1204,16 @@ jobs:
 	require.NoError(t, os.WriteFile(second, workflow, 0o600))
 	require.NoError(t, os.WriteFile(ignored, []byte("not a workflow\n"), 0o600))
 
+	// No lockfile, so both workflows are untracked and the run fails.
 	stdout, _, err := runCommandWithHTTP(t, reg, "--no-fix", "--json=valid,workflows", dir)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, errSilent)
 
 	var payload struct {
-		Valid     bool `json:"valid"`
 		Workflows []struct {
-			Path  string `json:"path"`
-			Valid bool   `json:"valid"`
+			Path string `json:"path"`
 		} `json:"workflows"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
-	assert.True(t, payload.Valid)
 	require.Len(t, payload.Workflows, 2)
 	assert.Equal(t, first, payload.Workflows[0].Path)
 	assert.Equal(t, second, payload.Workflows[1].Path)
