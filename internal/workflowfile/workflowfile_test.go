@@ -499,7 +499,12 @@ func TestFindRepoRoot_EnvOverride(t *testing.T) {
 		{name: "set wins over .git", env: filepath.Join(gitRepo, ".github"), start: filepath.Join(gitRepo, ".github", "workflows", "ci.yml"), wantRoot: filepath.Join(gitRepo, ".github")},
 		{name: "nonexistent dir fails", env: filepath.Join(partial, "missing"), start: filepath.Join(partial, ".github", "workflows", "ci.yml"), wantErr: RepoRootEnv},
 		{name: "start outside root fails", env: partial, start: filepath.Join(outside, ".github", "workflows", "ci.yml"), wantErr: "does not contain"},
+		{name: "symlinked workflow escaping root fails", env: partial, start: filepath.Join(partial, ".github", "workflows", "link.yml"), wantErr: "does not contain"},
 	}
+	escapeTarget := filepath.Join(outside, "evil.yml")
+	require.NoError(t, os.WriteFile(escapeTarget, []byte("name: evil\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(partial, ".github", "workflows"), 0o755))
+	require.NoError(t, os.Symlink(escapeTarget, filepath.Join(partial, ".github", "workflows", "link.yml")))
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.NoError(t, os.MkdirAll(filepath.Dir(tt.start), 0o755))

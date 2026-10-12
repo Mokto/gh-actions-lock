@@ -34,6 +34,7 @@ func TestRun_RepoRootEnvWithoutGit(t *testing.T) {
 			write(".github/workflows/ci.yml",
 				"name: ci\non: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: $/tools/act\n")
 			t.Chdir(dir)
+			t.Setenv("GH_ACTIONS_LOCK_REPO_ROOT", "")
 			if tt.setRoot {
 				t.Setenv("GH_ACTIONS_LOCK_REPO_ROOT", dir)
 			}

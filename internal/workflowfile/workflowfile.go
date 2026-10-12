@@ -551,7 +551,7 @@ func findRepoRoot(startPath string) (string, error) {
 		return "", nil
 	}
 	if root := os.Getenv(RepoRootEnv); root != "" {
-		return overrideRepoRoot(root, absPath)
+		return overrideRepoRoot(root, startPath, absPath)
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(absPath, ".git")); err == nil {
@@ -565,7 +565,9 @@ func findRepoRoot(startPath string) (string, error) {
 	}
 }
 
-func overrideRepoRoot(root, startDir string) (string, error) {
+// overrideRepoRoot checks startDir and, when it exists, startPath itself so a
+// symlinked workflow can't point outside the override.
+func overrideRepoRoot(root, startPath, startDir string) (string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("%s=%s: %w", RepoRootEnv, root, err)
@@ -577,8 +579,14 @@ func overrideRepoRoot(root, startDir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%s=%s: not a directory", RepoRootEnv, root)
 	}
-	if err := ValidatePathWithinRoot(absRoot, startDir); err != nil {
-		return "", fmt.Errorf("%s=%s does not contain %s", RepoRootEnv, root, startDir)
+	candidates := []string{startDir}
+	if _, err := os.Lstat(startPath); err == nil {
+		candidates = append(candidates, startPath)
+	}
+	for _, c := range candidates {
+		if err := ValidatePathWithinRoot(absRoot, c); err != nil {
+			return "", fmt.Errorf("%s=%s does not contain %s", RepoRootEnv, root, c)
+		}
 	}
 	return absRoot, nil
 }
