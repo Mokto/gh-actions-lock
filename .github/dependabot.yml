@@ -1,0 +1,22 @@
+# gh-actions-lock reads the github-actions cooldown below as its own
+# fresh-release policy; it honors only default-days.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      go-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
