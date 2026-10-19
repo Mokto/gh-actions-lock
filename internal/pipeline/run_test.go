@@ -258,7 +258,8 @@ func TestParityKeep_AcceptMovedOnlyDirectFullSHAPins(t *testing.T) {
 		{name: "accept-moved repairs a direct full-SHA pin", relock: true, acceptMoved: true, pin: shaPin, wantKeep: true, wantWarn: true},
 		{name: "accept-moved keeps a transitive full-SHA pin blocking", relock: true, acceptMoved: true, parent: "octo/composite@v1", pin: shaPin, wantKeep: true},
 		{name: "relock keeps a full-SHA pin blocking", relock: true, pin: shaPin, wantKeep: true},
-		{name: "relock drops a mutable pin it re-resolves", relock: true, pin: parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: "v4"}},
+		{name: "relock keeps an unreachable mutable pin blocking", relock: true, pin: parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: "v4"}, wantKeep: true},
+		{name: "accept-moved drops a mutable pin it re-resolves", relock: true, acceptMoved: true, pin: parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: "v4"}},
 		{name: "plain run keeps everything", pin: shaPin, wantKeep: true},
 	}
 	for _, tt := range tests {

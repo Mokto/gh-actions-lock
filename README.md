@@ -66,9 +66,14 @@ or branch name the backend accepts, never a SHA, a `refs/` name, revision
 syntax such as `main~1`, or a `git describe` name, and it must equal the
 `uses:` ref unless that is a full SHA. A `uses:` ref that is not such a tag or
 branch, such as `pull/1/head` or `main~1`, is never locked.
-`--verify-local` runs
-offline, never writes, and only checks that every ref has a lockfile entry,
-not that the entries are trustworthy; use `--verify` in CI for that.
+`--verify` also reads action manifests at
+the locked commits to check that the recorded transitive graph covers their
+dependencies, without advancing to current upstream commits.
+
+`--verify-local` runs offline and never writes. It checks direct refs and all
+recorded transitive edges for missing dependency entries, but cannot discover an
+edge erased from the lockfile or establish that recorded commits are
+trustworthy; use `--verify` in CI for that.
 
 Pins to branches or partial versions (e.g. `main`, `v4`) are not advanced when
 upstream moves. To regenerate the lockfile from the current upstream commits,
@@ -78,8 +83,13 @@ run:
 gh actions-lock --relock
 ```
 
-`--relock` re-resolves refs that have legitimately moved and rewrites the
-lockfile to the new SHA. Suspicious pins whose recorded commit is no longer
+`--relock` re-resolves the complete graph, even when no recorded ref has moved,
+and restores missing entries and edges. A normal sticky write rejects dangling
+recorded references: restore missing entries from version control to keep the old
+commits, or explicitly relock to select current upstream commits.
+Refreshes reject conflicting commits for a shared dependency rather than
+combining manifests from different commits into one lockfile entry.
+Suspicious pins whose recorded commit is no longer
 reachable upstream are left as errors — use `--accept-moved` to re-resolve
 those as well.
 
