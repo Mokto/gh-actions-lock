@@ -97,11 +97,33 @@ func committedWorkflows(rec *Record, store *lockfile.State, copts *CommitOptions
 }
 
 // updateLockfile applies rec's entry repairs for the workflows it writes,
-// then sets each of those workflows' entries in store.
+// clears the recorded graph those of them that refresh replace, then sets
+// each workflow's entries in store. Commit and every preview (Audit,
+// PlanEntryRepairs) go through it, so a preview shows what Commit writes.
 func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, store *lockfile.State) error {
 	written := make(map[string]bool, len(workflows))
 	for _, wp := range workflows {
 		written[wp.Path] = true
+	}
+	pinnedByWorkflow := groupPinnedByWorkflow(rec)
+	// A refreshed workflow's graph replaces its recorded one rather than
+	// merging into it, so edges it alone owned are cleared first.
+	var refreshed []string
+	var refreshDeps []dep.Dependency
+	refreshParents := make(dep.ParentMap)
+	for _, wp := range workflows {
+		if wp.Refresh {
+			refreshed = append(refreshed, workflowfile.KeyFromPath(wp.Path))
+			refreshDeps = append(refreshDeps, pinnedByWorkflow[wp.Path]...)
+			for child, parents := range buildParentMap(rec, wp.Path) {
+				refreshParents[child] = append(refreshParents[child], parents...)
+			}
+		}
+	}
+	if len(refreshed) > 0 {
+		if err := store.PrepareRefresh(refreshed, refreshDeps, refreshParents); err != nil {
+			return fmt.Errorf("refreshing lockfile graph: %w", err)
+		}
 	}
 	for _, r := range rec.EntryRepairs {
 		if !slices.ContainsFunc(r.Workflows, func(p string) bool { return written[p] }) {
@@ -111,7 +133,6 @@ func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, 
 			return fmt.Errorf("updating lockfile: %w", err)
 		}
 	}
-	pinnedByWorkflow := groupPinnedByWorkflow(rec)
 	for _, wp := range workflows {
 		wfPath := wp.Path
 		wfKey := workflowfile.KeyFromPath(wfPath)

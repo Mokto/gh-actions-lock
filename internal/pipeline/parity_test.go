@@ -267,7 +267,8 @@ func TestHeldBy(t *testing.T) {
 		composites []lockfile.LockedPin
 		want       string
 	}{
-		{"a composite's child", pin("actions/checkout@v4", "octo/root@v1"), composite, "octo/root@v1"},
+		{"a composite's full-SHA child", pin("actions/checkout@"+sha, "octo/root@v1"), composite, "octo/root@v1"},
+		{"a composite's mutable child is re-resolved by the rebuild", pin("actions/checkout@v4", "octo/root@v1"), composite, ""},
 		{"a full-SHA entry shared with a direct use", pin("actions/checkout@"+sha, ""), composite, "octo/root@v1"},
 		{"a mutable entry shared with a direct use is re-resolved in place", pin("actions/checkout@v4", ""), composite, ""},
 		{"a direct pin no composite lists", pin("actions/checkout@"+sha, ""), nil, ""},

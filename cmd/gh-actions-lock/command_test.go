@@ -290,7 +290,11 @@ func parityOKWithIDs(ids map[string]int) httpmock.Responder {
 type parityFallback struct{ rt http.RoundTripper }
 
 func (p parityFallback) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Body == nil || !httpmock.GraphQL(`commit: object\(oid`)(req) {
+	parity := req.Body != nil && httpmock.GraphQL(`commit: object\(oid`)(req)
+	// --verify reads each locked commit's manifest; unstubbed, it's a node
+	// action, so the recorded graph is complete.
+	manifest := !parity && req.Body != nil && httpmock.GraphQL(`file: file\(path`)(req)
+	if !parity && !manifest {
 		return p.rt.RoundTrip(req)
 	}
 	body, err := io.ReadAll(req.Body)
@@ -298,11 +302,43 @@ func (p parityFallback) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	if resp, err := p.rt.RoundTrip(req); err == nil {
+	resp, err := p.rt.RoundTrip(req)
+	if err == nil {
 		return resp, nil
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
+	if manifest {
+		if !atLockedCommits(body) {
+			return nil, err
+		}
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		return nodeManifests(req)
+	}
 	return parityOK(req)
+}
+
+// atLockedCommits reports whether a manifest query reads only full commit
+// SHAs, as --verify does at locked commits; resolution reads tags and
+// branches, which the fallback leaves to the test's own stubs.
+func atLockedCommits(body []byte) bool {
+	var q struct {
+		Variables map[string]any `json:"variables"`
+	}
+	if json.Unmarshal(body, &q) != nil {
+		return false
+	}
+	seen := false
+	for k, v := range q.Variables {
+		if !strings.HasPrefix(k, "expr") {
+			continue
+		}
+		expr, _ := v.(string)
+		if !parserlock.IsFullSha(strings.TrimSuffix(expr, "^{commit}")) {
+			return false
+		}
+		seen = true
+	}
+	return seen
 }
 
 // writeTempWorkflow writes a workflow YAML body to a scratch repo at

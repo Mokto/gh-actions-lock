@@ -80,6 +80,8 @@ type Finding struct {
 	// Reresolve asks planning to drop this finding's recorded dependency
 	// from the inventory and resolve it afresh (see PrunesDependency).
 	Reresolve bool
+	// IncompleteLockfile distinguishes damaged recorded graphs from new refs.
+	IncompleteLockfile bool
 }
 
 // InventoryEntry describes a single dependency with context.

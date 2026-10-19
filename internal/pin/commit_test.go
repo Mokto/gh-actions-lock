@@ -387,3 +387,33 @@ func TestUpdateLockfileRepairsOnlyForWriters(t *testing.T) {
 		assert.Equal(t, want, a.Ref, "written=%v", written)
 	}
 }
+
+// TestUpdateLockfileClearsRefreshedEdges: a refreshed workflow's recorded
+// edges are replaced, not merged, so a child its composite no longer uses
+// leaves the graph. Every write path (Commit, Audit's and repair's
+// previews) goes through updateLockfile, so they all see the same graph.
+func TestUpdateLockfileClearsRefreshedEdges(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	root, child := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/a.yml':\n        - 'o/root@v1'\n" +
+		"dependencies:\n    'o/root@v1':\n        ref: 'v1'\n        commit: 'sha1-" + root + "'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - 'o/child@v2'\n" +
+		"    'o/child@v2':\n        ref: 'v2'\n        commit: 'sha1-" + child + "'\n        owner_id: 1\n        repo_id: 2\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+	store, err := lockfile.LoadState(dir, fakeMeta{})
+	require.NoError(t, err)
+	wf := filepath.Join(".github", "workflows", "a.yml")
+	rec := &Record{
+		Entries:   []Entry{{NWO: "o/root", Ref: "v1", SHA: strings.Repeat("c", 40), Resolution: Pinned, Direct: true, Workflows: []string{wf}}},
+		Workflows: []WorkflowPlan{{Path: wf, Refresh: true}},
+	}
+
+	preview := store.Preview()
+	require.NoError(t, updateLockfile(context.Background(), rec, rec.Workflows, preview))
+	preview.GC()
+	a, ok := preview.Entry("o/root@v1")
+	require.True(t, ok)
+	assert.Empty(t, a.Uses, "the dropped edge is gone")
+	_, ok = preview.Entry("o/child@v2")
+	assert.False(t, ok, "the dropped child is gone")
+}

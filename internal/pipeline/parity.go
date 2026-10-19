@@ -281,9 +281,11 @@ func plannedAway(lp lockfile.LockedPin, composites []lockfile.LockedPin, effect 
 // heldBy is the composite (NWO@ref) that keeps a recorded entry as recorded
 // even when --accept-moved re-resolves the workflow's use of it, or "" when
 // that repairs it. Repair advice and the override both ask this.
+// --accept-moved rebuilds the workflow's graph, re-resolving a mutable ref
+// wherever it sits, so only a full SHA a composite pins is held.
 func heldBy(lp lockfile.LockedPin, composites []lockfile.LockedPin) string {
 	switch {
-	case plannedAway(lp, composites, checks.Reresolved):
+	case !parserlock.IsFullSha(lp.Pin.Ref), plannedAway(lp, composites, checks.Reresolved):
 		return ""
 	case lp.Parent != "":
 		return lockParent(lp)

@@ -26,7 +26,7 @@ type RunOptions struct {
 	// them; it implies Relock.
 	AcceptMoved bool
 	// Verify also checks that each pin on a mutable ref is still in that
-	// ref's history, at one Compare call per ref that moved.
+	// ref's history and that locked manifests match the recorded graph.
 	Verify bool
 
 	// Resolver UX hooks — set these for interactive spinner mode.
@@ -132,6 +132,18 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	// Phase 3: Diagnose.
 	endDiag := prof.Phase("  diagnose (parallel)")
 	report := DiagnoseParsed(ctx, parsed, r, opts.Store, opts.Pool)
+	for i := range report.Workflows {
+		wr := &report.Workflows[i]
+		for j := range wr.Findings {
+			f := &wr.Findings[j]
+			if f.IncompleteLockfile {
+				f.Remediable = opts.Relock
+				if !opts.Relock {
+					wr.SkipCommit = true
+				}
+			}
+		}
+	}
 	endDiag()
 
 	// Phase 4: Parity.
@@ -150,5 +162,10 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
+	if opts.Verify && r != nil && opts.Store != nil {
+		if err := checkLockedManifests(ctx, r, parsed, opts.Store, report); err != nil {
+			return nil, err
+		}
+	}
 	return &RunResult{Report: report, Valid: report.IsValid()}, nil
 }

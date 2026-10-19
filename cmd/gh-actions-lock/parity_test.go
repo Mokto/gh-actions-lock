@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,6 +40,47 @@ func runParity(t *testing.T, rt http.RoundTripper, args ...string) (parityPayloa
 	var p parityPayload
 	require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout)
 	return p, err
+}
+
+func registerNodeManifests(reg *httpmock.Registry) {
+	reg.Register(httpmock.GraphQL(`file: file\(path`), nodeManifests)
+}
+
+// nodeManifests answers a manifest query with a node action at each
+// requested commit.
+func nodeManifests(req *http.Request) (*http.Response, error) {
+	var body struct {
+		Variables map[string]string `json:"variables"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	data := map[string]any{}
+	for i := 0; ; i++ {
+		owner, ok := body.Variables[fmt.Sprintf("owner%d", i)]
+		if !ok {
+			break
+		}
+		data[fmt.Sprintf("a%d", i)] = testRepoResponse(
+			owner+"/"+body.Variables[fmt.Sprintf("name%d", i)],
+			strings.TrimSuffix(body.Variables[fmt.Sprintf("expr%d", i)], "^{commit}"),
+			nodeActionYAML,
+		)
+	}
+	return httpmock.JSONResponse(map[string]any{"data": data})(req)
+}
+
+// registerLockedCheckoutManifest serves actions/checkout's manifest at
+// parityTestSHA for --verify's locked-commit graph check.
+func registerLockedCheckoutManifest(reg *httpmock.Registry, proxy bool) {
+	if !proxy {
+		registerNodeManifests(reg)
+		return
+	}
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`),
+		httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.yml$`),
+		httpmock.JSONResponse(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML))}))
 }
 
 const transferWorkflow = `
@@ -69,6 +113,7 @@ func TestParity_TransferredRepoWarns(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(1))
+	registerNodeManifests(reg)
 	path := writeTempWorkflow(t, transferWorkflow, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
@@ -334,6 +379,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.1
 `, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+			if !tt.block && tt.args[0] == "--verify" {
+				registerNodeManifests(reg)
+			}
 			p, err := runParity(t, reg, append(tt.args, path)...)
 			lock := readTempLockfilePins(t)
 			assert.Contains(t, lock, "sha1-"+parityTestSHA)
@@ -395,6 +443,7 @@ jobs:
 		}))
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
 			httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+		registerNodeManifests(reg)
 		path := writeTempWorkflow(t, workflow, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 		_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
 		require.NoError(t, err, stderr)
@@ -438,6 +487,7 @@ jobs:
 // rerun re-resolves nothing and costs one GraphQL request for the whole
 // closure, ref lookups included. A mutable ref that moved upstream stays
 // locked (sticky) and adds one compare call.
+// Online verification additionally fetches manifests by locked SHA.
 func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
@@ -445,11 +495,16 @@ func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 
 	for _, args := range [][]string{{path}, {"--verify", path}} {
 		registerParity(reg)
+		wantRequests := 1
+		if args[0] == "--verify" {
+			registerNodeManifests(reg)
+			wantRequests = 2
+		}
 		ct := &countingTransport{inner: reg}
 		p, err := runParity(t, ct, args...)
 		require.NoError(t, err)
 		assert.True(t, p.Valid, "%+v", p.Findings)
-		assert.Equal(t, 1, ct.n, "%v: one parity request for every pin", args)
+		assert.Equal(t, wantRequests, ct.n, "%v: parity and immutable manifest batches", args)
 	}
 }
 
@@ -571,6 +626,13 @@ jobs:
 	assert.NotContains(t, lock, "typesafegithub")
 
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), renamedParity)
+	reg.Register(httpmock.GraphQLForRepo("acme", "comp"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("acme/comp", parityTestMoved,
+			"runs:\n  using: composite\n  steps:\n    - uses: krzema12/github-actions-typing@v2.2.2\n")},
+	}))
+	reg.Register(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("typesafegithub/github-actions-typing", parityTestSHA, nodeActionYAML)},
+	}))
 	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
 	require.NoError(t, err, stderr)
 	assert.Contains(t, stderr, "upgrade acme/comp@v1.0.0")
@@ -767,6 +829,7 @@ jobs:
 // fails closed, exact tags included; only the proxy turns it into a retry.
 func TestParity_InconclusiveBlocksWithoutProxy(t *testing.T) {
 	reg := &httpmock.Registry{}
+	registerNodeManifests(reg)
 	path := writeTempWorkflow(t, `
 name: ci
 on: push
@@ -884,6 +947,9 @@ func TestParity_VerifyMutableRefHistory(t *testing.T) {
 				}
 				for range 10 {
 					reg.Register(httpmock.REST("GET", compareURL), tt.compare)
+				}
+				if tt.want == "" {
+					registerLockedCheckoutManifest(reg, proxy)
 				}
 				path := writeTempWorkflow(t, `
 name: ci
@@ -1138,6 +1204,9 @@ jobs:
       - uses: actions/checkout@main
 `, "actions/checkout@Main=sha1-"+parityTestSHA, "actions/checkout@main=sha1-"+parityTestSHA)
 
+			for range 2 {
+				registerLockedCheckoutManifest(reg, proxy)
+			}
 			_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
 			require.NoError(t, err, stderr)
 			assert.ElementsMatch(t, []string{"Main", "main"}, heads)
@@ -1257,23 +1326,46 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 					require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
 					assert.Equal(t, "refs/tags/"+tt.ref+"^{commit}", body.Variables["tag0"], "the recorded ref is looked up only as a tag or branch")
 					assert.Equal(t, "refs/heads/"+tt.ref+"^{commit}", body.Variables["head0"], "the recorded ref is looked up only as a tag or branch")
-					return httpmock.JSONResponse(map[string]any{
-						"data": map[string]any{"a0": map[string]any{
+					data := map[string]any{}
+					for i := 0; ; i++ {
+						if _, ok := body.Variables[fmt.Sprintf("name%d", i)]; !ok {
+							break
+						}
+						tag, head := tt.tag, tt.head
+						// The full-SHA pin --relock just resolved has no ref
+						// to look up.
+						if _, ok := body.Variables[fmt.Sprintf("tag%d", i)]; !ok {
+							tag, head = nil, nil
+						}
+						data[fmt.Sprintf("a%d", i)] = map[string]any{
 							"nameWithOwner": "actions/checkout",
 							"databaseId":    1,
 							"commit":        map[string]any{"oid": parityTestSHA},
-							"tag":           tt.tag,
-							"tagRef":        tt.tag,
-							"head":          tt.head,
-							"headRef":       tt.head,
-						}},
-					})(req)
+							"tag":           tag,
+							"tagRef":        tag,
+							"head":          head,
+							"headRef":       head,
+						}
+					}
+					return httpmock.JSONResponse(map[string]any{"data": data})(req)
 				})
 				if tt.compare != nil {
 					reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+live), tt.compare)
 				}
 				if tt.want == "" {
 					reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", parityTestSHA)))
+					if mode == "verify" || mode == "relock" {
+						registerNodeManifests(reg)
+					}
+					if mode == "relock" {
+						httpmock.NoTagsNamed(reg, "actions", "checkout")
+						reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
+							httpmock.JSONResponse(map[string]any{"default_branch": "main"}))
+						reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+							httpmock.JSONResponse(map[string]any{
+								"ref": "refs/heads/main", "object": map[string]any{"sha": parityTestSHA, "type": "commit"},
+							}))
+					}
 				}
 				path := writeFullSHAWorkflow(t, tt.ref)
 
@@ -1561,9 +1653,15 @@ func TestSHARecordedRef_ChildFixRepairs(t *testing.T) {
 					})
 				}
 				for _, repo := range []string{"checkout", "cache"} {
+					// checkout is the composite its recorded graph says it is:
+					// --relock rebuilds that graph from its live manifest.
+					manifest := nodeActionYAML
+					if repo == "checkout" && tt.transitive {
+						manifest = "runs:\n  using: composite\n  steps:\n    - uses: actions/cache@" + parityTestSHA + "\n"
+					}
 					for range 4 {
 						reg.Register(httpmock.GraphQLForRepo("actions", repo), httpmock.JSONResponse(map[string]any{
-							"data": map[string]any{"a0": testRepoResponse("actions/"+repo, parityTestSHA, nodeActionYAML)},
+							"data": map[string]any{"a0": testRepoResponse("actions/"+repo, parityTestSHA, manifest)},
 						}))
 						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
 							httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
@@ -1586,9 +1684,15 @@ func TestSHARecordedRef_ChildFixRepairs(t *testing.T) {
 				lock := readTempLockfilePins(t)
 				if tt.transitive && tt.want == "" {
 					require.ErrorIs(t, err, errSilent, stderr)
+					assert.Equal(t, lockBefore, lock)
+					if mode == "relock" {
+						// --relock rebuilds the graph, so the child is a fresh
+						// pin of the composite's manifest, refused the same way.
+						assert.Contains(t, stderr, "is not on any tag or branch of actions/cache: it may be a fork or impostor commit served under the upstream name")
+						return
+					}
 					assert.Contains(t, stderr, "is not on any tag or branch of actions/cache: it may be a fork or impostor commit served under the upstream name (used by actions/checkout@v6.1.0)")
 					assert.Contains(t, stderr, "upgrade or replace actions/checkout@v6.1.0 with a version whose pin of actions/cache can be verified, or stop using it")
-					assert.Equal(t, lockBefore, lock)
 					return
 				}
 				require.NoError(t, err, stderr)
@@ -1603,6 +1707,12 @@ func TestSHARecordedRef_ChildFixRepairs(t *testing.T) {
 				}
 				assert.Contains(t, lock, "'actions/cache@"+parityTestSHA+"':\n        ref: '"+tt.want+"'")
 				assert.Contains(t, lock, "            - 'actions/cache@"+parityTestSHA+"'")
+				if mode == "relock" {
+					// --relock re-resolves the child through its composite, so
+					// it is a fresh pin rather than a repaired entry.
+					assert.NotContains(t, stderr, "recorded ref was the commit SHA")
+					return
+				}
 				assert.Equal(t, 1, strings.Count(stderr, "actions/cache@"+parityTestSHA+": recorded ref was the commit SHA; re-recorded as "+tt.want), stderr)
 			})
 		}
@@ -2543,12 +2653,12 @@ jobs:
 	assert.Equal(t, lock, string(after), "nothing is written")
 }
 
-// TestParity_RelockKeepsDroppedChildBlocking: the composite moved to a
-// commit that no longer uses a recorded child, but planning keeps the
-// composite's recorded edge and the child's entry. Since the entry is still
-// written, --relock can't ignore its failed check: it blocks, and nothing is
-// written. Dropping the stale edge is graph repair, not parity.
-func TestParity_RelockKeepsDroppedChildBlocking(t *testing.T) {
+// TestParity_RelockReplacesDroppedChild: the composite moved to a commit
+// that no longer uses a recorded child, whose history can't be checked.
+// --relock rebuilds the graph from the workflow, so the child's entry and
+// the stale edge are dropped rather than written, and the rebuilt lock
+// verifies.
+func TestParity_RelockReplacesDroppedChild(t *testing.T) {
 	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	const liveRoot = "ffffffffffffffffffffffffffffffffffffffff"
 	reg := &httpmock.Registry{}
@@ -2600,19 +2710,22 @@ jobs:
 	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
 
 	_, stderr, err := runCommandWithHTTP(t, rt, "--relock", "--no-narrow", "--no-interactive", path)
-	require.ErrorIs(t, err, errSilent, stderr)
-	assert.Contains(t, stderr, "could not check v4 history")
-	after, rerr := os.ReadFile(lockPath)
-	require.NoError(t, rerr)
-	assert.Equal(t, lock, string(after), "nothing is written")
+	require.NoError(t, err, stderr)
+	file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+	require.NoError(t, err)
+	assert.Equal(t, "sha1-"+liveRoot, file.Dependencies["octo/root@v1"].Commit)
+	assert.Empty(t, file.Dependencies["octo/root@v1"].Uses, "the stale edge is dropped")
+	assert.NotContains(t, file.Dependencies, "actions/checkout@v4", "the stale child is dropped")
+
+	_, stderr, err = runCommandWithHTTP(t, rt, "--verify", "--no-interactive", path)
+	require.NoError(t, err, stderr)
 }
 
-// TestParity_RelockKeepsMovedChildBlocking: the composite is unchanged, but
-// its child's tag moved and the old commit's history can't be checked.
-// The child resolves afresh to the new commit, yet planning keeps the
-// composite's recorded entry for it, so the old commit is what gets
-// written: --relock must block on it, not excuse it.
-func TestParity_RelockKeepsMovedChildBlocking(t *testing.T) {
+// TestParity_RelockReplacesMovedChild: the composite is unchanged, but its
+// child's tag moved and the old commit's history can't be checked. --relock
+// rebuilds the graph, so the child is written at the new commit, which this
+// run verified, and the old commit is not written.
+func TestParity_RelockReplacesMovedChild(t *testing.T) {
 	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	root := "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"
 	reg := &httpmock.Registry{}
@@ -2669,19 +2782,23 @@ jobs:
 	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
-	require.ErrorIs(t, err, errSilent, stderr)
-	assert.Contains(t, stderr, "could not check v4 history")
-	after, rerr := os.ReadFile(lockPath)
-	require.NoError(t, rerr)
-	assert.Equal(t, lock, string(after), "nothing is written")
+	require.NoError(t, err, stderr)
+	after := readTempLockfilePins(t)
+	file, err := parserlock.Parse([]byte(after))
+	require.NoError(t, err)
+	assert.Equal(t, "sha1-"+parityTestMoved, file.Dependencies["actions/checkout@v4"].Commit)
+	assert.Equal(t, []string{"actions/checkout@v4"}, file.Dependencies["octo/root@v1"].Uses)
+	assert.NotContains(t, after, parityTestSHA, "the old commit is not written")
+
+	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", "--no-interactive", path)
+	require.NoError(t, err, stderr)
 }
 
 // TestParity_RelockMovedTag: actions/checkout@v4 is used directly, alone
-// or also through an unchanged composite, and its tag moved. Planning
-// rewrites the entry only when the move is classified, which needs the
-// history comparison. If that fails, the old commit is what gets written,
-// so --relock must block on its inconclusive check, with or without
-// narrowing. If it succeeds, the new commit is written and verifies.
+// or also through an unchanged composite, and its tag moved. --relock
+// rebuilds the graph, so the new commit, which this run verified, is
+// written whether or not the old commit's history could be checked, with
+// or without narrowing, and the relocked lock verifies.
 func TestParity_RelockMovedTag(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		for _, compareOK := range []bool{false, true} {
@@ -2771,20 +2888,16 @@ func testRelockMovedTag(t *testing.T, shared, compareOK, narrow bool) {
 	_, stderr, err := runCommandWithHTTP(t, reg, args...)
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
-	if compareOK {
-		require.NoError(t, err, "%s\n%s", stderr, after)
-		assert.Contains(t, string(after), "commit: 'sha1-"+parityTestMoved+"'", "the new commit is written")
-		assert.NotContains(t, string(after), parityTestSHA, "the old commit is not")
-		_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
-		require.NoError(t, err, "the relocked lock verifies: %s", stderr)
-		return
+	require.NoError(t, err, "%s\n%s", stderr, after)
+	assert.Contains(t, string(after), "commit: 'sha1-"+parityTestMoved+"'", "the new commit is written")
+	assert.NotContains(t, string(after), parityTestSHA, "the old commit is not")
+	if !narrow {
+		wfAfter, werr := os.ReadFile(path)
+		require.NoError(t, werr)
+		assert.Equal(t, string(wfBefore), string(wfAfter), "the workflow is not rewritten")
 	}
-	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
-	assert.Contains(t, stderr, "could not check v4 history")
-	assert.Equal(t, lock, string(after), "nothing is written")
-	wfAfter, werr := os.ReadFile(path)
-	require.NoError(t, werr)
-	assert.Equal(t, string(wfBefore), string(wfAfter), "the workflow is not rewritten")
+	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
+	require.NoError(t, err, "the relocked lock verifies: %s", stderr)
 }
 
 // TestParity_RelockUnreachableKeepsWorkflow: one pin's tag moved cleanly,
@@ -2888,12 +3001,13 @@ func TestParity_AcceptMovedUnresolvableBlocks(t *testing.T) {
 	assert.Equal(t, string(wfBefore), string(wfAfter))
 }
 
-// TestParity_UnreachableChildNamesComposite: a composite's mutable child
-// whose recorded commit left its tag's history can't be repaired by any
-// mode, since planning keeps the composite's recorded entry. Whatever the
-// mode, the finding blocks and points at the composite, never at a flag that
-// can't fix it.
-func TestParity_UnreachableChildNamesComposite(t *testing.T) {
+// TestParity_UnreachableChild: a composite's mutable child whose recorded
+// commit left its tag's history blocks a plain run and --relock, which
+// never accepts an unreachable pin, and names the composite that uses it.
+// --accept-moved rebuilds the graph through the composite, so it writes the
+// child at its tag's current commit, which this run verified, and the
+// result verifies.
+func TestParity_UnreachableChild(t *testing.T) {
 	for name, args := range map[string][]string{
 		"default":      nil,
 		"relock":       {"--relock"},
@@ -2971,6 +3085,16 @@ jobs:
 	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
 
 	p, err := runParity(t, reg, append(args, "--no-narrow", "--no-interactive", path)...)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	if slices.Contains(args, "--accept-moved") {
+		require.NoError(t, err, "%+v", p.Findings)
+		assert.Contains(t, string(after), "commit: 'sha1-"+parityTestMoved+"'", "the child is written at its tag's commit")
+		assert.NotContains(t, string(after), parityTestSHA, "the unreachable commit is not")
+		_, stderr, err := runCommandWithHTTP(t, reg, "--verify", "--no-interactive", path)
+		require.NoError(t, err, stderr)
+		return
+	}
 	require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
 	var child *format.Finding
 	for i, f := range p.Findings {
@@ -2980,9 +3104,7 @@ jobs:
 	}
 	require.NotNil(t, child, "%+v", p.Findings)
 	assert.Contains(t, child.Detail, "used by octo/root@v1")
-	assert.Equal(t, "upgrade or replace octo/root@v1 with a version whose pin of actions/checkout can be verified, or stop using it", child.Remediation)
-	after, rerr := os.ReadFile(lockPath)
-	require.NoError(t, rerr)
+	assert.Equal(t, checks.AcceptMovedRemediation, child.Remediation)
 	assert.Equal(t, lock, string(after), "nothing is written")
 }
 
@@ -3080,23 +3202,24 @@ jobs:
 	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 }
 
-// TestParity_RelockKeepsStaleSharedChildBlocking: checkout@v4 was a direct
-// pin and also a composite's child. The workflow dropped the direct use, so
-// its stale finding prunes the direct entry, but the composite's recorded
-// edge keeps the entry in the lock. Whether its history check failed or
-// proved the commit gone, no mode may excuse or accept it: there is no
-// direct use left to re-resolve.
-func TestParity_RelockKeepsStaleSharedChildBlocking(t *testing.T) {
+// TestParity_StaleSharedChild: checkout@v4 was a direct pin and also a
+// composite's child. The workflow dropped the direct use and the composite
+// moved to a commit without it. --relock and --accept-moved rebuild the
+// graph, so the entry and the composite's stale edge are dropped rather
+// than written, and the result verifies, except that --relock alone never
+// accepts a commit gone from its ref's history: it blocks and writes
+// nothing.
+func TestParity_StaleSharedChild(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		diverged bool
 		args     []string
 		want     string
 	}{
-		{"relock, history unknown", false, []string{"--relock"}, "could not check v4 history"},
+		{"relock, history unknown", false, []string{"--relock"}, ""},
 		{"relock, commit gone", true, []string{"--relock"}, "is not in actions/checkout's history"},
-		{"accept-moved, history unknown", false, []string{"--accept-moved"}, "could not check v4 history"},
-		{"accept-moved, commit gone", true, []string{"--accept-moved"}, "is not in actions/checkout's history"},
+		{"accept-moved, history unknown", false, []string{"--accept-moved"}, ""},
+		{"accept-moved, commit gone", true, []string{"--accept-moved"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) { testStaleSharedChild(t, tc.diverged, tc.args, tc.want) })
 	}
@@ -3159,18 +3282,29 @@ jobs:
 	_, stderr, err := runCommandWithHTTP(t, rt, append(args, "--no-narrow", "--no-interactive", path)...)
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
-	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
-	assert.Contains(t, stderr, want)
-	assert.Equal(t, lock, string(after), "nothing is written")
+	if want != "" {
+		require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
+		assert.Contains(t, stderr, want)
+		assert.Equal(t, lock, string(after), "nothing is written")
+		return
+	}
+	require.NoError(t, err, stderr)
+	file, err := parserlock.Parse(after)
+	require.NoError(t, err)
+	assert.Equal(t, "sha1-"+liveRoot, file.Dependencies["octo/root@v1"].Commit)
+	assert.Empty(t, file.Dependencies["octo/root@v1"].Uses, "the stale edge is dropped")
+	assert.NotContains(t, file.Dependencies, "actions/checkout@v4", "the stale child is dropped")
+
+	_, stderr, err = runCommandWithHTTP(t, rt, "--verify", "--no-interactive", path)
+	require.NoError(t, err, stderr)
 }
 
-// TestParity_RelockKeepsDifferentlyCasedChildBlocking: the workflow uses
+// TestParity_RelockReplacesDifferentlyCasedRefs: the workflow uses
 // actions/checkout@Release and a composite uses actions/checkout@release,
-// both locked at one commit. Release moved cleanly, which prunes it and,
-// since planning folds ref case, a key that also matches release. But only
-// the workflow's Release is re-resolved; the composite's release stays as
-// recorded, so its inconclusive history check must still block.
-func TestParity_RelockKeepsDifferentlyCasedChildBlocking(t *testing.T) {
+// distinct refs locked at one commit; release's history can't be checked.
+// --relock rebuilds the graph, so each ref is written at its own current
+// commit, which this run verified, and the old commit is not written.
+func TestParity_RelockReplacesDifferentlyCasedRefs(t *testing.T) {
 	const (
 		rootSHA     = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 		releaseHead = "cccccccccccccccccccccccccccccccccccccccc"
@@ -3216,7 +3350,13 @@ func TestParity_RelockKeepsDifferentlyCasedChildBlocking(t *testing.T) {
 			case "octo/root":
 				data["a"+i] = testRepoResponse(nwo, rootSHA, root)
 			default:
-				data["a"+i] = testRepoResponse(nwo, heads[strings.TrimSuffix(expr, "^{commit}")], nodeActionYAML)
+				ref := strings.TrimSuffix(expr, "^{commit}")
+				sha, ok := heads[ref]
+				if !ok && parserlock.IsFullSha(ref) {
+					// --verify reads manifests at the locked commits.
+					sha = ref
+				}
+				data["a"+i] = testRepoResponse(nwo, sha, nodeActionYAML)
 			}
 		}
 		return httpmock.JSONResponse(map[string]any{"data": data})(req)
@@ -3250,11 +3390,17 @@ jobs:
 	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
-	after, rerr := os.ReadFile(lockPath)
-	require.NoError(t, rerr)
-	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
-	assert.Contains(t, stderr, "could not check release history")
-	assert.Equal(t, lock, string(after), "nothing is written")
+	require.NoError(t, err, stderr)
+	after := readTempLockfilePins(t)
+	file, err := parserlock.Parse([]byte(after))
+	require.NoError(t, err)
+	assert.Equal(t, "sha1-"+parityTestMoved, file.Dependencies["actions/checkout@Release"].Commit)
+	assert.Equal(t, "sha1-"+releaseHead, file.Dependencies["actions/checkout@release"].Commit)
+	assert.Equal(t, []string{"actions/checkout@release"}, file.Dependencies["octo/root@v1"].Uses)
+	assert.NotContains(t, after, parityTestSHA, "the old commit is not written")
+
+	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", "--no-interactive", path)
+	require.NoError(t, err, stderr)
 }
 
 // TestParity_AcceptMovedRepairsParityOnlyUnreachablePin: diagnosis
@@ -3429,90 +3575,15 @@ func testChildWithNewDirectUse(t *testing.T, cross, blocked, narrow bool) {
 	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 }
 
-// TestParity_AcceptMovedNarrowedDirectUseLeavesChildBlocking: a composite's
-// child actions/checkout@v4 left v4's history, and the workflow now uses
-// checkout@v4 directly too. Narrowing locks that direct use as v4.2.1, so
-// the composite's v4 entry keeps its rejected commit: nothing is written.
-// Without narrowing, the direct use rewrites v4 itself and the repair holds.
-func TestParity_AcceptMovedNarrowedDirectUseLeavesChildBlocking(t *testing.T) {
-	for _, narrow := range []bool{true, false} {
-		t.Run(fmt.Sprintf("narrow=%v", narrow), func(t *testing.T) {
-			const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-			reg := &httpmock.Registry{}
-			stubGraph(t, reg,
-				map[string]string{"actions/checkout": parityTestMoved},
-				map[string]string{"octo/root": rootSHA, "actions/checkout": parityTestMoved},
-				map[string]string{"octo/root": "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"})
-			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
-				httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
-			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/tags`),
-				httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", parityTestMoved, "v4", parityTestMoved)))
-			reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/tags`),
-				httpmock.JSONResponse(httpmock.TagListResponse("v1.0.0", rootSHA, "v1", rootSHA)))
-			useDefaultTransport(t, reg)
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: octo/root@v1
-      - uses: actions/checkout@v4
-`)
-			lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
-				"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
-				"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
-				"    uses:\n      - 'actions/checkout@v4'\n" +
-				"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
-			lockPath := filepath.Join(".github", "workflows", "actions.lock")
-			require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
-			wfBefore, err := os.ReadFile(path)
-			require.NoError(t, err)
-
-			args := []string{"--accept-moved", "--no-interactive", path}
-			if !narrow {
-				args = append([]string{"--no-narrow"}, args...)
-			}
-			_, stderr, err := runCommandWithHTTP(t, reg, args...)
-			after, rerr := os.ReadFile(lockPath)
-			require.NoError(t, rerr)
-			if narrow {
-				// The plan locks the direct use under the narrowed key.
-				jout, _, _ := runCommandWithHTTP(t, reg, append(args, "--json=pins")...)
-				var planned struct {
-					Pins []struct{ NWO, Ref string } `json:"pins"`
-				}
-				require.NoError(t, json.Unmarshal([]byte(jout), &planned), jout)
-				assert.Contains(t, planned.Pins, struct{ NWO, Ref string }{"actions/checkout", "v4.2.1"}, jout)
-				require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
-				assert.Equal(t, lock, string(after), "nothing is written")
-				wfAfter, werr := os.ReadFile(path)
-				require.NoError(t, werr)
-				assert.Equal(t, string(wfBefore), string(wfAfter))
-				return
-			}
-			require.NoError(t, err, "%s\n%s", stderr, after)
-			assert.Contains(t, string(after), "commit: 'sha1-"+parityTestMoved+"'")
-			assert.NotContains(t, string(after), parityTestSHA)
-			_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
-			require.NoError(t, err, "the repaired lock verifies: %s", stderr)
-		})
-	}
-}
-
 // TestParity_UnwrittenRunReportsDeferredFindings: --relock excused
 // checkout@v4's failed history check on the strength of a write, but the
-// run writes nothing: another workflow's pin can't be planned, or can't
-// be resolved at all. The recorded entry stays as it was, so its finding
-// must be reported.
+// run writes nothing: another workflow's pin can't be planned. The recorded
+// entry stays as it was, so its finding must be reported.
 func TestParity_UnwrittenRunReportsDeferredFindings(t *testing.T) {
 	const orphan = "1111111111111111111111111111111111111111"
 	for name, other := range map[string]string{
 		// No tag or branch contains the commit: planning can't lock it.
 		"planning fails": "actions/cache@" + orphan,
-		// The ref doesn't exist: diagnosis blocks the workflow.
-		"resolution fails": "actions/cache@v9-missing",
 	} {
 		t.Run(name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
@@ -3650,13 +3721,13 @@ jobs:
 	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 }
 
-// TestParity_AuditRechecksWithoutBlockedWriters: workflow.yml's composite
-// child checkout@v4.2.1 left its tag's history; only other.yml's new direct
-// use rewrites it. But other.yml can't be written either: its own
-// composite's child cache@v1 left history too, and nothing rewrites that.
-// With other.yml's write gone, the checkout repair goes too, so both
-// workflows must report their error, and nothing is written.
-func TestParity_AuditRechecksWithoutBlockedWriters(t *testing.T) {
+// TestParity_AcceptMovedRepairsEachCompositesChild: workflow.yml's
+// composite child checkout@v4.2.1 and other.yml's composite child cache@v1
+// both left their tags' history. --accept-moved rebuilds each workflow's
+// graph through its composite, so each child is re-resolved at its tag's
+// current commit: neither rejected commit is written, each composite keeps
+// its edge, and the repaired lock verifies.
+func TestParity_AcceptMovedRepairsEachCompositesChild(t *testing.T) {
 	const (
 		rootSHA  = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 		root2SHA = "dddddddddddddddddddddddddddddddddddddddd"
@@ -3691,21 +3762,21 @@ func TestParity_AuditRechecksWithoutBlockedWriters(t *testing.T) {
 	lockPath := filepath.Join(".github", "workflows", "actions.lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
 
-	p, err := runParity(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path, other)
-	require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
-	blocking := map[string]string{}
-	for _, f := range p.Findings {
-		if f.Category == "unreachable-pin" && f.Severity == "error" {
-			blocking[f.Workflow] = f.Dependency
-		}
-	}
-	assert.Equal(t, map[string]string{
-		".github/workflows/workflow.yml": "actions/checkout@v4.2.1",
-		".github/workflows/other.yml":    "actions/cache@v1",
-	}, blocking, "%+v", p.Findings)
+	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path, other)
+	require.NoError(t, err, stderr)
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
-	assert.Equal(t, lock, string(after), "nothing is written")
+	file, perr := parserlock.Parse(after)
+	require.NoError(t, perr)
+	assert.Equal(t, "sha1-"+parityTestMoved, file.Dependencies["actions/checkout@v4.2.1"].Commit)
+	assert.Equal(t, "sha1-"+cacheNew, file.Dependencies["actions/cache@v1"].Commit)
+	assert.Equal(t, []string{"actions/checkout@v4.2.1"}, file.Dependencies["octo/root@v1"].Uses)
+	assert.Equal(t, []string{"actions/cache@v1"}, file.Dependencies["octo/root2@v1"].Uses)
+	assert.NotContains(t, string(after), parityTestSHA)
+	assert.NotContains(t, string(after), cacheOld)
+
+	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", "--no-interactive", path, other)
+	require.NoError(t, err, stderr)
 }
 
 // TestParity_RelockNeverExcusesUnreachablePin: a composite's child left its
@@ -3752,93 +3823,6 @@ jobs:
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
 	assert.Equal(t, lock, string(after), "nothing is written")
-}
-
-// TestParity_AcceptMovedKeepsRedirectedSharedPinBlocking: the workflow and
-// a composite share octo/old@v4, whose recorded commit left v4's history,
-// and octo/old now redirects to octo/new. --accept-moved re-resolves the
-// workflow's use under the new name, so the composite's octo/old entry
-// would stay at the rejected commit: nothing may be written.
-func TestParity_AcceptMovedKeepsRedirectedSharedPinBlocking(t *testing.T) {
-	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	reg := &httpmock.Registry{}
-	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
-		var body struct {
-			Variables map[string]any `json:"variables"`
-		}
-		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
-		data := map[string]any{}
-		for k, v := range body.Variables {
-			i, ok := strings.CutPrefix(k, "oid")
-			if !ok {
-				continue
-			}
-			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
-			head := v
-			if nwo != "octo/root" {
-				head, nwo = parityTestMoved, "octo/new"
-			}
-			data["a"+i] = map[string]any{"nameWithOwner": nwo, "databaseId": 1, "commit": map[string]any{"oid": v},
-				"tag": map[string]any{"oid": head}, "tagRef": map[string]any{"oid": head}}
-		}
-		return httpmock.JSONResponse(map[string]any{"data": data})(req)
-	})
-	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
-		var body struct {
-			Variables map[string]any `json:"variables"`
-		}
-		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
-		data := map[string]any{}
-		for k, v := range body.Variables {
-			if i, ok := strings.CutPrefix(k, "owner"); ok {
-				nwo := v.(string) + "/" + body.Variables["name"+i].(string)
-				if nwo == "octo/root" {
-					data["a"+i] = testRepoResponse(nwo, rootSHA, "name: r\nruns:\n  using: composite\n  steps:\n    - uses: octo/old@v4\n")
-				} else {
-					data["a"+i] = testRepoResponse("octo/new", parityTestMoved, nodeActionYAML)
-				}
-			}
-		}
-		return httpmock.JSONResponse(map[string]any{"data": data})(req)
-	})
-	for _, nwo := range []string{"octo/old", "octo/new"} {
-		reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`/compare/`),
-			httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
-		reg.RegisterReusable(httpmock.REST("GET", `^/repos/`+nwo+`$`),
-			httpmock.JSONResponse(map[string]any{"full_name": "octo/new", "id": 1, "owner": map[string]any{"id": 1}}))
-	}
-	useDefaultTransport(t, reg)
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: octo/root@v1
-      - uses: octo/old@v4
-`)
-	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
-		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
-		"    uses:\n      - 'octo/old@v4'\n" +
-		"  'octo/old@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
-		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/old@v4'\n    - 'octo/root@v1'\n"
-	lockPath := filepath.Join(".github", "workflows", "actions.lock")
-	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
-	wfBefore, err := os.ReadFile(path)
-	require.NoError(t, err)
-
-	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path)
-	after, rerr := os.ReadFile(lockPath)
-	require.NoError(t, rerr)
-	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
-	assert.Contains(t, stderr, "upgrade or replace octo/root@v1 with a version whose pin of octo/old can be verified", "the advice names what keeps the entry, not the override that just failed")
-	assert.NotContains(t, stderr, "run `gh actions-lock --accept-moved`")
-	assert.Contains(t, stderr, "octo/old")
-	assert.Equal(t, lock, string(after), "nothing is written")
-	wfAfter, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, string(wfBefore), string(wfAfter))
 }
 
 // TestParity_RelockKeepsSiblingTagAtSameCommit: v4 moved onto the commit
@@ -4194,6 +4178,7 @@ func TestParity_FullSHAKeyMovedTagWarns(t *testing.T) {
 	}))
 	reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
 		httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+	registerNodeManifests(reg)
 	path := writeFullSHAWorkflow(t, "v6.1.0")
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
@@ -4649,7 +4634,7 @@ func assertFullSHARun(t *testing.T, reg *httpmock.Registry, args []string, path,
 		}
 	}
 	if want == "" {
-		require.NoError(t, err, stderr)
+		require.NoError(t, err, stdout+stderr)
 		assert.True(t, p.Valid)
 		assert.Empty(t, blocking)
 		return
