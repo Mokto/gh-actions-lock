@@ -37,8 +37,9 @@ type PinState struct {
 	RepoMissing bool
 	// ViaFallback marks a verdict from the REST-only or SSO fallback path,
 	// where a missing token or SSO grant is the likelier cause.
-	ViaFallback bool
-	CommitFound bool
+	ViaFallback  bool
+	CommitFound  bool
+	AmbiguousRef bool
 	// HeadOID is the commit Head peels to; empty when the ref is gone.
 	HeadOID string
 	Err     error
@@ -231,6 +232,7 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 		if repo.HeadRef == nil {
 			repo.Head = nil
 		}
+		states[i].AmbiguousRef = repo.Tag != nil && repo.Head != nil && !strings.EqualFold(repo.Tag.OID, repo.Head.OID)
 		var oid string
 		switch {
 		case repo.Tag != nil:
@@ -271,9 +273,8 @@ func aliasError(gqlErr *api.GraphQLError, alias string) error {
 }
 
 // checkPinsREST costs one repos/{owner}/{repo} call per unique repo plus one
-// commits call per intact pin: the Head when one is set (a match proves the
-// commit exists), otherwise the SHA. A Head that moved costs one more
-// commits call, and a branch rather than a tag one more again.
+// tag and branch lookup per recorded ref to detect collisions. A ref match
+// proves the commit exists; moved refs also require a SHA lookup.
 func (c *Client) checkPinsREST(ctx context.Context, pins []PinCheck) []PinState {
 	states := make([]PinState, len(pins))
 	for i, p := range pins {
@@ -293,6 +294,11 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 	s := PinState{NameWithOwner: meta.FullName, OwnerID: meta.OwnerID, RepoID: meta.RepoID}
 	if p.Head != "" {
 		if s.HeadOID, err = c.restRef(ctx, p); err != nil {
+			var ambiguous *AmbiguousRefError
+			if errors.As(err, &ambiguous) {
+				s.AmbiguousRef = true
+				return s
+			}
 			return PinState{Err: err}
 		}
 		if strings.EqualFold(s.HeadOID, p.SHA) {
@@ -312,13 +318,20 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 // restRef returns the commit p's ref points at, "" when it is neither a tag
 // nor a branch.
 func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
+	var target string
 	for _, ref := range p.refs() {
 		sha, found, err := c.restRefCommit(ctx, p.Owner, p.Repo, ref)
-		if err != nil || found {
-			return sha, err
+		if err != nil {
+			return "", err
+		}
+		if found {
+			if target != "" && !strings.EqualFold(target, sha) {
+				return "", &AmbiguousRefError{Owner: p.Owner, Repo: p.Repo, Ref: p.Head}
+			}
+			target = sha
 		}
 	}
-	return "", nil
+	return target, nil
 }
 
 // refs lists the full names p's Head is looked up as, in order: a tag, then
