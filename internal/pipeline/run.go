@@ -26,8 +26,8 @@ type RunOptions struct {
 	// AcceptMoved accepts recorded pins whose ref no longer vouches for
 	// them; it implies Relock.
 	AcceptMoved bool
-	// Verify also checks that each pin on a mutable ref is still in that
-	// ref's history and that locked manifests match the recorded graph.
+	// Verify selects frozen verification. Every online non-refresh run
+	// checks locked manifests against the recorded graph.
 	Verify bool
 
 	// Resolver UX hooks — set these for interactive spinner mode.
@@ -161,7 +161,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
-	if opts.Verify && r != nil && opts.Store != nil {
+	if !opts.Relock && r != nil && opts.Store != nil {
 		if err := checkLockedManifests(ctx, r, parsed, opts.Store, report); err != nil {
 			return nil, err
 		}

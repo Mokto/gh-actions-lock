@@ -69,7 +69,7 @@ describe` name, and it must equal the `uses:` ref unless that is a full SHA. A
 Generation and relocking use the same tag-first lookup. If a tag and branch share a name
 but point at different commits, the run fails without writing. Choose a distinct,
 unambiguous tag or branch name; relocking the same ambiguous name cannot fix it.
-`--verify` also reads action manifests at
+Every online non-refresh run also reads action manifests at
 the locked commits to check that the recorded transitive graph covers their
 dependencies, without advancing to current upstream commits.
 
