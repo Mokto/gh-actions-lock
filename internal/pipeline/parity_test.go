@@ -5,10 +5,12 @@ import (
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParityFinding(t *testing.T) {
@@ -114,6 +116,112 @@ func TestParityFinding(t *testing.T) {
 				assert.Equal(t, tt.wantRemedy, f.Remediation)
 			}
 			assert.Equal(t, tt.wantObserve, f.ObservedSHA)
+		})
+	}
+}
+
+// TestParityTarget is #174: a full-SHA key names no ref, so the lock
+// entry's recorded ref is what the commit must be reachable from, in every
+// mode. Existence alone passes for any fork-network commit.
+func TestParityTarget(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	tests := []struct {
+		name     string
+		key, ref string
+		wantTag  string
+		wantHead string
+	}{
+		{name: "exact tag key must still peel to the commit", key: "v6.1.0", ref: "v6.1.0", wantTag: "v6.1.0"},
+		{name: "mutable key checks history", key: "v6", ref: "v6", wantHead: "v6"},
+		{name: "branch key checks history", key: "main", ref: "main", wantHead: "main"},
+		{name: "SHA key checks recorded tag", key: sha, ref: "v6.1.0", wantHead: "v6.1.0"},
+		{name: "SHA key checks recorded branch", key: sha, ref: "releases/v4", wantHead: "releases/v4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lp := lockfile.LockedPin{
+				Pin:    parserlock.Pin{NWO: "actions/checkout", Owner: "actions", Repo: "checkout", Ref: tt.key},
+				Action: parserlock.Action{Ref: tt.ref, Commit: "sha1-" + sha},
+			}
+			tag, head := parityTarget(lp)
+			assert.Equal(t, tt.wantTag, tag, "tag")
+			assert.Equal(t, tt.wantHead, head, "head")
+		})
+	}
+}
+
+// TestFreshClosure_EntryRef: a fresh pin is checked against the ref the
+// lockfile will record, so a full-SHA key is checked against its tag or
+// branch, never the SHA.
+func TestFreshClosure_EntryRef(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	tests := []struct {
+		name string
+		d    dep.Dependency
+		want string
+	}{
+		{"tag key", dep.Dependency{NWO: "actions/checkout", Ref: "v6", SHA: sha}, "v6"},
+		{"SHA key on a tag", dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v6.1.0", Branch: "main"}, "v6.1.0"},
+		{"SHA key on a branch", dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Branch: "main"}, "main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pw := checks.ParsedWorkflow{Path: ".github/workflows/ci.yml", Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: tt.d.Ref}}}
+			got := freshClosure([]dep.Dependency{tt.d}, nil)(pw, nil)
+			require.Len(t, got, 1)
+			assert.Equal(t, tt.want, got[0].lp.Action.Ref)
+		})
+	}
+}
+
+// TestParityFinding_FullSHAKey covers the verdicts for a full-SHA key
+// checked against its recorded ref.
+func TestParityFinding_FullSHAKey(t *testing.T) {
+	const (
+		sha  = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+		live = "d23441a49e5d9e4ba0dd8e0f0b5b86ff8ad2e2d5"
+	)
+	tests := []struct {
+		name       string
+		head       string
+		state      ghapi.PinState
+		want       checks.Category
+		wantDetail string
+	}{
+		{name: "commit in recorded ref", head: "v6.1.0", state: ghapi.PinState{NameWithOwner: "actions/checkout", CommitFound: true, HeadOID: live}},
+		{
+			name: "commit outside recorded ref", head: "v6.1.0",
+			state: ghapi.PinState{NameWithOwner: "actions/checkout", HeadOID: live}, want: checks.UnreachablePin,
+			wantDetail: "locked commit 373d742f768e is not in actions/checkout's history: it was force-pushed away, or the lockfile was edited; v6.1.0 currently points at d23441a49e5d",
+		},
+		{
+			name: "recorded ref missing", head: "does-not-exist",
+			state: ghapi.PinState{NameWithOwner: "actions/checkout", CommitFound: true}, want: checks.UnreachablePin,
+			wantDetail: "ref does-not-exist is not a tag or branch of actions/checkout; the runner will reject this pin",
+		},
+		{name: "inconclusive stays a warning", head: "v6.1.0", state: ghapi.PinState{Err: errors.New("timeout")}, want: checks.ReachabilityUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lp := lockfile.LockedPin{
+				Pin:    parserlock.Pin{NWO: "actions/checkout", Owner: "actions", Repo: "checkout", Ref: sha},
+				Action: parserlock.Action{Ref: tt.head, Commit: "sha1-" + sha, OwnerID: 1, RepoID: 2},
+			}
+			ref := parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: sha}
+			pc := ghapi.PinCheck{Owner: "actions", Repo: "checkout", SHA: sha, Head: tt.head}
+			f, ok := parityFinding(checks.ParsedWorkflow{Path: ".github/workflows/ci.yml"}, ref, lp, pc, tt.state)
+			if tt.want == "" {
+				assert.False(t, ok, "unexpected finding: %+v", f)
+				return
+			}
+			assert.True(t, ok)
+			assert.Equal(t, tt.want, f.Category)
+			assert.Equal(t, tt.want == checks.ReachabilityUnknown, f.Severity == checks.SeverityWarning)
+			if tt.wantDetail != "" {
+				assert.Equal(t, tt.wantDetail, f.Detail)
+			}
+			assert.False(t, f.RefMissing, "the workflow ref is a SHA; only the recorded ref is gone")
+			assert.NotEmpty(t, f.Remediation)
 		})
 	}
 }

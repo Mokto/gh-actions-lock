@@ -1,6 +1,7 @@
 package ghapi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,10 +20,14 @@ type PinCheck struct {
 	Owner string
 	Repo  string
 	SHA   string
-	// Tag, when set, must still peel to SHA.
+	// Tag, when set, must still peel to SHA; its commit is TagOID.
 	Tag string
-	// Head, when set, is a mutable ref whose current commit is reported as
-	// HeadOID so the caller can check SHA is still in its history.
+	// Head, when set, is a ref whose current commit is reported as HeadOID
+	// so the caller can check SHA is still in its history.
+	//
+	// Set at most one. Either is looked up only as refs/tags/<name>, then
+	// refs/heads/<name>, as the runner does: rev-parse rules would also
+	// accept a pull request head (pull/1/head).
 	Head string
 }
 
@@ -145,15 +150,11 @@ func buildPinCheckQuery(pins []PinCheck) (string, map[string]any) {
 		fmt.Fprintf(&body, " a%d: repository(owner: $owner%d, name: $name%d) {", i, i, i)
 		body.WriteString(" nameWithOwner databaseId owner { ... on Organization { databaseId } ... on User { databaseId } }")
 		fmt.Fprintf(&body, " commit: object(oid: $oid%d) { oid }", i)
-		if p.Tag != "" {
-			vars[fmt.Sprintf("tag%d", i)] = p.Tag + "^{commit}"
-			fmt.Fprintf(&decl, ", $tag%d: String!", i)
-			fmt.Fprintf(&body, " tag: object(expression: $tag%d) { oid }", i)
-		}
-		if p.Head != "" {
-			vars[fmt.Sprintf("head%d", i)] = p.Head + "^{commit}"
-			fmt.Fprintf(&decl, ", $head%d: String!", i)
-			fmt.Fprintf(&body, " head: object(expression: $head%d) { oid }", i)
+		if refs := p.refs(); refs != nil {
+			vars[fmt.Sprintf("tag%d", i)] = refs[0] + "^{commit}"
+			vars[fmt.Sprintf("head%d", i)] = refs[1] + "^{commit}"
+			fmt.Fprintf(&decl, ", $tag%d: String!, $head%d: String!", i, i)
+			fmt.Fprintf(&body, " tag: object(expression: $tag%d) { oid } head: object(expression: $head%d) { oid }", i, i)
 		}
 		body.WriteString(" }")
 	}
@@ -223,11 +224,17 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 			RepoID:        repo.DatabaseID,
 			CommitFound:   repo.Commit != nil && repo.Commit.OID != "",
 		}
-		if repo.Tag != nil {
-			states[i].TagOID = repo.Tag.OID
+		var oid string
+		switch {
+		case repo.Tag != nil:
+			oid = repo.Tag.OID
+		case repo.Head != nil:
+			oid = repo.Head.OID
 		}
-		if repo.Head != nil {
-			states[i].HeadOID = repo.Head.OID
+		if p.Tag != "" {
+			states[i].TagOID = oid
+		} else {
+			states[i].HeadOID = oid
 		}
 	}
 	return states
@@ -261,8 +268,9 @@ func aliasError(gqlErr *api.GraphQLError, alias string) error {
 }
 
 // checkPinsREST costs one repos/{owner}/{repo} call per unique repo plus one
-// commits call per intact pin: the tag when one is set (a match proves the
-// commit exists), otherwise the SHA. A Head costs one more commits call.
+// commits call per intact pin: the Tag when one is set (a match proves the
+// commit exists), otherwise the SHA. A Head costs one more commits call. A
+// ref that is a branch rather than a tag costs one extra call.
 func (c *Client) checkPinsREST(ctx context.Context, pins []PinCheck) []PinState {
 	states := make([]PinState, len(pins))
 	for i, p := range pins {
@@ -281,13 +289,11 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 	}
 	s := PinState{NameWithOwner: meta.FullName, OwnerID: meta.OwnerID, RepoID: meta.RepoID}
 	if p.Tag != "" {
-		sha, found, err := c.restCommit(ctx, p.Owner, p.Repo, p.Tag)
+		sha, err := c.restRef(ctx, p)
 		if err != nil {
 			return PinState{Err: err}
 		}
-		if found {
-			s.TagOID = sha
-		}
+		s.TagOID = sha
 		if strings.EqualFold(sha, p.SHA) {
 			s.CommitFound = true
 			return s
@@ -300,11 +306,34 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 		return PinState{Err: err}
 	}
 	if p.Head != "" && s.CommitFound {
-		if s.HeadOID, _, err = c.restCommit(ctx, p.Owner, p.Repo, p.Head); err != nil {
+		if s.HeadOID, err = c.restRef(ctx, p); err != nil {
 			return PinState{Err: err}
 		}
 	}
 	return s
+}
+
+// restRef returns the commit p's ref points at, "" when it is neither a tag
+// nor a branch.
+func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
+	for _, ref := range p.refs() {
+		sha, found, err := c.restCommit(ctx, p.Owner, p.Repo, ref)
+		if err != nil || found {
+			return sha, err
+		}
+	}
+	return "", nil
+}
+
+// refs lists the full names p's Tag or Head is looked up as, in order: a
+// tag, then a branch. A refs/ name is prefixed too, so it never resolves.
+// Mirrors resolveRefToHead in github/launch's lockfile resolver.
+func (p PinCheck) refs() []string {
+	name := cmp.Or(p.Tag, p.Head)
+	if name == "" {
+		return nil
+	}
+	return []string{"refs/tags/" + name, "refs/heads/" + name}
 }
 
 func (c *Client) restCommit(ctx context.Context, owner, repo, ref string) (string, bool, error) {

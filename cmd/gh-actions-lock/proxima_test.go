@@ -61,7 +61,7 @@ func proximaFixture(t *testing.T, publicStatus int) http.RoundTripper {
 			return httpmock.JSONResponse(map[string]any{"data": map[string]any{
 				"a0": testRepoResponse("tenant/internal", tenantSHA, composite),
 			}})(req)
-		case !tenant && (path == "/repos/actions/public/commits/v2" || path == "/repos/actions/public/commits/"+publicSHA):
+		case !tenant && (path == "/repos/actions/public/commits/v2" || path == "/repos/actions/public/commits/refs/tags/v2" || path == "/repos/actions/public/commits/"+publicSHA):
 			return httpmock.JSONResponse(map[string]any{"sha": publicSHA})(req)
 		case !tenant && path == "/repos/actions/public/contents/action.yml":
 			assert.Equal(t, publicSHA, req.URL.Query().Get("ref"))

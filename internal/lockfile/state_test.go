@@ -122,7 +122,7 @@ func TestState_DoesNotMergeImplicitSHAEdges(t *testing.T) {
 
 	const sha = "1111111111111111111111111111111111111111"
 	symbolic := dep.Dependency{NWO: "owner/action", Ref: "v1", SHA: sha, HashAlgo: "sha1"}
-	shaParent := dep.Dependency{NWO: "owner/action", Ref: sha, SHA: sha, HashAlgo: "sha1"}
+	shaParent := dep.Dependency{NWO: "owner/action", Ref: sha, SHA: sha, Tag: "v1", HashAlgo: "sha1"}
 	child := dep.Dependency{
 		NWO: "actions/checkout", Ref: "v4",
 		SHA: "2222222222222222222222222222222222222222", HashAlgo: "sha1",

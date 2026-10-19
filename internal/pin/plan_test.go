@@ -671,6 +671,53 @@ func TestPlanNormalizationRespectsLockedTarget(t *testing.T) {
 	}
 }
 
+// TestNarrowVerifiedEntries_SHARepairRequiresTagAtCommit is #174: the
+// recorded tag of a full-SHA entry is lock data, not proof. Rewriting
+// `uses:` to a tag that doesn't point at the locked commit would launder a
+// fork commit under a benign-looking tag.
+func TestNarrowVerifiedEntries_SHARepairRequiresTagAtCommit(t *testing.T) {
+	const (
+		sha   = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+		other = "d23441a49e5d9e4ba0dd8e0f0b5b86ff8ad2e2d5"
+	)
+	tests := []struct {
+		name    string
+		tags    []string
+		wantRef string
+	}{
+		{"tag at another commit", []string{"v6.1.0", other}, sha},
+		{"tag missing upstream", []string{"v4.2.2", other}, sha},
+		{"tag at the locked commit", []string{"v6.1.0", sha}, "v6.1.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`),
+				httpmock.JSONResponse(httpmock.TagListResponse(tt.tags...)))
+			report := checks.WorkflowReport{
+				Path: ".github/workflows/ci.yml",
+				Inventory: []checks.InventoryEntry{{
+					Dep:    dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v6.1.0"},
+					File:   ".github/workflows/ci.yml",
+					Direct: true,
+				}},
+				ActionRefs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}},
+			}
+
+			result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tag.NewListerForTest(t, reg)}, func(string) {})
+			require.NoError(t, err)
+
+			require.Len(t, result.entries, 1)
+			assert.Equal(t, tt.wantRef, result.entries[0].Ref)
+			require.Len(t, result.wplans, 1)
+			if tt.wantRef == sha {
+				assert.Empty(t, result.wplans[0].Rewrites, "no rewrite to a tag that doesn't point at the commit")
+				assert.Empty(t, result.entries[0].AutoFixedRef)
+			}
+		})
+	}
+}
+
 func TestPlanRejectsConflictingSameRunRepairs(t *testing.T) {
 	const firstSHA = "abc1230000000000000000000000000000000000"
 	const secondSHA = "def4560000000000000000000000000000000000"
@@ -681,7 +728,7 @@ func TestPlanRejectsConflictingSameRunRepairs(t *testing.T) {
 				Owner: "actions", Repo: "checkout", Ref: sha,
 			}},
 			Inventory: []checks.InventoryEntry{{
-				Dep:    dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v4.2.1"},
+				Dep:    dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Branch: "releases/v4"},
 				File:   path,
 				Direct: true,
 			}},
@@ -698,7 +745,7 @@ func TestPlanRejectsConflictingSameRunRepairs(t *testing.T) {
 		Pool:   pinpool.New(2, nil),
 	})
 
-	require.ErrorContains(t, err, "conflicting planned target actions/checkout@v4.2.1")
+	require.ErrorContains(t, err, "conflicting planned target actions/checkout@releases/v4")
 }
 
 func TestPlanRejectsRepairConflictingWithSymbolicEntry(t *testing.T) {
@@ -724,10 +771,14 @@ func TestPlanRejectsRepairConflictingWithSymbolicEntry(t *testing.T) {
 		}},
 	}
 
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse([]any{
+		map[string]any{"name": "v4.2.1", "commit": map[string]any{"sha": repairedSHA}},
+	}))
 	_, err := Plan(context.Background(), &checks.Report{
 		Workflows: []checks.WorkflowReport{repair, symbolic},
 	}, PlanOptions{
-		Tagger: new(tag.Lister),
+		Tagger: tag.NewListerForTest(t, reg),
 		Pool:   pinpool.New(2, nil),
 	})
 

@@ -126,6 +126,9 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 			normalizedDependencies[pinKey] = action
 			continue
 		}
+		if !ValidEntryRef(pin, action.Ref) {
+			return nil, fmt.Errorf("%w: %s: %s: %w", ErrCorruptLockfile, parserlock.Path, pinKey, entryRefError(pin, action.Ref))
+		}
 		canon := pin.String()
 		normalizedDependencies[canon] = action
 		if action.OwnerID != 0 && action.RepoID != 0 {
@@ -600,6 +603,9 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 				uses = append(uses, c)
 			}
 			sort.Strings(uses)
+		}
+		if !ValidEntryRef(pin, ref) {
+			return fmt.Errorf("%s: %w", pinKey, entryRefError(pin, ref))
 		}
 		s.file.Dependencies[pinKey] = parserlock.Action{
 			Hostname: hostname,

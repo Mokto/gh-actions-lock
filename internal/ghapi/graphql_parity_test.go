@@ -50,8 +50,9 @@ func TestCheckPins_GraphQLParsesEachState(t *testing.T) {
 	require.Len(t, states, 5)
 	assert.Len(t, reg.Requests, 1, "one batched request for every pin")
 	assert.NotContains(t, gotQuery, "action.yml", "parity must not fetch action blobs")
-	assert.Equal(t, "v4.2.1^{commit}", gotVars["tag0"])
-	assert.NotContains(t, gotVars, "tag1", "mutable refs are not tag-checked")
+	assert.Equal(t, "refs/tags/v4.2.1^{commit}", gotVars["tag0"])
+	assert.Equal(t, "refs/heads/v4.2.1^{commit}", gotVars["head0"])
+	assert.NotContains(t, gotVars, "tag1", "a pin with no ref looks none up")
 
 	assert.Equal(t, PinState{NameWithOwner: "actions/checkout", OwnerID: 1, RepoID: 2, CommitFound: true, TagOID: paritySHA}, states[0])
 	assert.Equal(t, "typesafegithub/github-actions-typing", states[1].NameWithOwner)
@@ -121,9 +122,9 @@ func TestCheckPins_RESTOnly(t *testing.T) {
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/commits/`+paritySHA+`$`), httpmock.JSONResponse(map[string]any{"sha": paritySHA}))
 	reg.Register(httpmock.REST("GET", `^/repos/octo/retag$`), httpmock.JSONResponse(map[string]any{"full_name": "octo/retag"}))
-	reg.Register(httpmock.REST("GET", `^/repos/octo/retag/commits/v1.0.0$`), httpmock.JSONResponse(map[string]any{"sha": parityMoved}))
+	reg.Register(httpmock.REST("GET", `^/repos/octo/retag/commits/refs/tags/v1\.0\.0$`), httpmock.JSONResponse(map[string]any{"sha": parityMoved}))
 	reg.Register(httpmock.REST("GET", `^/repos/octo/retag/commits/`+paritySHA+`$`), httpmock.JSONResponse(map[string]any{"sha": paritySHA}))
-	reg.Register(httpmock.REST("GET", `^/repos/octo/retag/commits/v2.0.0$`), httpmock.JSONResponse(map[string]any{"sha": paritySHA}))
+	reg.Register(httpmock.REST("GET", `^/repos/octo/retag/commits/refs/tags/v2\.0\.0$`), httpmock.JSONResponse(map[string]any{"sha": paritySHA}))
 	reg.Register(httpmock.REST("GET", `^/repos/octo/retag/commits/`+parityMoved+`$`), httpmock.StatusResponse(http.StatusUnprocessableEntity))
 	reg.Register(httpmock.REST("GET", `^/repos/octo/deleted$`), httpmock.StatusResponse(http.StatusNotFound))
 
@@ -147,4 +148,78 @@ func TestCheckPins_RESTOnly(t *testing.T) {
 	for _, req := range reg.Requests {
 		assert.False(t, strings.HasSuffix(req.URL.Path, "/graphql"), "REST-only must not call GraphQL")
 	}
+}
+
+func TestPinCheckRefs(t *testing.T) {
+	tests := []struct {
+		name string
+		pc   PinCheck
+		want []string
+	}{
+		{name: "no ref", pc: PinCheck{}},
+		{name: "head tries tag then branch", pc: PinCheck{Head: "main"}, want: []string{"refs/tags/main", "refs/heads/main"}},
+		{name: "exact tag tries tag then branch", pc: PinCheck{Tag: "v1.0.0"}, want: []string{"refs/tags/v1.0.0", "refs/heads/v1.0.0"}},
+		{name: "a full ref name is never used as-is", pc: PinCheck{Head: "refs/tags/v1"}, want: []string{"refs/tags/refs/tags/v1", "refs/heads/refs/tags/v1"}},
+		{name: "a pull request ref is not a tag or branch", pc: PinCheck{Head: "pull/1/head"}, want: []string{"refs/tags/pull/1/head", "refs/heads/pull/1/head"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.pc.refs())
+		})
+	}
+}
+
+func TestCheckPins_RefLookup(t *testing.T) {
+	t.Run("graphql prefers the tag over a same-named branch", func(t *testing.T) {
+		reg := &httpmock.Registry{}
+		defer reg.Verify(t)
+		var gotQuery string
+		var gotVars map[string]any
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.GraphQLQuery(`{"data": {
+			"a0": {"nameWithOwner": "o/r", "commit": {"oid": "`+paritySHA+`"},
+				"tag": {"oid": "`+paritySHA+`"}, "head": {"oid": "`+parityMoved+`"}},
+			"a1": {"nameWithOwner": "o/r", "commit": {"oid": "`+paritySHA+`"},
+				"tag": null, "head": {"oid": "`+parityMoved+`"}}}}`,
+			func(q string, v map[string]any) { gotQuery, gotVars = q, v }))
+
+		states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{
+			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1"},
+			{Owner: "o", Repo: "r", SHA: paritySHA, Tag: "v1.0.0"},
+		})
+		require.NoError(t, states[0].Err)
+		require.NoError(t, states[1].Err)
+		assert.Contains(t, gotQuery, "tag: object(expression: $tag0)")
+		assert.Contains(t, gotQuery, "head: object(expression: $head0)")
+		assert.Equal(t, "refs/tags/v1^{commit}", gotVars["tag0"])
+		assert.Equal(t, "refs/heads/v1^{commit}", gotVars["head0"])
+		assert.Equal(t, paritySHA, states[0].HeadOID)
+		assert.Empty(t, states[0].TagOID)
+		assert.Equal(t, parityMoved, states[1].TagOID, "an exact ref falls back to a branch like the runner")
+		assert.Empty(t, states[1].HeadOID)
+	})
+
+	t.Run("rest falls back from tag to branch", func(t *testing.T) {
+		t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+		reg := &httpmock.Registry{}
+		defer reg.Verify(t)
+		reg.Register(httpmock.REST("GET", `^/repos/o/r$`), httpmock.JSONResponse(map[string]any{"full_name": "o/r"}))
+		for range 2 {
+			reg.Register(httpmock.REST("GET", `^/repos/o/r/commits/`+paritySHA+`$`), httpmock.JSONResponse(map[string]any{"sha": paritySHA}))
+		}
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/commits/refs/tags/main$`), httpmock.StatusResponse(http.StatusUnprocessableEntity))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/commits/refs/heads/main$`), httpmock.JSONResponse(map[string]any{"sha": parityMoved}))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/commits/refs/tags/pull/1/head$`), httpmock.StatusResponse(http.StatusUnprocessableEntity))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/commits/refs/heads/pull/1/head$`), httpmock.StatusResponse(http.StatusUnprocessableEntity))
+
+		c := newTestClient(t, reg)
+		c.anonHTTP = &http.Client{Transport: reg}
+		states := c.CheckPins(context.Background(), []PinCheck{
+			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "main"},
+			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "pull/1/head"},
+		})
+		require.NoError(t, states[0].Err)
+		require.NoError(t, states[1].Err)
+		assert.Equal(t, parityMoved, states[0].HeadOID)
+		assert.Empty(t, states[1].HeadOID, "a pull request head is not a tag or branch")
+	})
 }

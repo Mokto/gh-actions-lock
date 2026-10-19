@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
@@ -128,16 +129,20 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	endDiag()
 
 	// Phase 4: Parity. Under --relock the entries are about to be replaced,
-	// so only repository identity, which re-resolving can't fix, matters.
+	// so only what re-resolving can't fix matters: repository identity, a
+	// full-SHA key's commit, which no relock moves, and a ref that is not a
+	// tag or branch, which resolution would still accept by rev-parse rules.
 	if r != nil {
-		keep := func(checks.Category) bool { return true }
+		keep := func(checks.Finding, parserlock.Pin) bool { return true }
 		if opts.Relock {
-			keep = func(c checks.Category) bool {
-				return c == checks.RepoRenamed || c == checks.RepoReplaced || c == checks.RepoUnavailable
+			keep = func(f checks.Finding, p parserlock.Pin) bool {
+				c := f.Category
+				return c == checks.RepoRenamed || c == checks.RepoReplaced || c == checks.RepoUnavailable ||
+					c == checks.UnreachablePin && (parserlock.IsFullSha(p.Ref) || f.RefMissing)
 			}
 		}
 		endParity := prof.Phase("  parity check")
-		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep, opts.Verify)
+		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep)
 		endParity()
 		// A cancelled request surfaces as an inconclusive lookup; report the
 		// cancellation, not the failure it caused.

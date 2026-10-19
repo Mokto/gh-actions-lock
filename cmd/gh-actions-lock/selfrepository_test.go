@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -17,11 +18,24 @@ type requestCountingTransport struct {
 	calls atomic.Int64
 	// parity answers parity queries without counting them.
 	parity bool
+	// tags, when set, answers tag and release listings (tag name to commit) without
+	// counting them: a SHA repair must prove its tag peels to the commit.
+	tags map[string]string
 }
 
 func (t *requestCountingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.parity && httpmock.GraphQL(`commit: object\(oid`)(req) {
 		return parityOK(req)
+	}
+	if t.tags != nil && strings.HasSuffix(req.URL.Path, "/releases") {
+		return httpmock.JSONResponse([]any{})(req)
+	}
+	if t.tags != nil && strings.HasSuffix(req.URL.Path, "/tags") {
+		var list []any
+		for name, sha := range t.tags {
+			list = append(list, map[string]any{"name": name, "commit": map[string]any{"sha": sha}})
+		}
+		return httpmock.JSONResponse(list)(req)
 	}
 	t.calls.Add(1)
 	return nil, errors.New("unexpected HTTP request")
@@ -103,7 +117,7 @@ jobs:
 
 func TestExistingSHARefRewritesSelfRepositoryAction(t *testing.T) {
 	const sha = "bcd2ba49218906704ab6c1aa796996da409d3eb1"
-	transport := &requestCountingTransport{parity: true}
+	transport := &requestCountingTransport{parity: true, tags: map[string]string{"v3.2.0": sha}}
 
 	dir := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))

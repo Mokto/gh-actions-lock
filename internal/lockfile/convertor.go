@@ -4,6 +4,7 @@ package lockfile
 
 import (
 	"fmt"
+	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -30,6 +31,30 @@ func depToPin(d dep.Dependency) (parserlock.Pin, error) {
 		Repo:  repo,
 		Ref:   d.Ref,
 	}, nil
+}
+
+// ValidEntryRef reports whether ref is a lock entry ref the runner accepts
+// for pin: a short tag or branch name, never a SHA or a refs/ name, and the
+// key's own ref unless the key is a full SHA. The runner looks it up as
+// refs/tags/<ref>, then refs/heads/<ref>, and requires the locked commit in
+// its history. Mirrors validEntryRef in github/launch's lockfile resolver.
+func ValidEntryRef(pin parserlock.Pin, ref string) bool {
+	if ref == "" || isSHARef(ref) || strings.HasPrefix(ref, "refs/") {
+		return false
+	}
+	return parserlock.IsFullSha(pin.Ref) || ref == pin.Ref
+}
+
+func entryRefError(pin parserlock.Pin, ref string) error {
+	switch {
+	case ref == "":
+		return fmt.Errorf("missing ref")
+	case isSHARef(ref):
+		return fmt.Errorf("ref %q is a commit SHA, not the tag or branch it was taken from", ref)
+	case strings.HasPrefix(ref, "refs/"):
+		return fmt.Errorf("ref %q must be a short tag or branch name", ref)
+	}
+	return fmt.Errorf("ref %q does not match the key's ref %q", ref, pin.Ref)
 }
 
 // pinToDep converts a parser Pin back into the internal dep.Dependency type.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -314,26 +315,26 @@ func writeTempWorkflow(t *testing.T, body string, pins ...string) string {
 // pinString has the form "owner/repo@ref" (the v0.0.2 pin key format).
 // A synthetic commit hash is generated from the pin key for each entry.
 // The ref field in each action body matches the pin key's ref. Overrides
-// can pass "owner/repo@ref=sha1-hex" to supply an explicit commit.
+// can pass "owner/repo@ref=sha1-hex" to supply an explicit commit, and
+// "owner/repo@ref=sha1-hex=ref" to record a different ref (a full-SHA key
+// must record the tag or branch its commit came from).
 func writeTempLockfile(t *testing.T, repoDir, wfName string, pinStrings []string) {
 	t.Helper()
 	var sb strings.Builder
 	sb.WriteString("version: '" + parserlock.Version + "'\ndependencies:\n")
 	for _, raw := range pinStrings {
-		key, commit := raw, ""
-		if idx := strings.Index(raw, "="); idx >= 0 {
-			key = raw[:idx]
-			commit = raw[idx+1:]
-		}
+		key, commit, _ := strings.Cut(raw, "=")
+		commit, ref, _ := strings.Cut(commit, "=")
 		pin, ok := parserlock.ParsePin(key)
 		if !ok {
 			t.Fatalf("writeTempLockfile: invalid pin %q", key)
 		}
+		ref = cmp.Or(ref, pin.Ref)
 		if commit == "" {
 			// Generate deterministic fake commit from pin key.
 			commit = "sha1-" + strings.Repeat(string("abcdef0123456789"[len(key)%16]), 40)
 		}
-		sb.WriteString("  '" + key + "':\n    ref: '" + pin.Ref + "'\n    commit: '" + commit + "'\n    owner_id: 1\n    repo_id: 1\n")
+		sb.WriteString("  '" + key + "':\n    ref: '" + ref + "'\n    commit: '" + commit + "'\n    owner_id: 1\n    repo_id: 1\n")
 	}
 	sb.WriteString("workflows:\n  '.github/workflows/" + wfName + "':\n")
 	for _, raw := range pinStrings {
