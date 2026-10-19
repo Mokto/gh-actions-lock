@@ -105,6 +105,7 @@ func TestParity_TransferredRepoWarns(t *testing.T) {
 // redirect moves `uses:` and the lockfile key to the canonical name.
 func TestParity_TransferredRepoRewrites(t *testing.T) {
 	reg := &httpmock.Registry{}
+	registerNodeManifests(reg)
 	defer reg.Verify(t)
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(1))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
@@ -122,6 +123,7 @@ func TestParity_TransferredRepoRewrites(t *testing.T) {
 // `uses:` isn't; the rewrite must match the workflow's own text.
 func TestParity_MixedCaseRenameRewrites(t *testing.T) {
 	reg := &httpmock.Registry{}
+	registerNodeManifests(reg)
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(1))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
@@ -436,10 +438,8 @@ jobs:
 }
 
 // TestParity_UnchangedRerunRequestCount guards API kindness: an unchanged
-// rerun re-resolves nothing and costs one GraphQL request for the whole
-// closure, ref lookups included. A mutable ref that moved upstream stays
-// locked (sticky) and adds one compare call.
-// Online verification additionally fetches manifests by locked SHA.
+// rerun re-resolves nothing and batches parity plus immutable manifests.
+// A mutable ref that moved upstream stays locked and adds one compare call.
 func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
@@ -447,16 +447,12 @@ func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 
 	for _, args := range [][]string{{path}, {"--verify", path}} {
 		registerParity(reg)
-		wantRequests := 1
-		if args[0] == "--verify" {
-			registerNodeManifests(reg)
-			wantRequests = 2
-		}
+		registerNodeManifests(reg)
 		ct := &countingTransport{inner: reg}
 		p, err := runParity(t, ct, args...)
 		require.NoError(t, err)
 		assert.True(t, p.Valid, "%+v", p.Findings)
-		assert.Equal(t, wantRequests, ct.n, "%v: parity and immutable manifest batches", args)
+		assert.Equal(t, 2, ct.n, "%v: parity and immutable manifest batches", args)
 	}
 }
 
@@ -484,12 +480,21 @@ func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/heads/v4\.2\.1$`), httpmock.StatusResponse(http.StatusNotFound))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/git/ref/tags/v5$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v5", parityTestSHA)))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/git/ref/heads/v5$`), httpmock.StatusResponse(http.StatusNotFound))
+	commit := httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})
+	for _, repo := range []string{"checkout", "setup-go"} {
+		reg.Register(httpmock.REST("GET", `^/repos/actions/`+repo+`/commits/`+parityTestSHA+`$`), commit)
+		reg.Register(httpmock.REST("GET", `^/repos/actions/`+repo+`/contents/action\.yml$`),
+			httpmock.JSONResponse(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML))}))
+	}
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), commit)
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.yml$`),
+		httpmock.JSONResponse(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML))}))
 	path := writeParityFixture(t)
 
 	p, err := runParity(t, ct, path)
-	require.NoError(t, err)
+	require.NoError(t, err, "findings: %+v; requests: %v", p.Findings, ct.urls)
 	assert.True(t, p.Valid, "%+v", p.Findings)
-	assert.Equal(t, 8, ct.n, "2 repos + 3 tag/branch collision checks: %v", ct.urls)
+	assert.Equal(t, 14, ct.n, "collision-safe parity plus immutable commit and manifest lookups for three refs: %v", ct.urls)
 }
 
 // countingTransport counts every request, matched or not.
@@ -805,6 +810,14 @@ func TestParity_DependabotProxyKeepsRenamedName(t *testing.T) {
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/git/ref/tags/v2\.2\.2$`),
 		httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2.2.2", parityTestSHA)))
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/git/ref/heads/v2\.2\.2$`), httpmock.StatusResponse(http.StatusNotFound))
+	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/commits/`+parityTestSHA+`$`),
+		httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/contents/action\.yml$`),
+		httpmock.JSONResponse(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML))}))
+	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/commits/`+parityTestSHA+`$`),
+		httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/contents/action\.yml$`),
+		httpmock.JSONResponse(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML))}))
 	useDefaultTransport(t, reg)
 	path := writeTempWorkflow(t, transferWorkflow, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
 	wfBefore, err := os.ReadFile(path)
@@ -1299,9 +1312,7 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 				}
 				if tt.want == "" {
 					reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", parityTestSHA)))
-					if mode == "verify" || mode == "relock" {
-						registerNodeManifests(reg)
-					}
+					registerNodeManifests(reg)
 					if mode == "relock" {
 						reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
 							httpmock.JSONResponse(map[string]any{"default_branch": "main"}))
