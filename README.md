@@ -61,12 +61,13 @@ owner/repo@<sha>`), must have its commit in that ref's history, so a fork
 commit can't pass as upstream. Tags can move: the Actions backend accepts an
 exact tag that moved ahead of the commit, so runs allow it and `--verify` only
 warns. A `ref` the Actions backend resolver would reject makes the lockfile
-unreadable (exit 2): it must be a short tag or branch name the backend accepts,
+invalid (exit 2): it must be a short tag or branch name the backend accepts,
 never a SHA, a `refs/` name, revision syntax such as `main~1`, or a `git
 describe` name, and it must equal the `uses:` ref unless that is a full SHA. A
 `uses:` ref that is not such a tag or branch, such as `pull/1/head` or
 `main~1`, is never locked.
-Generation and relocking use the same tag-first lookup. If a tag and branch share a name
+Generation and relocking use the same tag-first lookup. If a tag and branch
+share a name
 but point at different commits, the run fails without writing. Choose a distinct,
 unambiguous tag or branch name; relocking the same ambiguous name cannot fix it.
 Every online non-refresh run also reads action manifests at
