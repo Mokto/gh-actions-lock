@@ -100,6 +100,8 @@ recorded references: restore missing entries from version control to keep the ol
 commits, or explicitly relock to select current upstream commits.
 Refreshes reject conflicting commits for a shared dependency rather than
 combining manifests from different commits into one lockfile entry.
+A composite action that reaches itself through `uses:` can't be locked; the run
+fails before writing any file.
 Suspicious pins whose recorded commit is no longer
 reachable upstream are left as errors — use `--accept-moved` to re-resolve
 those as well.

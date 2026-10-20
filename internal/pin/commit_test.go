@@ -417,3 +417,32 @@ func TestUpdateLockfileClearsRefreshedEdges(t *testing.T) {
 	_, ok = preview.Entry("o/child@v2")
 	assert.False(t, ok, "the dropped child is gone")
 }
+
+// TestCommitUsesCycleRewritesNothing: a graph the lockfile can't record must
+// fail before any workflow rewrite, not after.
+func TestCommitUsesCycleRewritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(".github", "workflows", "ci.yml")
+	oldUses := "acme/a@" + strings.Repeat("a", 40)
+	workflowContent := []byte("on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: " + oldUses + "\n")
+	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, workflowPath)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, workflowPath), workflowContent, 0o644))
+	t.Chdir(dir)
+
+	store, err := lockfile.LoadState(dir, fakeMeta{})
+	require.NoError(t, err)
+	rec := &Record{
+		Entries: []Entry{
+			{NWO: "acme/a", Ref: "v1", SHA: strings.Repeat("a", 40), Resolution: Pinned, Direct: true, OnBranch: "main", Workflows: []string{workflowPath}, RequiredBy: []string{"acme/b@v1"}},
+			{NWO: "acme/b", Ref: "v1", SHA: strings.Repeat("b", 40), Resolution: Pinned, OnBranch: "main", Workflows: []string{workflowPath}, RequiredBy: []string{"acme/a@v1"}},
+		},
+		Workflows: []WorkflowPlan{{Path: workflowPath, Rewrites: map[string]string{oldUses: "acme/a@v1"}}},
+	}
+
+	err = Commit(context.Background(), rec, store, nil)
+	require.ErrorIs(t, err, lockfile.ErrUsesCycle)
+	after, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	assert.Equal(t, workflowContent, after)
+	assert.NoFileExists(t, filepath.Join(dir, ".github", "workflows", "actions.lock"))
+}

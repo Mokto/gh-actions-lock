@@ -37,6 +37,8 @@ type graphTransport struct {
 	movedParent      bool
 	movedChild       bool
 	unreachableChild bool
+	// leafUsesParent closes the graph into a parent → child → leaf → parent cycle.
+	leafUsesParent bool
 }
 
 func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -72,6 +74,9 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				}
 				yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/leaf@v3\n"
 			case "leaf":
+				if g.leafUsesParent {
+					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/parent@v1.0.0\n"
+				}
 			default:
 				return nil, fmt.Errorf("unexpected fixture repository %s", name)
 			}
@@ -431,6 +436,18 @@ jobs:
 	require.Error(t, err, stderr)
 	assert.NotErrorIs(t, err, errSilent, "a transient read under the proxy is a retry")
 	assert.Contains(t, err.Error(), "could not verify locked dependency manifests")
+}
+
+// TestCompleteness_UsesCycleWritesNothing: the lockfile can't record a
+// composite that reaches itself, so onboarding one fails without writing a
+// lockfile that every later run would refuse to read.
+func TestCompleteness_UsesCycleWritesNothing(t *testing.T) {
+	path := writeTempWorkflow(t, graphWorkflow)
+	before := snapshotWorkflows(t)
+	_, stderr, err := runCommandWithHTTP(t, &graphTransport{leafUsesParent: true}, path)
+	require.Error(t, err, stderr)
+	assert.ErrorContains(t, err, "uses cycle")
+	assert.Equal(t, before, snapshotWorkflows(t))
 }
 
 func TestRun_ParitySSOGuidance(t *testing.T) {

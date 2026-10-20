@@ -882,22 +882,20 @@ func (s *State) Save() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pruneOrphans()
+	out, err := s.render()
+	if err != nil {
+		return err
+	}
 
 	full := s.lockPath
 
-	if len(s.file.Dependencies) == 0 && len(s.file.Workflows) == 0 {
+	if out == nil {
 		if err := os.Remove(full); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
 	}
 
-	out, err := marshalDeterministic(s.file, s.hostname)
-	if err != nil {
-		return err
-	}
-	out = append([]byte(lockfileHeader), out...)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
@@ -906,6 +904,70 @@ func (s *State) Save() error {
 		return err
 	}
 	return os.Rename(tmp, full)
+}
+
+// ErrUsesCycle reports a dependency graph the lockfile can't record because
+// a composite action reaches itself.
+var ErrUsesCycle = errors.New("dependency graph has a uses cycle")
+
+// Validate reports whether Save would write a lockfile that the lockfile
+// parser accepts. Callers run it before touching workflow files so a graph
+// that can't be recorded, such as a uses cycle, fails without partial writes.
+func (s *State) Validate() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.render()
+	return err
+}
+
+// render garbage-collects orphans and returns the bytes Save writes, or nil
+// when the lockfile is empty. It requires s.mu to be held.
+func (s *State) render() ([]byte, error) {
+	s.pruneOrphans()
+	if len(s.file.Dependencies) == 0 && len(s.file.Workflows) == 0 {
+		return nil, nil
+	}
+	if key := usesCycle(s.file); key != "" {
+		return nil, fmt.Errorf("%w: %s reaches itself through composite uses", ErrUsesCycle, key)
+	}
+	out, err := marshalDeterministic(s.file, s.hostname)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(lockfileHeader), out...), nil
+}
+
+// usesCycle returns a dependency on a uses cycle, or "". The lockfile parser
+// rejects cycles, and a composite that reaches itself can't run either.
+func usesCycle(file parserlock.File) string {
+	const (
+		active = 1
+		done   = 2
+	)
+	state := make(map[string]int, len(file.Dependencies))
+	var visit func(key string) string
+	visit = func(key string) string {
+		switch state[key] {
+		case active:
+			return key
+		case done:
+			return ""
+		}
+		state[key] = active
+		for _, child := range file.Dependencies[key].Uses {
+			if k := visit(child); k != "" {
+				return k
+			}
+		}
+		state[key] = done
+		return ""
+	}
+	for _, key := range slices.Sorted(maps.Keys(file.Dependencies)) {
+		if k := visit(key); k != "" {
+			return k
+		}
+	}
+	return ""
 }
 
 // pruneOrphans requires s.mu to be held.

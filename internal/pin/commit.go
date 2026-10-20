@@ -38,11 +38,15 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 	}
 
 	// Phase 1: Update lockfile entries in memory. It runs before any file is
-	// rewritten, so an entry the lockfile refuses leaves every file as it was.
+	// rewritten, so an entry or graph the lockfile refuses leaves every file
+	// as it was.
 	if len(rec.Workflows) > 0 {
 		progress("Updating lockfile")
 	}
 	if err := updateLockfile(ctx, rec, rec.Workflows, store); err != nil {
+		return err
+	}
+	if err := store.Validate(); err != nil {
 		return err
 	}
 
