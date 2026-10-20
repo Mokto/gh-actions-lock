@@ -523,8 +523,8 @@ func (s *State) PrepareRefresh(workflows []string, deps []dep.Dependency, parent
 		refresh[key] = true
 	}
 	for key := range refresh {
-		if !protected[key] {
-			action := s.file.Dependencies[key]
+		// New entries are left to Set, which records their host and IDs.
+		if action, ok := s.file.Dependencies[key]; ok && !protected[key] {
 			action.Uses = nil
 			s.file.Dependencies[key] = action
 		}
