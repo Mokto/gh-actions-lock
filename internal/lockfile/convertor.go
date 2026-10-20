@@ -47,18 +47,20 @@ func ValidEntryRef(pin parserlock.Pin, ref string) bool {
 	return parserlock.IsFullSha(pin.Ref) || ref == pin.Ref
 }
 
+// entryRefError says what is wrong with an entry's recorded ref. It reads
+// as a predicate of "entry for <pin>".
 func entryRefError(pin parserlock.Pin, ref string) error {
 	switch {
 	case ref == "":
-		return fmt.Errorf("missing ref")
+		return fmt.Errorf("records no ref")
 	case isSHARef(ref):
-		return fmt.Errorf("ref %q is a commit SHA, not the tag or branch it was taken from", ref)
+		return fmt.Errorf("records ref %q, a commit SHA rather than the tag or branch it was taken from", ref)
 	case strings.HasPrefix(ref, "refs/"):
-		return fmt.Errorf("ref %q must be a short tag or branch name", ref)
+		return fmt.Errorf("records ref %q, which isn't a short tag or branch name", ref)
 	case !ghapi.AcceptedRefName(ref):
-		return fmt.Errorf("ref %q is not a tag or branch name the Actions backend accepts", ref)
+		return fmt.Errorf("records ref %q, which isn't a tag or branch name the Actions backend accepts", ref)
 	}
-	return fmt.Errorf("ref %q does not match the key's ref %q", ref, pin.Ref)
+	return fmt.Errorf("records ref %q, which doesn't match its key's ref %q", ref, pin.Ref)
 }
 
 // pinToDep converts a parser Pin back into the internal dep.Dependency type.

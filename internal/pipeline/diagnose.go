@@ -209,7 +209,7 @@ func selfRepositoryFinding(pw checks.ParsedWorkflow) checks.Finding {
 }
 
 // precheckWorkflow handles terminal preconditions (load error, local-path
-// actions, non-hosted runner, no refs, unreadable deps). It returns true when
+// actions, non-hosted runner, no refs, invalid deps). It returns true when
 // one fired; otherwise the report is seeded with ActionRefs/ParseWarnings.
 func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.WorkflowReport, bool) {
 	wr := checks.WorkflowReport{Path: pw.Path}

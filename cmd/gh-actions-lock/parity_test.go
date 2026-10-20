@@ -1252,7 +1252,7 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 }
 
 // TestParity_InvalidEntryRefIsParseError: an entry ref the Actions backend
-// resolver would reject makes the lockfile unreadable in every mode, with
+// resolver would reject makes the lockfile invalid in every mode, with
 // exit 2 and nothing rewritten, so a fix run can't launder it into a `uses:`
 // rewrite. TestValidEntryRef covers the other rejected forms.
 func TestParity_InvalidEntryRefIsParseError(t *testing.T) {
@@ -1290,7 +1290,7 @@ jobs:
 				require.Error(t, err, stderr)
 				assert.NotErrorIs(t, err, errSilent, "a bad entry ref is a parse error (exit 2), not a finding")
 				assert.Contains(t, err.Error(), "actions/checkout@"+tt.key)
-				assert.Empty(t, reg.Requests, "nothing is resolved from an unreadable lockfile")
+				assert.Empty(t, reg.Requests, "nothing is resolved from an invalid lockfile")
 				wfAfter, err := os.ReadFile(path)
 				require.NoError(t, err)
 				assert.Equal(t, string(wfBefore), string(wfAfter))
@@ -1304,7 +1304,7 @@ jobs:
 // branch resolves by rev-parse rules but the Actions backend resolver rejects
 // it, so no mode may write a lock for it, including --relock, which otherwise
 // drops findings that re-resolving would repair. An existing lock entry
-// recording a refs/ name is already unreadable.
+// recording a refs/ name is already invalid.
 func TestParity_NonBranchRefRefused(t *testing.T) {
 	for _, ref := range []string{"pull/2/head", "refs/pull/2/head"} {
 		for _, locked := range []bool{false, true} {
@@ -1356,7 +1356,7 @@ jobs:
 					if locked && strings.HasPrefix(ref, "refs/") {
 						_, _, err := runCommandWithHTTP(t, reg, append(cmdArgs, path)...)
 						require.Error(t, err)
-						assert.NotErrorIs(t, err, errSilent, "an unreadable lockfile exits 2")
+						assert.NotErrorIs(t, err, errSilent, "an invalid lockfile exits 2")
 						assert.Contains(t, err.Error(), "actions/checkout@"+ref)
 					} else {
 						p, err := runParity(t, reg, append(cmdArgs, path)...)

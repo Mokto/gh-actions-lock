@@ -113,3 +113,19 @@ func writeEntryRefLock(t *testing.T, key, ref string) string {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(body), 0o600))
 	return dir
 }
+
+// TestLoadState_ContentErrorNamesProblem: an invalid lockfile is reported by
+// what's wrong with it, never as "unreadable", and still matches
+// ErrCorruptLockfile.
+func TestLoadState_ContentErrorNamesProblem(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	sha := "9ddf35b71a482be7d8922b28e8d00df16b77e315"
+	lock := "version: 'v0.0.3'\ndependencies:\n  'actions/checkout@" + sha + "':\n    ref: 'main~1'\n    commit: 'sha1-" + sha + "'\n    owner_id: 1\n    repo_id: 1\nworkflows:\n  '.github/workflows/ci.yml':\n    - 'actions/checkout@" + sha + "'\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+	_, err := LoadState(dir, fakeMetadataResolver{})
+	require.ErrorIs(t, err, ErrCorruptLockfile)
+	assert.Equal(t, `.github/workflows/actions.lock: line 3: entry for actions/checkout@`+sha+` records ref "main~1", which isn't a tag or branch name the Actions backend accepts`, err.Error())
+	assert.NotContains(t, err.Error(), "unreadable")
+}

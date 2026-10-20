@@ -49,13 +49,31 @@ type State struct {
 	hostname        string
 }
 
-// ErrCorruptLockfile reports that a lockfile exists on disk but cannot be
-// parsed (malformed YAML, unknown fields, or a dependency entry missing a
-// required key). It is distinct from a missing lockfile (legitimately empty)
-// and from a future-version lockfile (ErrFutureVersion). Callers decide
-// recovery policy: prompt to delete and recreate, or fail loudly. Loading
-// must never silently discard an unreadable lockfile and overwrite it.
-var ErrCorruptLockfile = errors.New("lockfile is unreadable")
+// ErrCorruptLockfile reports that a lockfile exists on disk but its contents
+// can't be used: malformed YAML, unknown fields, a dependency entry missing a
+// required key, or an entry ref the Actions backend wouldn't accept. It is
+// distinct from a missing lockfile (legitimately empty) and from a
+// future-version lockfile (ErrFutureVersion). Loading must never silently
+// discard such a lockfile and overwrite it. Match it with errors.Is; the
+// error text names the actual problem instead.
+var ErrCorruptLockfile = errors.New("invalid lockfile")
+
+// contentError is an ErrCorruptLockfile whose message names the problem.
+type contentError struct{ msg string }
+
+func (e *contentError) Error() string { return e.msg }
+
+func (e *contentError) Is(target error) bool { return target == ErrCorruptLockfile }
+
+// lineOf returns the 1-based line of the first occurrence of needle in
+// contents, or 0 if it doesn't occur.
+func lineOf(contents []byte, needle string) int {
+	i := bytes.Index(contents, []byte(needle))
+	if i < 0 {
+		return 0
+	}
+	return bytes.Count(contents[:i], []byte("\n")) + 1
+}
 
 // LoadState reads the lockfile at repoRoot, returning an empty in-memory file
 // when none exists on disk. A lockfile that exists but cannot be parsed is
@@ -91,7 +109,7 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 			// dependency entry missing a required key) is surfaced, not
 			// swallowed. Treating it as empty here would silently discard
 			// the user's pins and overwrite them on the next save.
-			return nil, fmt.Errorf("%w: %s: %v", ErrCorruptLockfile, parserlock.Path, err)
+			return nil, &contentError{fmt.Sprintf("%s: %v", parserlock.Path, err)}
 		}
 	case errors.Is(err, os.ErrNotExist):
 		file = parserlock.File{Version: parserlock.Version}
@@ -127,7 +145,11 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 			continue
 		}
 		if !ValidEntryRef(pin, action.Ref) {
-			return nil, fmt.Errorf("%w: %s: %s: %w", ErrCorruptLockfile, parserlock.Path, pinKey, entryRefError(pin, action.Ref))
+			where := parserlock.Path
+			if line := lineOf(contents, pinKey+"'"); line > 0 {
+				where = fmt.Sprintf("%s: line %d", where, line)
+			}
+			return nil, &contentError{fmt.Sprintf("%s: entry for %s %s", where, pinKey, entryRefError(pin, action.Ref))}
 		}
 		canon := pin.String()
 		normalizedDependencies[canon] = action
@@ -605,7 +627,7 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 			sort.Strings(uses)
 		}
 		if !ValidEntryRef(pin, ref) {
-			return fmt.Errorf("%s: %w", pinKey, entryRefError(pin, ref))
+			return fmt.Errorf("entry for %s %w", pinKey, entryRefError(pin, ref))
 		}
 		s.file.Dependencies[pinKey] = parserlock.Action{
 			Hostname: hostname,

@@ -245,7 +245,7 @@ jobs:
 		_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify", path)
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, errSilent, "a tool failure exits 2")
-		failure := strings.Index(stderr, "lockfile is unreadable")
+		failure := strings.Index(stderr, "restore it from version control")
 		logLine := strings.Index(stderr, "Run log:")
 		require.NotEqual(t, -1, failure, stderr)
 		require.NotEqual(t, -1, logLine, stderr)

@@ -342,7 +342,7 @@ scenarios:
 
   - name: onboarded_corrupt_recovery
     category: lockfile
-    description: "Corrupt YAML lockfile — user confirms delete, lockfile rewritten from scratch"
+    description: "Corrupt YAML lockfile in a fix run — never deleted or recreated; fails and points at version control"
     needs_token: true
     fixtures:
       workflows:
@@ -350,12 +350,13 @@ scenarios:
           name: CI
           actions: ["actions/checkout@v4"]
       lockfile: "{{{{invalid yaml content not parseable at all}}}}"
-    input:
-      - prompt: "(y/N)"
-        response: "y"
     expect:
-      exit: 0
-      lockfile_deps_cover_direct: true
+      exit: 2
+      output_contains:
+        - "restore it from version control"
+      output_excludes:
+        - "Delete and recreate"
+        - "unreadable"
 
   - name: onboarded_future_version
     category: lockfile
@@ -1631,7 +1632,8 @@ scenarios:
     expect:
       exit: 2
       output_contains:
-        - "unreadable"
+        - ".github/workflows/actions.lock:"
+        - "restore it from version control"
 
   - name: onboarded_no_interactive_corrupt
     category: lockfile
@@ -1647,7 +1649,8 @@ scenarios:
     expect:
       exit: 2
       output_contains:
-        - "unreadable"
+        - ".github/workflows/actions.lock:"
+        - "restore it from version control"
 
   # ╔═════════════════════════════════════════════════════════════════════════╗
   # ║══════════════════════════════ dependabot ═══════════════════════════════║
@@ -1819,7 +1822,8 @@ scenarios:
     expect:
       exit: 2
       output_contains:
-        - "unreadable"
+        - ".github/workflows/actions.lock:"
+        - "restore it from version control"
 
   - name: dbot_multi_workflow
     category: dependabot
