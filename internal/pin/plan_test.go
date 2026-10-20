@@ -421,6 +421,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 
 	t.Run("SHA metadata repairs to branch", func(t *testing.T) {
 		tagger, reg := newTagger(t)
+		httpmock.NoTagsNamed(reg, "actions", "checkout")
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
 			httpmock.JSONResponse(map[string]any{
 				"ref": "refs/heads/main", "object": map[string]any{"sha": sha, "type": "commit"},
@@ -445,6 +446,26 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 			map[string]string{"actions/checkout@" + sha: "actions/checkout@main"},
 			result.wplans[0].Rewrites,
 		)
+	})
+
+	t.Run("SHA metadata never repairs to a tag-shadowed branch", func(t *testing.T) {
+		tagger, reg := newTagger(t)
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/main", sha)))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/main`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/main", "dddddddddddddddddddddddddddddddddddddddd")))
+		resolver, err := resolve.New("github.com", pinpool.New(2, nil), resolve.WithTransport(reg))
+		require.NoError(t, err)
+		report := fastPathReport(sha)
+		report.Inventory[0].Dep.Branch = "main"
+		report.ActionRefs = []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}}
+
+		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger, Resolver: resolver}, func(string) {})
+		require.NoError(t, err)
+
+		require.Len(t, result.entries, 1)
+		assert.Equal(t, sha, result.entries[0].Ref, "@main would name the tag's commit")
+		assert.Empty(t, result.wplans[0].Rewrites)
 	})
 
 	t.Run("repair preserves source NWO spelling", func(t *testing.T) {

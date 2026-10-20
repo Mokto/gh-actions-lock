@@ -630,3 +630,33 @@ func TestDiscoverContaining_NamePolicyBeforePagination(t *testing.T) {
 	assert.Equal(t, "twin", tag)
 	assert.Empty(t, branch, "neither refs/x nor a SHA-shaped branch can be recorded")
 }
+
+// TestBranchAtCommit_RefusesShadowedBranch: repairing a full-SHA `uses:` to
+// a branch must not pick one a same-named tag shadows, since `@main` would
+// then name the tag's commit.
+func TestBranchAtCommit_RefusesShadowedBranch(t *testing.T) {
+	tests := []struct {
+		name   string
+		tagged bool
+		want   bool
+	}{
+		{"unshadowed branch at the commit", false, true},
+		{"branch shadowed by a tag", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.REST("GET", `repos/o/r/git/ref/heads/main$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/main", "abc")))
+			if tt.tagged {
+				reg.Register(httpmock.REST("GET", `repos/o/r/git/ref/tags/main$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/main", "def")))
+			} else {
+				reg.Register(httpmock.REST("GET", `repos/o/r/git/ref/tags/main$`), httpmock.StatusResponse(http.StatusNotFound))
+			}
+			r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+			require.NoError(t, err)
+			ok, err := r.BranchAtCommit(context.Background(), "o", "r", "main", "abc")
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, ok)
+		})
+	}
+}

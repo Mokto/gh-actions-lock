@@ -100,11 +100,18 @@ func (r *Resolver) BranchAtCommit(ctx context.Context, owner, repo, branch, sha 
 	return refCandidates{r: r, owner: owner, repo: repo}.branchAt(ctx, branch, sha)
 }
 
-// branchAt reports whether branch can be recorded for sha and its head is
-// sha.
+// branchAt reports whether branch can be recorded for sha: a recordable
+// name, not shadowed by a same-named tag, whose head is sha.
 func (c refCandidates) branchAt(ctx context.Context, branch, sha string) (bool, error) {
+	if !ghapi.RecordableRefName(branch) {
+		return false, nil
+	}
 	head, ok := c.r.GetBranchHead(ctx, c.owner, c.repo, branch)
-	return ok && strings.EqualFold(head.SHA, sha), nil
+	if !ok || !strings.EqualFold(head.SHA, sha) {
+		return false, nil
+	}
+	isTag, err := c.r.gh.TagExists(ctx, c.owner, c.repo, branch)
+	return !isTag, err
 }
 
 // containingBranch returns the first recordable branch containing sha in
