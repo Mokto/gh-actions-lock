@@ -431,6 +431,12 @@ func (c *Client) CompareRefs(ctx context.Context, owner, repo, base, head string
 		err = c.anonGet(ctx, path, &resp)
 	} else {
 		err = c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &resp)
+		// Same fallback as CompareCommits: a public repository behind an
+		// org's SSO is still readable anonymously.
+		if err != nil && IsSAMLEnforcement(err) && c.SSOFallbackEligible(ctx, owner) {
+			resp = compareResponse{}
+			err = c.anonGet(ctx, path, &resp)
+		}
 	}
 	if err != nil {
 		return "", "", err
