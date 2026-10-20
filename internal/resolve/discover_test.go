@@ -468,3 +468,46 @@ func TestDiscoverContaining_SkipsBranchShadowedByTag(t *testing.T) {
 		t.Fatalf("expected the unshadowed branch release, got %q", branch)
 	}
 }
+
+// A tag at the commit whose name is also a branch at another commit is
+// ambiguous to the Actions backend, so it is never recorded either.
+func TestDiscoverContaining_SkipsAmbiguousNames(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.Register(
+		httpmock.REST("GET", `repos/o/r/git/ref/heads/amb-tag$`),
+		httpmock.JSONResponse(map[string]any{"ref": "refs/heads/amb-tag", "object": map[string]any{"sha": "yyy", "type": "commit"}}),
+	)
+	reg.Register(
+		httpmock.REST("GET", `repos/o/r/git/ref/heads/zz$`),
+		httpmock.StatusResponse(http.StatusNotFound),
+	)
+	reg.Register(
+		httpmock.REST("GET", `repos/o/r/branches$`),
+		// amb-branch's head is the commit, but its tag points elsewhere.
+		httpmock.JSONResponse(httpmock.BranchListResponse("amb-branch", "aaa", "amb-tag", "yyy", "main", "zzz")),
+	)
+	reg.Register(
+		httpmock.REST("GET", `repos/o/r/compare/aaa\.\.\.zzz`),
+		httpmock.JSONResponse(httpmock.CompareAncestorResponse("aaa")),
+	)
+	reg.Register(
+		httpmock.REST("GET", `repos/o/r/tags`),
+		httpmock.JSONResponse(httpmock.TagListResponse("amb-branch", "ccc", "amb-tag", "aaa", "zz", "aaa")),
+	)
+
+	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tag, branch, err := r.DiscoverContaining(context.Background(), "o", "r", "aaa", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tag != "zz" {
+		t.Errorf("tag = %q, want zz", tag)
+	}
+	if branch != "main" {
+		t.Errorf("branch = %q, want main", branch)
+	}
+}

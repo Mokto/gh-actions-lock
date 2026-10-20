@@ -8,7 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/ui"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeConfirmer struct {
@@ -139,4 +143,25 @@ func TestNewLockRecovery(t *testing.T) {
 			t.Error("lockfile must be left in place on prompt error")
 		}
 	})
+}
+
+// A v0.0.1 SHA-only entry can't be migrated, and relocking reads the same
+// lockfile, so every mode must point at regenerating it, never relocking.
+func TestLegacySHAOnlyLockfileGuidance(t *testing.T) {
+	const sha = "8e8c483db84b4bee98b60c0593521ed34d9990e8"
+	for _, args := range [][]string{nil, {"--relock"}, {"--no-fix"}, {"--verify"}} {
+		t.Run(strings.Join(append([]string{"default"}, args...), " "), func(t *testing.T) {
+			wf := writeTempWorkflow(t, "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"+sha+"\n")
+			pin := "actions/checkout@" + sha + ":sha1-" + sha
+			lock := "version: 'v0.0.1'\ndependencies:\n  '" + pin + "':\n    commit: 'sha1-" + sha + "'\n    owner_id: 1\n    repo_id: 1\nworkflows:\n  '" + wf + "':\n    - '" + pin + "'\n"
+			require.NoError(t, os.WriteFile(parserlock.Path, []byte(lock), 0o600))
+
+			_, _, err := runCommandWithHTTP(t, &httpmock.Registry{}, append(append([]string{"--no-interactive"}, args...), wf)...)
+
+			require.ErrorIs(t, err, parserlock.ErrRefNeedsRelock)
+			assert.Contains(t, err.Error(), "delete it and run `gh actions-lock` to regenerate it")
+			assert.NotContains(t, err.Error(), "re-lock")
+			assert.NotContains(t, err.Error(), "rebuild it")
+		})
+	}
 }

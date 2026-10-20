@@ -116,12 +116,17 @@ func (r *Resolver) DiscoverContainingDefault(ctx context.Context, owner, repo, s
 	// No branch found — proceed without one. The commit may exist only
 	// on refs/tags (lightweight repos, GitHub Releases, etc.).
 
-	// Discover tags pointing at sha.
+	// Discover tags pointing at sha, skipping any whose name is also a
+	// branch at another commit.
 	var tagNames []string
 	for _, t := range allTags {
-		if strings.EqualFold(t.SHA, sha) {
-			tagNames = append(tagNames, t.Name)
+		if !strings.EqualFold(t.SHA, sha) {
+			continue
 		}
+		if head, ok := r.GetBranchHead(ctx, owner, repo, t.Name); ok && !strings.EqualFold(head.SHA, sha) {
+			continue
+		}
+		tagNames = append(tagNames, t.Name)
 	}
 	tag = pickPreferredTag(tagNames, hintRef)
 

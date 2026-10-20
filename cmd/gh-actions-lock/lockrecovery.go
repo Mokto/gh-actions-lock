@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/cli/go-gh/v2/pkg/prompter"
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/ui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -66,6 +68,10 @@ type lockRecovery func(lockPath string, parseErr error) (recovered bool, err err
 // delete-and-recreate; non-interactive sessions (CI, --no-interactive) fail.
 func newLockRecovery(noInteractive bool, console *ui.UI, newConfirm confirmFactory, allowDelete bool) lockRecovery {
 	return func(lockPath string, parseErr error) (bool, error) {
+		legacy := errors.Is(parseErr, parserlock.ErrRefNeedsRelock)
+		if legacy && (!allowDelete || noInteractive) {
+			return false, fmt.Errorf("%w; delete it and run `gh actions-lock` to regenerate it", parseErr)
+		}
 		if !allowDelete {
 			return false, fmt.Errorf("%w; run `gh actions-lock` to rebuild it, or delete it by hand", parseErr)
 		}

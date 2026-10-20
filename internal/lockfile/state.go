@@ -59,6 +59,17 @@ type State struct {
 // must never silently discard an invalid lockfile and overwrite it.
 var ErrCorruptLockfile = errors.New("lockfile contents are invalid")
 
+// legacyRefError rewords the library's ErrRefNeedsRelock: relocking reads
+// the same lockfile, so only regenerating it can recover.
+type legacyRefError struct{ err error }
+
+func (e legacyRefError) Error() string {
+	return strings.Replace(e.err.Error(), parserlock.ErrRefNeedsRelock.Error(),
+		"written by lockfile v0.0.1 without a tag or branch, so it can't be migrated", 1)
+}
+
+func (e legacyRefError) Unwrap() error { return e.err }
+
 // LoadState reads the lockfile at repoRoot, returning an empty in-memory file
 // when none exists on disk. A lockfile that exists but cannot be parsed is
 // surfaced as ErrCorruptLockfile rather than being silently treated as empty.
@@ -108,6 +119,9 @@ func buildState(lockfilePath string, contents []byte, err error, meta MetadataRe
 			// dependency entry missing a required key) is surfaced, not
 			// swallowed. Treating it as empty here would silently discard
 			// the user's pins and overwrite them on the next save.
+			if errors.Is(err, parserlock.ErrRefNeedsRelock) {
+				err = legacyRefError{err}
+			}
 			return nil, fmt.Errorf("%w: %s: %w", ErrCorruptLockfile, parserlock.Path, err)
 		}
 	case errors.Is(err, os.ErrNotExist):
