@@ -82,3 +82,7 @@ expressions in `uses:`, blocking findings (exit 1) in write modes, matching
 read-only verification, instead of early tool failures (exit 2). They remain
 rejected, report `valid: false` in JSON, and write nothing; include this change
 in the Dependabot compatibility review.
+
+Filesystem failures reading workflow sources still exit 2 in write modes.
+Read-only modes retain their existing exit 1 invalid-finding behavior for these
+read failures; this does not change the existing API retry or tool-error policy.

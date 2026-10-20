@@ -211,7 +211,7 @@ jobs:
 }
 
 func TestCheck_RunLogOnEveryExitPath(t *testing.T) {
-	t.Run("missing workflow logs its diagnosis", func(t *testing.T) {
+	t.Run("missing workflow logs its tool failure", func(t *testing.T) {
 		logDir := isolateRunLogs(t)
 		writeTempWorkflow(t, "name: ci\non: push\njobs: {}\n")
 
@@ -230,9 +230,8 @@ func TestCheck_RunLogOnEveryExitPath(t *testing.T) {
 		readOnlyRunLog(t, logDir, &payload)
 		assert.False(t, payload.Succeeded)
 		assert.False(t, payload.Valid)
-		assert.Empty(t, payload.Error, "silent errors are represented by findings")
-		require.NotEmpty(t, payload.Findings)
-		assert.Contains(t, payload.Findings[0].Detail, "missing.yml")
+		assert.Contains(t, payload.Error, "missing.yml")
+		assert.Empty(t, payload.Findings)
 	})
 
 	t.Run("a tool failure prints before the run log path", func(t *testing.T) {

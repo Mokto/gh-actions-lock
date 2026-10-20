@@ -325,6 +325,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		console.StopProgress()
 		return err
 	}
+	if !opts.noFix && result.SourceReadError != nil {
+		console.StopProgress()
+		return result.SourceReadError
+	}
 	if showSpinner {
 		console.ClearWorkerStatuses()
 		console.UpdateProgress("")

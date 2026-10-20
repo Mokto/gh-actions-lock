@@ -1314,6 +1314,33 @@ func TestCheckCommand_JSONLoadErrorIsInvalid(t *testing.T) {
 	assert.Equal(t, "error", payload.Findings[0].Severity)
 }
 
+func TestCheckCommand_SourceReadFailureIsToolErrorInWriteModes(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		args []string
+	}{
+		{name: "default"},
+		{name: "compatibility flag", args: []string{"--no-migrate-local-actions"}},
+		{name: "relock", args: []string{"--relock"}},
+		{name: "accept moved", args: []string{"--accept-moved"}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, "on: push\n")
+			missing := filepath.Join(filepath.Dir(path), "missing.yml")
+			before := snapshotWorkflows(t)
+			transport := &requestCountingTransport{}
+			args := append([]string{"--json=valid,findings"}, mode.args...)
+			stdout, _, err := runCommandWithHTTP(t, transport, append(args, path, missing)...)
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, errSilent)
+			assert.ErrorIs(t, err, os.ErrNotExist)
+			assert.Empty(t, stdout)
+			assert.Zero(t, transport.calls.Load())
+			assert.Equal(t, before, snapshotWorkflows(t))
+		})
+	}
+}
+
 func TestCheckCommand_InvalidWorkflowIsBlockingFinding(t *testing.T) {
 	for _, fixture := range []struct {
 		name, workflow, detail string
