@@ -316,11 +316,8 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		f.Confidence = checks.ConfidenceLow
 		f.Detail = fmt.Sprintf("could not verify locked %s@%s (commit %s)%s: verification inconclusive: %s",
 			nwo, lp.Pin.Ref, short, via, verbose(st.Err))
-		f.TermDetail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, briefCause(st.Err))
-		var be *ghapi.BriefError
-		if errors.As(st.Err, &be) {
-			f.TermDetail = be.Msg
-		}
+		f.TermDetail = fmt.Sprintf("could not verify locked %s@%s (commit %s)%s: verification inconclusive: %s",
+			nwo, lp.Pin.Ref, short, via, briefCause(st.Err))
 		f.Remediation = "retry when the API is available; nothing is written until verification succeeds"
 	case st.RepoMissing:
 		f.Category = checks.RepoUnavailable

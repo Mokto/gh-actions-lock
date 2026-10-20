@@ -250,7 +250,7 @@ jobs:
 		_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify", path)
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, errSilent, "a tool failure exits 2")
-		failure := strings.Index(stderr, "lockfile is unreadable")
+		failure := strings.Index(stderr, "lockfile contents are invalid")
 		logLine := strings.Index(stderr, "Run log:")
 		require.NotEqual(t, -1, failure, stderr)
 		require.NotEqual(t, -1, logLine, stderr)
@@ -278,7 +278,7 @@ jobs:
 
 		_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", path)
 		require.Error(t, err)
-		assert.Contains(t, stderr, "could not verify locked actions/checkout@9ddf35b71a48: GitHub returned 503 Service Unavailable")
+		assert.Contains(t, stderr, "could not verify locked actions/checkout@v4 (commit 9ddf35b71a48): verification inconclusive: GitHub returned 503 Service Unavailable")
 		assert.NotContains(t, stderr, "api.github.com", "the request URL stays out of the terminal")
 
 		var payload struct {

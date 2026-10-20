@@ -910,6 +910,8 @@ jobs:
 					} else {
 						assert.Contains(t, stderr, "actions/checkout@v4.2.1")
 						assert.Contains(t, stderr, "verification inconclusive")
+						assert.Contains(t, stderr, fmt.Sprintf("GitHub returned %d %s", status, http.StatusText(status)))
+						assert.NotContains(t, stderr, "api.github.com")
 						assert.NotContains(t, stderr, "invalid lockfile")
 					}
 					assert.Equal(t, lockBefore, readTempLockfilePins(t))
