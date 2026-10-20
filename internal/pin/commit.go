@@ -95,8 +95,14 @@ func committedWorkflows(rec *Record, store *lockfile.State, copts *CommitOptions
 	return workflows
 }
 
-// updateLockfile sets each planned workflow's entries in store.
+// updateLockfile applies rec's entry repairs, then sets each planned
+// workflow's entries in store.
 func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, store *lockfile.State) error {
+	for _, r := range rec.EntryRepairs {
+		if err := store.SetEntryRef(r.Key, r.Ref); err != nil {
+			return fmt.Errorf("updating lockfile: %w", err)
+		}
+	}
 	pinnedByWorkflow := groupPinnedByWorkflow(rec)
 	for _, wp := range workflows {
 		wfPath := wp.Path

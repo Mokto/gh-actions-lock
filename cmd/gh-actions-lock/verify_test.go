@@ -431,7 +431,7 @@ jobs:
 			}
 			require.Len(t, blocking, 1, "findings: %+v", p.Findings)
 			assert.Equal(t, "not-pinned", blocking[0].Category)
-			assert.Contains(t, blocking[0].Detail, "lock entry for actions/checkout@"+parityTestSHA+" in .github/workflows/other.yml records ref "+parserlock.ShortSHA(parityTestSHA))
+			assert.Contains(t, blocking[0].Detail, "lock entry for actions/checkout@"+parityTestSHA+", in .github/workflows/other.yml, records ref "+parserlock.ShortSHA(parityTestSHA))
 			assert.Equal(t, "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from", blocking[0].Remediation)
 			got, err := os.ReadFile(lockPath)
 			require.NoError(t, err)
@@ -465,7 +465,7 @@ func TestSHARecordedRef_DeletedWorkflowBlocks(t *testing.T) {
 				}
 			}
 			require.Len(t, blocking, 1, "findings: %+v", p.Findings)
-			assert.Contains(t, blocking[0].Detail, "lock entry for actions/checkout@"+parityTestSHA+" in .github/workflows/gone.yml records ref")
+			assert.Contains(t, blocking[0].Detail, "lock entry for actions/checkout@"+parityTestSHA+", in .github/workflows/gone.yml, records ref")
 			got, err := os.ReadFile(lockPath)
 			require.NoError(t, err)
 			assert.Equal(t, lock, string(got))

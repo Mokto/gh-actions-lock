@@ -155,14 +155,6 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 	}
 	// Normalize on-disk entries to the canonical (lowercased) pin form so any
 	// legacy mixed-case keys are rewritten on the next Save.
-	direct := map[string]bool{}
-	for _, deps := range file.Workflows {
-		for _, raw := range deps {
-			if pin, ok := parserlock.ParsePin(raw); ok {
-				direct[pin.String()] = true
-			}
-		}
-	}
 	// Check entries in file order, so an invalid lockfile is always reported
 	// by its first bad entry.
 	lines := entryLines(contents)
@@ -186,7 +178,7 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 			normalizedDependencies[pinKey] = action
 			continue
 		}
-		if !ValidEntryRef(pin, action.Ref) && !(RecordsOwnSHA(pin, action.Ref) && direct[pin.String()]) {
+		if !ValidEntryRef(pin, action.Ref) && !RecordsOwnSHA(pin, action.Ref) {
 			where := parserlock.Path
 			if n, ok := lines[pin.String()]; ok {
 				where = fmt.Sprintf("%s: line %d", where, n)
@@ -478,22 +470,66 @@ func (s *State) RecordsOwnSHA(owner, repo, sha string) bool {
 	return ok && RecordsOwnSHA(pin, action.Ref)
 }
 
-// OwnSHAEntries returns, per workflow key, the sorted pin keys whose
-// entries record their own SHA as their ref.
-func (s *State) OwnSHAEntries() map[string][]string {
+// OwnSHAEntry is an entry that records its own SHA as its ref, with the
+// workflows that list it directly and the entries whose `uses:` reach it,
+// both sorted. An entry with neither is an orphan the next Save drops.
+type OwnSHAEntry struct {
+	Key       string
+	Workflows []string
+	Parents   []string
+}
+
+// OwnSHAEntries returns every entry that records its own SHA as its ref,
+// sorted by key.
+func (s *State) OwnSHAEntries() []OwnSHAEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := map[string][]string{}
+	byKey := map[string]*OwnSHAEntry{}
+	for key, action := range s.file.Dependencies {
+		if pin, ok := parserlock.ParsePin(key); ok && RecordsOwnSHA(pin, action.Ref) {
+			byKey[key] = &OwnSHAEntry{Key: key}
+		}
+	}
 	for wf, keys := range s.file.Workflows {
 		for _, key := range keys {
-			pin, ok := parserlock.ParsePin(key)
-			if action, found := s.file.Dependencies[key]; ok && found && RecordsOwnSHA(pin, action.Ref) {
-				out[wf] = append(out[wf], key)
+			if e, ok := byKey[key]; ok {
+				e.Workflows = append(e.Workflows, wf)
 			}
 		}
-		slices.Sort(out[wf])
+	}
+	for parent, action := range s.file.Dependencies {
+		for _, key := range action.Uses {
+			if e, ok := byKey[key]; ok && key != parent {
+				e.Parents = append(e.Parents, parent)
+			}
+		}
+	}
+	out := make([]OwnSHAEntry, 0, len(byKey))
+	for _, key := range slices.Sorted(maps.Keys(byKey)) {
+		e := byKey[key]
+		slices.Sort(e.Workflows)
+		slices.Sort(e.Parents)
+		out = append(out, *e)
 	}
 	return out
+}
+
+// SetEntryRef records ref for the existing entry key, which must be one
+// the Actions backend accepts.
+func (s *State) SetEntryRef(key, ref string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pin, ok := parserlock.ParsePin(key)
+	action, found := s.file.Dependencies[key]
+	if !ok || !found {
+		return fmt.Errorf("no lockfile entry for %s", key)
+	}
+	if !ValidEntryRef(pin, ref) {
+		return fmt.Errorf("entry for %s %w", key, entryRefError(pin, ref))
+	}
+	action.Ref = ref
+	s.file.Dependencies[key] = action
+	return nil
 }
 
 // RecordedRepoID returns the repo ID recorded for owner/repo, or 0. It never

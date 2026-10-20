@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -67,7 +66,7 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 
 	parsed := pipeline.ParseAll(paths, store)
 	report := pipeline.VerifyLocalCoverage(parsed, store)
-	appendUnscannedOwnSHAFindings(report, store, paths)
+	appendOwnSHAEntryFindings(report, store, paths)
 	valid := report.IsValid()
 
 	if opts.jsonFields != "" {
@@ -93,32 +92,41 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 	return nil
 }
 
-// appendUnscannedOwnSHAFindings reports, for a read-only run, each pin of a
-// workflow it didn't scan (not selected, or deleted) whose entry records its
-// own SHA as its ref. The Actions backend rejects the pin, and only a
-// full-scan fix run may rewrite or prune that workflow, so the run fails
-// rather than passing.
-func appendUnscannedOwnSHAFindings(report *checks.Report, store *lockfile.State, scanned []string) {
-	skip := map[string]bool{}
+// appendOwnSHAEntryFindings reports, for a read-only run, each entry that
+// records its own SHA as its ref and that no scanned workflow lists itself
+// (those get a workflow finding): one listed only by workflows the run
+// didn't scan (not selected, or deleted), one reached only through another
+// entry's `uses:`, or one nothing reaches. The Actions backend rejects the
+// pin, so the run fails rather than passing; only a full-scan fix run may
+// re-record or drop it.
+func appendOwnSHAEntryFindings(report *checks.Report, store *lockfile.State, scanned []string) {
+	isScanned := map[string]bool{}
 	for _, p := range scanned {
-		skip[workflowfile.KeyFromPath(p)] = true
+		isScanned[workflowfile.KeyFromPath(p)] = true
 	}
-	entries := store.OwnSHAEntries()
-	for _, wf := range slices.Sorted(maps.Keys(entries)) {
-		if skip[wf] {
+	for _, e := range store.OwnSHAEntries() {
+		if slices.ContainsFunc(e.Workflows, func(wf string) bool { return isScanned[wf] }) {
 			continue
 		}
-		for _, key := range entries[wf] {
-			pin, _ := parserlock.ParsePin(key)
-			report.RepoFindings = append(report.RepoFindings, checks.Finding{
-				WorkflowPath: wf,
-				Category:     checks.NotPinned,
-				Severity:     checks.SeverityError,
-				Confidence:   checks.ConfidenceHigh,
-				Dependency:   &dep.Dependency{NWO: pin.NWO, Ref: pin.Ref, SHA: pin.Ref},
-				Detail:       fmt.Sprintf("lock entry for %s in %s records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", key, wf, parserlock.ShortSHA(pin.Ref)),
-				Remediation:  "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from",
-			})
+		pin, _ := parserlock.ParsePin(e.Key)
+		f := checks.Finding{
+			Category:    checks.NotPinned,
+			Severity:    checks.SeverityError,
+			Confidence:  checks.ConfidenceHigh,
+			Dependency:  &dep.Dependency{NWO: pin.NWO, Ref: pin.Ref, SHA: pin.Ref},
+			Remediation: "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from",
 		}
+		where := "used by no workflow"
+		switch {
+		case len(e.Workflows) > 0:
+			f.WorkflowPath = e.Workflows[0]
+			where = "in " + e.Workflows[0]
+		case len(e.Parents) > 0:
+			where = "used by " + e.Parents[0]
+		default:
+			f.Remediation = "run `gh actions-lock` to drop it"
+		}
+		f.Detail = fmt.Sprintf("lock entry for %s, %s, records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", e.Key, where, parserlock.ShortSHA(pin.Ref))
+		report.RepoFindings = append(report.RepoFindings, f)
 	}
 }

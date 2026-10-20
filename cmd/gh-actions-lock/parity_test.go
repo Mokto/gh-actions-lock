@@ -1439,6 +1439,147 @@ func TestSHARecordedRef_FixReRecords(t *testing.T) {
 	}
 }
 
+// writeOwnSHAChildLock locks workflow.yml on actions/checkout@v6.1.0 plus an
+// actions/cache entry recording its own SHA as its ref, reached through the
+// checkout entry's `uses:` when transitive, or by nothing.
+func writeOwnSHAChildLock(t *testing.T, transitive bool) (wf, lock string) {
+	t.Helper()
+	wf = writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+`)
+	uses := ""
+	if transitive {
+		uses = "        uses:\n            - 'actions/cache@" + parityTestSHA + "'\n"
+	}
+	lock = "version: 'v0.0.3'\nworkflows:\n" +
+		"    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n" +
+		"dependencies:\n" +
+		"    'actions/cache@" + parityTestSHA + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 2\n" +
+		"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n" + uses
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+	return wf, lock
+}
+
+// TestSHARecordedRef_ChildReadOnlyBlocks: an own-SHA entry reached only
+// through another entry, or by nothing, fails read-only modes as an error
+// and nothing is written.
+func TestSHARecordedRef_ChildReadOnlyBlocks(t *testing.T) {
+	for _, transitive := range []bool{true, false} {
+		for _, mode := range []string{"--verify", "--no-fix", "--verify-local"} {
+			t.Run(fmt.Sprintf("transitive=%v/%s", transitive, mode), func(t *testing.T) {
+				wf, lock := writeOwnSHAChildLock(t, transitive)
+				p, err := runParity(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive", wf)
+				require.ErrorIs(t, err, errSilent)
+				assert.False(t, p.Valid)
+				var blocking []format.Finding
+				for _, f := range p.Findings {
+					if f.Severity == "error" {
+						blocking = append(blocking, f)
+					}
+				}
+				require.Len(t, blocking, 1, "findings: %+v", p.Findings)
+				where, fix := "used by no workflow", "run `gh actions-lock` to drop it"
+				if transitive {
+					where, fix = "used by actions/checkout@v6.1.0", "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from"
+				}
+				assert.Contains(t, blocking[0].Detail, "lock entry for actions/cache@"+parityTestSHA+", "+where+", records ref "+parserlock.ShortSHA(parityTestSHA))
+				assert.Equal(t, fix, blocking[0].Remediation)
+				assert.Equal(t, lock, readTempLockfilePins(t))
+			})
+		}
+	}
+}
+
+// TestSHARecordedRef_ChildFixRepairs: a fix run drops an orphan own-SHA
+// entry and re-records a transitive one with the tag at its commit, else a
+// branch containing it, leaving its parent as it was. A commit no tag or
+// branch contains still blocks and nothing is written.
+func TestSHARecordedRef_ChildFixRepairs(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	tests := []struct {
+		name       string
+		transitive bool
+		tags       []string
+		compare    string
+		want       string
+	}{
+		{name: "orphan dropped", compare: "behind"},
+		{name: "transitive tag", transitive: true, tags: []string{"v4.2.0", parityTestSHA}, compare: "behind", want: "v4.2.0"},
+		{name: "transitive branch", transitive: true, compare: "behind", want: "main"},
+		{name: "transitive on no tag or branch", transitive: true, compare: "diverged"},
+	}
+	for _, tt := range tests {
+		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}} {
+			t.Run(tt.name+"/"+mode, func(t *testing.T) {
+				base := parityTestSHA
+				if tt.compare == "diverged" {
+					base = "cccccccccccccccccccccccccccccccccccccccc"
+				}
+				reg := &httpmock.Registry{}
+				// The parity stub goes first: a repo stub matches any query for the repo.
+				for range 2 {
+					reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+						body, err := io.ReadAll(req.Body)
+						require.NoError(t, err)
+						assert.NotContains(t, string(body), "refs/tags/"+parityTestSHA, "a recorded commit SHA is never looked up as a ref")
+						req.Body = io.NopCloser(strings.NewReader(string(body)))
+						return parityOK(req)
+					})
+				}
+				for _, repo := range []string{"checkout", "cache"} {
+					for range 4 {
+						reg.Register(httpmock.GraphQLForRepo("actions", repo), httpmock.JSONResponse(map[string]any{
+							"data": map[string]any{"a0": testRepoResponse("actions/"+repo, parityTestSHA, nodeActionYAML)},
+						}))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
+							httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/git/ref/heads/main`),
+							httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/tags`), httpmock.JSONResponse(httpmock.TagListResponse(tt.tags...)))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/releases`), httpmock.JSONResponse([]map[string]any{}))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/compare/`),
+							httpmock.JSONResponse(map[string]any{"status": tt.compare, "merge_base_commit": map[string]any{"sha": base}}))
+					}
+					httpmock.NoTagsNamed(reg, "actions", repo)
+				}
+				isolateRunLogs(t)
+				wf, lockBefore := writeOwnSHAChildLock(t, tt.transitive)
+				wfBefore, err := os.ReadFile(wf)
+				require.NoError(t, err)
+
+				_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, append(args, "--no-interactive")...)
+				lock := readTempLockfilePins(t)
+				if tt.transitive && tt.want == "" {
+					require.ErrorIs(t, err, errSilent, stderr)
+					assert.Contains(t, stderr, "is not on any tag or branch of actions/cache")
+					assert.Equal(t, lockBefore, lock)
+					return
+				}
+				require.NoError(t, err, stderr)
+				wfAfter, err := os.ReadFile(wf)
+				require.NoError(t, err)
+				assert.Equal(t, string(wfBefore), string(wfAfter))
+				assert.NotContains(t, lock, "ref: '"+parityTestSHA+"'")
+				assert.Contains(t, lock, "'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'")
+				if !tt.transitive {
+					assert.NotContains(t, lock, "actions/cache")
+					return
+				}
+				assert.Contains(t, lock, "'actions/cache@"+parityTestSHA+"':\n        ref: '"+tt.want+"'")
+				assert.Contains(t, lock, "            - 'actions/cache@"+parityTestSHA+"'")
+				assert.Equal(t, 1, strings.Count(stderr, "actions/cache@"+parityTestSHA+": recorded ref was the commit SHA; re-recorded as "+tt.want), stderr)
+			})
+		}
+	}
+}
+
 // TestParity_NonBranchRefRefused: a key whose ref is neither a tag nor a
 // branch resolves by rev-parse rules but the Actions backend resolver rejects
 // it, so no mode may write a lock for it, including --relock, which otherwise

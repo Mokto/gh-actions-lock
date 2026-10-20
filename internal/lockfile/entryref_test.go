@@ -111,37 +111,40 @@ func TestLoadState_OwnSHARefIsUnrecorded(t *testing.T) {
 	assert.True(t, RecordsOwnSHA(pin, entryRefSHA))
 }
 
-// TestLoadState_TransitiveOwnSHARefIsCorrupt: only a workflow's own pin is
-// re-resolved, so an entry no workflow lists directly stays a load error.
-func TestLoadState_TransitiveOwnSHARefIsCorrupt(t *testing.T) {
+// TestLoadState_OwnSHARefAnywhereLoads: an own-SHA entry reached only
+// through another entry's `uses:`, or by nothing, also loads; OwnSHAEntries
+// says who lists or uses it.
+func TestLoadState_OwnSHARefAnywhereLoads(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
-	parent, child := "actions/checkout@v4", "actions/cache@"+entryRefSHA
-	body := strings.Join([]string{
-		"version: '" + parserlock.Version + "'",
-		"dependencies:",
-		"  '" + parent + "':",
-		"    ref: 'v4'",
-		"    commit: 'sha1-" + entryRefSHA + "'",
-		"    owner_id: 1",
-		"    repo_id: 1",
-		"    uses:",
-		"      - '" + child + "'",
-		"  '" + child + "':",
-		"    ref: '" + entryRefSHA + "'",
-		"    commit: 'sha1-" + entryRefSHA + "'",
-		"    owner_id: 1",
-		"    repo_id: 2",
-		"workflows:",
-		"  '.github/workflows/ci.yml':",
-		"    - '" + parent + "'",
-		"",
-	}, "\n")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(body), 0o600))
+	parent, child, orphan := "actions/checkout@v4", "actions/cache@"+entryRefSHA, "actions/setup-go@"+entryRefSHA
+	entry := func(key, ref string, uses ...string) []string {
+		out := []string{"  '" + key + "':", "    ref: '" + ref + "'", "    commit: 'sha1-" + entryRefSHA + "'", "    owner_id: 1", "    repo_id: 1"}
+		if len(uses) > 0 {
+			out = append(out, "    uses:")
+			for _, u := range uses {
+				out = append(out, "      - '"+u+"'")
+			}
+		}
+		return out
+	}
+	lines := []string{"version: '" + parserlock.Version + "'", "dependencies:"}
+	lines = append(lines, entry(parent, "v4", child)...)
+	lines = append(lines, entry(child, entryRefSHA)...)
+	lines = append(lines, entry(orphan, entryRefSHA)...)
+	lines = append(lines, "workflows:", "  '.github/workflows/ci.yml':", "    - '"+parent+"'", "")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(strings.Join(lines, "\n")), 0o600))
 
-	_, err := LoadState(dir, fakeMetadataResolver{})
-	require.ErrorIs(t, err, ErrCorruptLockfile)
-	assert.Contains(t, err.Error(), child+" records ref")
+	s, err := LoadState(dir, fakeMetadataResolver{})
+	require.NoError(t, err)
+	assert.Equal(t, []OwnSHAEntry{
+		{Key: child, Parents: []string{parent}},
+		{Key: orphan},
+	}, s.OwnSHAEntries())
+	deps, err := s.Get(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	require.Len(t, deps, 1, "the parent is still recorded")
+	assert.Len(t, s.AllDeps(), 1, "only the parent seeds the resolver")
 }
 
 func writeEntryRefLock(t *testing.T, key, ref string) string {

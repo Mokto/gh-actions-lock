@@ -350,7 +350,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		appendStaleWorkflowFindings(report, staleWorkflows, false)
 	}
 	if opts.noFix {
-		appendUnscannedOwnSHAFindings(report, store, opts.workflowPaths)
+		appendOwnSHAEntryFindings(report, store, opts.workflowPaths)
 		valid = report.IsValid()
 	}
 

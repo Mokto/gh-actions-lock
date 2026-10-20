@@ -48,6 +48,9 @@ type WorkflowPlan struct {
 type Record struct {
 	Entries   []Entry
 	Workflows []WorkflowPlan
+	// EntryRepairs re-record entries the workflows reach only through
+	// another entry's `uses:`; see planEntryRepairs.
+	EntryRepairs []EntryRepair
 }
 
 // Pinned returns entries with Resolution == Pinned.

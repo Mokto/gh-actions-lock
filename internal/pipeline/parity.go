@@ -65,12 +65,19 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		// (the recorded ref, and what this run will write), so the target is
 		// part of the key. The lockfile parser has already rejected an entry
 		// ref the Actions backend resolver would not accept.
-		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + o.lp.Action.Ref
+		// An entry that records its own SHA has no ref to look up: only the
+		// repository and commit are checked here, and the entry is reported
+		// or re-recorded elsewhere (see lockfile.RecordsOwnSHA).
+		head := o.lp.Action.Ref
+		if lockfile.RecordsOwnSHA(o.lp.Pin, head) {
+			head = ""
+		}
+		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + head
 		i, seen := pinIdx[key]
 		if !seen {
 			i = len(pins)
 			pinIdx[key] = i
-			pins = append(pins, ghapi.PinCheck{Owner: o.lp.Pin.Owner, Repo: o.lp.Pin.Repo, SHA: lockedSHA(o.lp.Action.Commit), Head: o.lp.Action.Ref})
+			pins = append(pins, ghapi.PinCheck{Owner: o.lp.Pin.Owner, Repo: o.lp.Pin.Repo, SHA: lockedSHA(o.lp.Action.Commit), Head: head})
 		}
 		if j, dup := owned[[2]int{o.report, i}]; dup {
 			owners[i][j].fresh = owners[i][j].fresh || o.fresh
