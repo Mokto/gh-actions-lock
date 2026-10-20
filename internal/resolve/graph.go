@@ -156,7 +156,9 @@ func (g *Graph) cycle() *UsesCycleError {
 // and the edges between them as child key → parent keys. An edge to an
 // action that didn't resolve keeps the name its parent's manifest uses.
 func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap) {
-	deps, parents, _ := g.FlattenPlanned(Decisions{})
+	// Without decisions every entry is one discovered ref, and discovery
+	// already rejected two commits for one ref.
+	deps, parents, _, _ := g.FlattenPlanned(Decisions{})
 	return deps, parents
 }
 
@@ -184,7 +186,10 @@ type RefMeta struct {
 // becomes two entries rather than one renamed entry. `$/…` sub-actions follow
 // their parent. roots holds the Dependency.Key of each workflow root's
 // entry: an entry kept for a manifest's name is not one.
-func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.ParentMap, roots map[string]bool) {
+//
+// Two identities that land on one entry must be the same commit on the
+// same host, or the entry would record one and the edges of both.
+func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.ParentMap, roots map[string]bool, err error) {
 	// item is one lockfile identity of a node: the repository and ref its
 	// referrer names it by.
 	type item struct {
@@ -263,6 +268,9 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 			deps = append(deps, e)
 			continue
 		}
+		if !strings.EqualFold(deps[i].SHA, e.SHA) || deps[i].Hostname != e.Hostname {
+			return nil, nil, nil, fmt.Errorf("%s would record both %s and %s; retry", e.Key(), describeTarget(deps[i]), describeTarget(e))
+		}
 		for _, ref := range e.OriginalRefs {
 			if !slices.Contains(deps[i].OriginalRefs, ref) {
 				deps[i].OriginalRefs = append(deps[i].OriginalRefs, ref)
@@ -291,5 +299,12 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 			parents[ck] = append(parents[ck], pk)
 		}
 	}
-	return deps, parents, roots
+	return deps, parents, roots, nil
+}
+
+func describeTarget(d dep.Dependency) string {
+	if d.Hostname == "" {
+		return d.SHA
+	}
+	return d.Hostname + ":" + d.SHA
 }

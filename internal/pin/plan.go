@@ -260,7 +260,16 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	for i, d := range deps {
 		decisions.Meta[declared[i]] = resolve.RefMeta{Tag: d.Tag, Branch: d.Branch}
 	}
-	deps, parentMap, roots := graph.FlattenPlanned(decisions)
+	deps, parentMap, roots, err := graph.FlattenPlanned(decisions)
+	if err != nil {
+		for _, ref := range unrecordedRefs {
+			entries = append(entries, Entry{
+				NWO: ref.NWO(), Ref: ref.Ref, Resolution: Unresolved,
+				Reason: "resolution failed: " + err.Error(), Workflows: []string{wr.Path},
+			})
+		}
+		return planResult{entries: entries}, nil
+	}
 	// The graph knows which entries are workflow roots; matching the
 	// workflow's refs would also claim an entry kept for a manifest's name.
 	var rootRefs []parserlock.ActionRef

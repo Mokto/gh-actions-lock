@@ -90,7 +90,8 @@ func TestGraphFlattenPlanned(t *testing.T) {
 			})
 			g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "v1"}})
 			require.NoError(t, err)
-			deps, parents, _ := g.FlattenPlanned(Decisions{Roots: map[string]string{"o/action@v1": "v1.0.0"}})
+			deps, parents, _, err := g.FlattenPlanned(Decisions{Roots: map[string]string{"o/action@v1": "v1.0.0"}})
+			require.NoError(t, err)
 			var keys []string
 			for _, d := range deps {
 				keys = append(keys, d.Key())
@@ -119,7 +120,8 @@ func TestGraphRewritesBelongToTheReferrer(t *testing.T) {
 		})
 		g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "v1"}})
 		require.NoError(t, err)
-		deps, parents, _ := g.FlattenPlanned(Decisions{Roots: map[string]string{"o/action@v1": "v1.0.0"}})
+		deps, parents, _, err := g.FlattenPlanned(Decisions{Roots: map[string]string{"o/action@v1": "v1.0.0"}})
+		require.NoError(t, err)
 		assert.Equal(t, []string{"o/action@v1.0.0", "o/action@v1"}, depKeys(deps))
 		assert.Equal(t, dep.ParentMap{"o/action@v1": {"o/action@v1.0.0"}}, parents)
 	})
@@ -151,4 +153,41 @@ func depKeys(deps []dep.Dependency) []string {
 		keys = append(keys, d.Key())
 	}
 	return keys
+}
+
+// TestGraphRejectsMergingDifferentTargets: a root renamed onto an entry that
+// resolved elsewhere (a tag moved between discovery and lookup) must not
+// merge into it, or the entry records one commit and both manifests' edges.
+func TestGraphRejectsMergingDifferentTargets(t *testing.T) {
+	const (
+		first  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		second = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	for _, tt := range []struct {
+		name     string
+		sha      string
+		hostname string
+	}{
+		{name: "different commit", sha: second},
+		{name: "different host", sha: first, hostname: "tenant.ghe.com"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
+				ghapi.ForActionRef("o", "a", "", "v2"): {
+					dep:       dep.Dependency{NWO: "o/a", Ref: "v2", SHA: first},
+					actionYML: "runs:\n  using: node20\n",
+				},
+				ghapi.ForActionRef("o", "a", "", "v2.1.0"): {
+					dep:       dep.Dependency{NWO: "o/a", Ref: "v2.1.0", SHA: tt.sha, Hostname: tt.hostname},
+					actionYML: "runs:\n  using: node20\n",
+				},
+			})
+			g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{
+				{Owner: "o", Repo: "a", Ref: "v2"}, {Owner: "o", Repo: "a", Ref: "v2.1.0"},
+			})
+			require.NoError(t, err)
+			_, _, _, err = g.FlattenPlanned(Decisions{Roots: map[string]string{"o/a@v2": "v2.1.0"}})
+			require.ErrorContains(t, err, "o/a@v2.1.0 would record both")
+		})
+	}
 }
