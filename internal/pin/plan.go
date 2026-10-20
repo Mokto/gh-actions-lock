@@ -192,7 +192,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 		if err := rejectPartialSelfActionRewrites(opts, wr.SelfActionRefs, rw); err != nil {
 			return planResult{}, err
 		}
-		wplans = append(wplans, WorkflowPlan{Path: wr.Path, Rewrites: rw, SelfActionFiles: wr.SelfActionFiles})
+		wplans = append(wplans, WorkflowPlan{Path: wr.Path, Rewrites: rw, Refresh: refresh, SelfActionFiles: wr.SelfActionFiles})
 		return planResult{entries: entries, wplans: wplans}, nil
 	}
 
