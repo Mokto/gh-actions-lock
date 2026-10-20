@@ -1463,6 +1463,74 @@ jobs:
 	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
 }
 
+// TestParity_AcceptMovedRepairsGoneRecordedRef: the recorded tag of a
+// full-SHA entry was deleted. The finding recommends --accept-moved, so
+// --accept-moved must record a branch that contains the commit, and still
+// refuse a commit no branch contains.
+func TestParity_AcceptMovedRepairsGoneRecordedRef(t *testing.T) {
+	for _, status := range []string{"behind", "diverged"} {
+		t.Run(status, func(t *testing.T) { testAcceptMovedGoneRef(t, status) })
+	}
+}
+
+func testAcceptMovedGoneRef(t *testing.T, status string) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	base := parityTestSHA
+	if status == "diverged" {
+		base = "cccccccccccccccccccccccccccccccccccccccc"
+	}
+	reg := &httpmock.Registry{}
+	// Every pin check finds the commit; no recorded ref resolves.
+	for range 4 {
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+			var body struct {
+				Variables map[string]any `json:"variables"`
+			}
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			data := map[string]any{}
+			for k := range body.Variables {
+				if i, ok := strings.CutPrefix(k, "oid"); ok {
+					data["a"+i] = map[string]any{
+						"nameWithOwner": "actions/checkout",
+						"databaseId":    1,
+						"owner":         map[string]any{"databaseId": 1},
+						"commit":        map[string]any{"oid": parityTestSHA},
+					}
+				}
+			}
+			return httpmock.JSONResponse(map[string]any{"data": data})(req)
+		})
+	}
+	for range 4 {
+		reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+			"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+		}))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
+			httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+			httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse()))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+			httpmock.JSONResponse(map[string]any{"status": status, "merge_base_commit": map[string]any{"sha": base}}))
+	}
+	path := writeFullSHAWorkflow(t, "v6.1.0")
+
+	lockBefore := readTempLockfilePins(t)
+
+	p, err := runParity(t, reg, "--accept-moved", "--no-interactive", path)
+	lock := readTempLockfilePins(t)
+	if status == "diverged" {
+		require.ErrorIs(t, err, errSilent)
+		assert.Equal(t, lockBefore, lock, "no branch contains the commit")
+		return
+	}
+	require.NoError(t, err, "%+v", p.Findings)
+	assert.Contains(t, lock, "ref: 'main'")
+	assert.Contains(t, lock, "sha1-"+parityTestSHA)
+}
+
 // writeFullSHAWorkflow writes a workflow using actions/checkout at
 // parityTestSHA, locked to that commit with the given recorded ref.
 func writeFullSHAWorkflow(t *testing.T, ref string) string {

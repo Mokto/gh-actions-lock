@@ -23,6 +23,9 @@ type RunOptions struct {
 	Pool          *pinpool.Pool
 	// Relock re-resolves every ref live instead of trusting the lockfile.
 	Relock bool
+	// AcceptMoved accepts recorded pins whose ref no longer vouches for
+	// them; it implies Relock.
+	AcceptMoved bool
 	// Verify also checks that each pin on a mutable ref is still in that
 	// ref's history, at one Compare call per ref that moved.
 	Verify bool
@@ -132,11 +135,19 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	// so only what re-resolving can't fix matters: repository identity, a
 	// full-SHA key's commit, which no relock moves, and a ref that is not a
 	// tag or branch, which resolution would still accept by rev-parse rules.
+	// --accept-moved accepts a full-SHA key whose recorded ref no longer
+	// vouches for it: the finding becomes a warning, and planning records a
+	// tag or branch that contains the commit, or fails.
 	if r != nil {
-		keep := func(checks.Finding, parserlock.Pin) bool { return true }
+		keep := func(*checks.Finding, parserlock.Pin) bool { return true }
 		if opts.Relock {
-			keep = func(f checks.Finding, p parserlock.Pin) bool {
+			keep = func(f *checks.Finding, p parserlock.Pin) bool {
 				c := f.Category
+				if opts.AcceptMoved && c == checks.UnreachablePin && parserlock.IsFullSha(p.Ref) && !f.RefMissing {
+					f.Severity = checks.SeverityWarning
+					f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
+					return true
+				}
 				return c == checks.RepoRenamed || c == checks.RepoReplaced || c == checks.RepoUnavailable ||
 					c == checks.UnreachablePin && (parserlock.IsFullSha(p.Ref) || f.RefMissing)
 			}

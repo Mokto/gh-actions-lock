@@ -38,7 +38,7 @@ import (
 //
 // Under the Dependabot proxy any inconclusive check is an error: the run
 // aborts so Dependabot retries rather than shipping an unverified lock.
-func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(checks.Finding, parserlock.Pin) bool, verify bool) error {
+func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(*checks.Finding, parserlock.Pin) bool, verify bool) error {
 	gh := r.GHClient()
 	if gh == nil || store == nil {
 		return nil
@@ -60,17 +60,16 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		}
 		// Pin.String folds owner/repo only: refs are case-sensitive, as
 		// the runner keys them.
-		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit))
+		// A recorded and a fresh owner of one pin can have different targets
+		// (the recorded ref, and what this run will write), so the target is
+		// part of the key. The lockfile parser has already rejected an entry
+		// ref the Actions backend resolver would not accept.
+		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + o.lp.Action.Ref
 		i, seen := pinIdx[key]
 		if !seen {
 			i = len(pins)
 			pinIdx[key] = i
-			pins = append(pins, ghapi.PinCheck{Owner: o.lp.Pin.Owner, Repo: o.lp.Pin.Repo, SHA: lockedSHA(o.lp.Action.Commit)})
-		}
-		// The lockfile parser has already rejected an entry ref the Actions
-		// backend resolver would not accept.
-		if ref := o.lp.Action.Ref; ref != "" {
-			pins[i].Head = ref
+			pins = append(pins, ghapi.PinCheck{Owner: o.lp.Pin.Owner, Repo: o.lp.Pin.Repo, SHA: lockedSHA(o.lp.Action.Commit), Head: o.lp.Action.Ref})
 		}
 		if j, dup := owned[[2]int{o.report, i}]; dup {
 			owners[i][j].fresh = owners[i][j].fresh || o.fresh
@@ -153,12 +152,12 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				f.Severity = checks.SeverityError
 				f.Remediation = "retry; nothing is written until the repository identity is confirmed"
 			// A history check fails closed: the commit is otherwise unproven.
-			case ok && pins[i].Head != "" && st.Err != nil && keep(checks.Finding{Category: checks.UnreachablePin}, o.lp.Pin):
+			case ok && pins[i].Head != "" && st.Err != nil && keep(&checks.Finding{Category: checks.UnreachablePin}, o.lp.Pin):
 				f.Severity = checks.SeverityError
 				f.Remediation = "retry; a pin is accepted only once its commit is traced to its tag or branch"
 			// keep filters recorded pins a relock is about to replace; a
 			// freshly resolved pin is what the run would write.
-			case !ok || !o.fresh && !keep(f, o.lp.Pin):
+			case !ok || !o.fresh && !keep(&f, o.lp.Pin):
 				continue
 			}
 			wr := &report.Workflows[o.report]
@@ -260,12 +259,14 @@ func movedTagFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, pc ghap
 	}
 }
 
-// freshEntryRef is the ref the lockfile will record for d: see State.Set.
+// freshEntryRef is the ref a fresh pin is checked against. A full-SHA key
+// has none yet: planning picks its tag or branch by reverse lookup, which
+// only accepts a tag at the commit or a branch containing it.
 func freshEntryRef(d dep.Dependency) string {
-	if !parserlock.IsFullSha(d.Ref) {
-		return d.Ref
+	if parserlock.IsFullSha(d.Ref) {
+		return ""
 	}
-	return cmp.Or(d.Tag, d.Branch)
+	return d.Ref
 }
 
 func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfile.LockedPin, pc ghapi.PinCheck, st ghapi.PinState) (checks.Finding, bool) {

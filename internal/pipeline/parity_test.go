@@ -114,9 +114,9 @@ func TestParityFinding(t *testing.T) {
 	}
 }
 
-// TestFreshClosure_EntryRef: a fresh pin is checked against the ref the
-// lockfile will record, so a full-SHA key is checked against its tag or
-// branch, never the SHA.
+// TestFreshClosure_EntryRef: a fresh pin is checked against its own ref. A
+// full-SHA key has none yet, whatever tag or branch it carried: planning
+// picks one by reverse lookup.
 func TestFreshClosure_EntryRef(t *testing.T) {
 	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
 	tests := []struct {
@@ -125,8 +125,8 @@ func TestFreshClosure_EntryRef(t *testing.T) {
 		want string
 	}{
 		{"tag key", dep.Dependency{NWO: "actions/checkout", Ref: "v6", SHA: sha}, "v6"},
-		{"SHA key on a tag", dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v6.1.0", Branch: "main"}, "v6.1.0"},
-		{"SHA key on a branch", dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Branch: "main"}, "main"},
+		{"SHA key on a tag", dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v6.1.0", Branch: "main"}, ""},
+		{"SHA key on a branch", dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Branch: "main"}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

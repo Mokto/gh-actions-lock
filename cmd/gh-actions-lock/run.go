@@ -296,6 +296,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		Store:         store,
 		Pool:          pool,
 		Relock:        relock,
+		AcceptMoved:   opts.acceptMoved,
 		Verify:        opts.verify,
 		Profile:       prof,
 	}
