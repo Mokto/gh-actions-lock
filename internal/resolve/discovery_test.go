@@ -306,3 +306,46 @@ func TestResolveAllRecursiveRejectsConflictingCommits(t *testing.T) {
 	_, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "main"}})
 	require.ErrorContains(t, err, "o/action@main resolved to both")
 }
+
+// TestResolveAllRecursiveFetchesSubActionsAtStickyCommit: a lockfile seed
+// carries no path, so a new workflow using actions/cache@v4 and
+// actions/cache/save@v4 must fetch save at the seeded commit, not at where
+// v4 points now; otherwise the shared entry splits across two commits and
+// every retry conflicts again.
+func TestResolveAllRecursiveFetchesSubActionsAtStickyCommit(t *testing.T) {
+	const (
+		locked = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		moved  = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+	reg.Register(httpmock.GraphQL(`file: file\(path`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]string `json:"variables"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		oid := strings.TrimSuffix(body.Variables["expr0"], "^{commit}")
+		if oid == "v4" {
+			oid = moved
+		}
+		return httpmock.JSONResponse(map[string]any{"data": map[string]any{"a0": map[string]any{
+			"nameWithOwner": "actions/cache",
+			"object":        map[string]any{"oid": oid, "file": map[string]any{"object": map[string]any{"text": "runs:\n  using: node20\n"}}},
+		}}})(req)
+	})
+	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+	require.NoError(t, err)
+	r.SeedFromLockfile([]dep.Dependency{{NWO: "actions/cache", Ref: "v4", SHA: locked}})
+
+	g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{
+		{Owner: "actions", Repo: "cache", Ref: "v4"},
+		{Owner: "actions", Repo: "cache", Path: "save", Ref: "v4"},
+	})
+	require.NoError(t, err)
+	deps, _, err := g.Flatten()
+	require.NoError(t, err)
+	require.Len(t, deps, 1)
+	assert.Equal(t, locked, deps[0].SHA)
+}

@@ -140,6 +140,28 @@ func (e *UnlockedRefError) Error() string {
 	return fmt.Sprintf("no locked commit for %s@%s", e.Ref.FullName(), e.Ref.Ref)
 }
 
+// knownCommit returns the commit this run already holds for a sub-action's
+// owner/repo@ref, or "". Every path of one owner/repo@ref shares a lockfile
+// entry, so a sub-action is fetched at that commit: a sticky seed, which
+// carries no path, or another path already resolved. Fetching the ref live
+// instead splits the entry across two commits once the ref moves upstream.
+func (r *Resolver) knownCommit(g *Graph, ref parserlock.ActionRef) string {
+	if ref.Path == "" || parserlock.IsFullSha(ref.Ref) {
+		return ""
+	}
+	if e, ok := r.cache.Get(ghapi.ForActionRef(ref.Owner, ref.Repo, "", ref.Ref)); ok && e.dep.SHA != "" {
+		return e.dep.SHA
+	}
+	want := ghapi.ForNWORef(ref.Owner, ref.Repo, ref.Ref)
+	for _, key := range g.order {
+		d := g.nodes[key].dep
+		if owner, repo := d.OwnerRepo(); ghapi.ForNWORef(owner, repo, d.Ref) == want && d.SHA != "" {
+			return d.SHA
+		}
+	}
+	return ""
+}
+
 // lockedKey keys recorded commits by owner/repo@ref with dep.RefKey's rule:
 // a full SHA in either case finds its entry; a tag or branch must match.
 func lockedKey(owner, repo, ref string) ghapi.NWORef {
@@ -218,6 +240,9 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 			key := cacheKey(request.ref)
 			if !seen[key] {
 				seen[key] = true
+				if locked == nil && request.fetchRef == "" {
+					request.fetchRef = r.knownCommit(g, request.ref)
+				}
 				if locked != nil && request.fetchRef == "" {
 					request.fetchRef = locked[lockedKey(request.ref.Owner, request.ref.Repo, request.ref.Ref)]
 					if request.fetchRef == "" {
