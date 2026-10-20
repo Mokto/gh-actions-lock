@@ -6,18 +6,13 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type noopMeta struct{}
-
-func (noopMeta) RepoIDs(context.Context, string, string, string) (int64, int64, error) {
-	return 0, 0, nil
-}
 
 func TestDiagnoseOneParsed_LocalAction_NotOnboarded(t *testing.T) {
 	pw := checks.ParsedWorkflow{
@@ -33,7 +28,7 @@ func TestDiagnoseOneParsed_LocalAction_NotOnboarded(t *testing.T) {
 
 func TestDiagnoseOneParsed_LocalAction_AlreadyOnboarded(t *testing.T) {
 	dir := t.TempDir()
-	store, err := lockfile.LoadState(dir, noopMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 
 	wfKey := ".github/workflows/ci.yml"

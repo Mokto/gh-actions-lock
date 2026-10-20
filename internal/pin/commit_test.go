@@ -9,6 +9,7 @@ import (
 
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/lockfile"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/github/gh-actions-lock/internal/workflowfile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -127,7 +128,7 @@ func TestCommitDependencyFreeWorkflow(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, workflowPath), []byte("on: push\n"), 0o644))
 			t.Chdir(dir)
 
-			store, err := lockfile.LoadState(dir, fakeMeta{})
+			store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 			require.NoError(t, err)
 			rec := &Record{Workflows: []WorkflowPlan{{Path: workflowPath}}}
 
@@ -144,7 +145,7 @@ func TestCommitPartialResolution(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, workflowPath), []byte("on: push\n"), 0o644))
 	t.Chdir(dir)
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 	rec := &Record{
 		Entries: []Entry{{
@@ -174,7 +175,7 @@ func TestCommitSkipNewWorkflowEntriesPreventsRewrites(t *testing.T) {
 	}
 	t.Chdir(dir)
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 	rec := &Record{Workflows: []WorkflowPlan{{
 		Path:            workflowPath,
@@ -229,7 +230,7 @@ jobs:
 	require.NoError(t, os.WriteFile(filepath.Join(dir, workflowPath), workflow, 0o644))
 	t.Chdir(dir)
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 	oldParent := dep.Dependency{NWO: "owner/action", Ref: "main", SHA: strings.Repeat("1", 40), HashAlgo: "sha1"}
 	oldChild := dep.Dependency{NWO: "actions/setup-go", Ref: "v5", SHA: strings.Repeat("2", 40), HashAlgo: "sha1"}
@@ -280,7 +281,7 @@ jobs:
 `), 0o644))
 	t.Chdir(dir)
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 	parent := dep.Dependency{
 		NWO: "owner/action", Ref: tagObjectSHA, SHA: tagObjectSHA,
@@ -333,7 +334,7 @@ func TestCommitRejectedEntryRefWritesNothing(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, workflowPath), content, 0o644))
 	t.Chdir(dir)
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 	rec := &Record{
 		Entries: []Entry{{
@@ -366,7 +367,7 @@ func TestCommitUsesCycleRewritesNothing(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, workflowPath), workflowContent, 0o644))
 	t.Chdir(dir)
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 	rec := &Record{
 		Entries: []Entry{
@@ -384,12 +385,6 @@ func TestCommitUsesCycleRewritesNothing(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(dir, ".github", "workflows", "actions.lock"))
 }
 
-type fakeMeta struct{}
-
-func (fakeMeta) RepoIDs(_ context.Context, _, _, _ string) (int64, int64, error) {
-	return 1, 2, nil
-}
-
 // A co-located bump forces a workflow rewrite; the impostor pin already on
 // disk must be retained, not silently dropped toward an empty pin list.
 func TestRetainUnresolvablePins_keepsExistingPinOnColocatedRepin(t *testing.T) {
@@ -398,7 +393,7 @@ func TestRetainUnresolvablePins_keepsExistingPinOnColocatedRepin(t *testing.T) {
 	wfPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
 	wfKey := workflowfile.KeyFromPath(wfPath)
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 
 	seed := []dep.Dependency{
@@ -447,7 +442,7 @@ func TestRetainUnresolvablePins_noopWithoutImpostorFinding(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
 	wfPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 
 	rec := &Record{Entries: []Entry{
@@ -468,7 +463,7 @@ func TestRetainUnresolvablePins_keepsUnresolvedPin(t *testing.T) {
 	wfPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
 	wfKey := workflowfile.KeyFromPath(wfPath)
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 
 	seed := []dep.Dependency{

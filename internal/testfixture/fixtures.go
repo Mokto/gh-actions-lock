@@ -6,7 +6,10 @@
 // runs it before the live integration suite.
 package testfixture
 
-import "strings"
+import (
+	"context"
+	"strings"
+)
 
 // Pin is a real commit recorded under a ref, as a lockfile entry would hold
 // it. Ref is empty for bare-SHA pins. Absent pins name a commit that must
@@ -114,4 +117,13 @@ func BySHA(sha string) (Pin, bool) {
 		}
 	}
 	return Pin{}, false
+}
+
+// Metadata answers every repository-ID lookup with owner 1, repo 2, for
+// tests that need lockfile metadata but not a particular identity.
+type Metadata struct{}
+
+// RepoIDs returns owner ID 1 and repository ID 2.
+func (Metadata) RepoIDs(context.Context, string, string, string) (int64, int64, error) {
+	return 1, 2, nil
 }

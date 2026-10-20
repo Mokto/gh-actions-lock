@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/pipeline"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/github/gh-actions-lock/internal/workflowfile"
 
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -475,7 +476,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 
 	t.Run("repair declines conflicting symbolic target", func(t *testing.T) {
 		tagger, _ := newTagger(t)
-		store, err := lockfile.LoadState(t.TempDir(), fakeMeta{})
+		store, err := lockfile.LoadState(t.TempDir(), testfixture.Metadata{})
 		require.NoError(t, err)
 		target := dep.Dependency{
 			NWO:      "actions/checkout",
@@ -637,7 +638,7 @@ func TestPlanNormalizationRespectsLockedTarget(t *testing.T) {
 				tags = httpmock.TagListResponse(tt.tag, headSHA)
 			}
 			reg.Register(httpmock.REST("GET", `repos/`+tt.nwo+`/tags`), httpmock.JSONResponse(tags))
-			store, err := lockfile.LoadState(t.TempDir(), fakeMeta{})
+			store, err := lockfile.LoadState(t.TempDir(), testfixture.Metadata{})
 			require.NoError(t, err)
 			locked := dep.Dependency{Hostname: "github.com", NWO: "owner/action", Ref: tt.lockedRef, SHA: tt.lockedSHA}
 			require.NoError(t, store.Set(context.Background(), "existing.yml", []dep.Dependency{locked}, nil, nil))
@@ -1168,7 +1169,7 @@ func TestPlan_impreciseTransitivePinDoesNotBlockDirectNarrowing(t *testing.T) {
 	wfPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
 	wfKey := workflowfile.KeyFromPath(wfPath)
 
-	store, err := lockfile.LoadState(dir, fakeMeta{})
+	store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 
 	deps := []dep.Dependency{
@@ -1217,7 +1218,7 @@ func TestPlanNormalizationPrunesStaleTargetsInOneRun(t *testing.T) {
 			if len(paths) == 0 {
 				paths = []string{".github/workflows/ci.yml"}
 			}
-			store, err := lockfile.LoadState(dir, fakeMeta{})
+			store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 			require.NoError(t, err)
 			wantRef := "main"
 			if tt.tag != "" {
@@ -1267,7 +1268,7 @@ func TestPlanNormalizationPrunesStaleTargetsInOneRun(t *testing.T) {
 			firstFiles := make(map[string][]byte)
 			files := append([]string{parserlock.Path}, paths...)
 			for pass := range 2 {
-				store, err := lockfile.LoadState(dir, fakeMeta{})
+				store, err := lockfile.LoadState(dir, testfixture.Metadata{})
 				require.NoError(t, err)
 				report := pipeline.DiagnoseParsed(ctx, pipeline.ParseAll(paths, store), nil, store, pool)
 				record, err := Plan(ctx, report, PlanOptions{
@@ -1317,7 +1318,7 @@ func TestPlanNormalizationRetainsSharedTargets(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			store, err := lockfile.LoadState(t.TempDir(), fakeMeta{})
+			store, err := lockfile.LoadState(t.TempDir(), testfixture.Metadata{})
 			require.NoError(t, err)
 			locked := dep.Dependency{Hostname: "github.com", NWO: "owner/action", Ref: "main", SHA: oldSHA}
 			changed := checks.WorkflowReport{

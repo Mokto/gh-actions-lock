@@ -15,15 +15,10 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type fakeMetadataResolver struct{}
-
-func (fakeMetadataResolver) RepoIDs(_ context.Context, _, owner, repo string) (int64, int64, error) {
-	return 1, 2, nil
-}
 
 func TestState_PersistsRef(t *testing.T) {
 	dir := t.TempDir()
@@ -31,7 +26,7 @@ func TestState_PersistsRef(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -88,7 +83,7 @@ func TestState_PersistsRef(t *testing.T) {
 	}
 
 	// Reload and verify roundtrip.
-	store2, err := LoadState(dir, fakeMetadataResolver{})
+	store2, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("reopening store: %v", err)
 	}
@@ -120,7 +115,7 @@ func actionKeys[V any](m map[string]V) []string {
 
 func TestState_DoesNotMergeImplicitSHAEdges(t *testing.T) {
 	dir := t.TempDir()
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +158,7 @@ func TestState_DoesNotMergeImplicitSHAEdges(t *testing.T) {
 // branch are accepted — the new schema makes ref optional.
 func TestState_SetAcceptsEmptyBranch(t *testing.T) {
 	dir := t.TempDir()
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -191,7 +186,7 @@ func TestState_SetPreservesRefForUnchangedPin(t *testing.T) {
 	dir := t.TempDir()
 	wfKey := ".github/workflows/ci.yml"
 
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -208,7 +203,7 @@ func TestState_SetPreservesRefForUnchangedPin(t *testing.T) {
 
 	// Reload from disk and re-Set with the existing checkout dep arriving
 	// branchless (the Verified read-path shape) plus a genuinely new dep.
-	store2, err := LoadState(dir, fakeMetadataResolver{})
+	store2, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("reopening store: %v", err)
 	}
@@ -228,7 +223,7 @@ func TestState_SetPreservesRefForUnchangedPin(t *testing.T) {
 		t.Fatalf("second Save: %v", err)
 	}
 
-	store3, err := LoadState(dir, fakeMetadataResolver{})
+	store3, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("reopening store: %v", err)
 	}
@@ -252,7 +247,7 @@ func TestState_DiamondTransitiveDepEmittedCorrectly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -291,7 +286,7 @@ func TestState_DiamondTransitiveDepEmittedCorrectly(t *testing.T) {
 	bPin := "owner/b@v1"
 
 	// Verify structure via reload.
-	store2, err := LoadState(dir, fakeMetadataResolver{})
+	store2, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("reopening store: %v", err)
 	}
@@ -334,7 +329,7 @@ func TestState_SaveRejectsCyclicUses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -400,7 +395,7 @@ func TestState_SaveIsByteDeterministic(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		store, err := LoadState(dir, fakeMetadataResolver{})
+		store, err := LoadState(dir, testfixture.Metadata{})
 		if err != nil {
 			t.Fatalf("opening store: %v", err)
 		}
@@ -462,7 +457,7 @@ func TestState_RefusesFutureVersionLockfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadState(dir, fakeMetadataResolver{})
+	_, err := LoadState(dir, testfixture.Metadata{})
 	if err == nil {
 		t.Fatal("expected error opening future-version lockfile, got nil")
 	}
@@ -501,7 +496,7 @@ func TestState_CorruptLockfileSurfacesError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadState(dir, fakeMetadataResolver{})
+	_, err := LoadState(dir, testfixture.Metadata{})
 	if err == nil {
 		t.Fatal("expected error opening corrupt lockfile, got nil")
 	}
@@ -522,7 +517,7 @@ func setupClosure(t *testing.T, dir string) {
 	if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -544,7 +539,7 @@ func setupClosure(t *testing.T, dir string) {
 // given workflow's closure, and saves — returning the new on-disk bytes.
 func resaveBumped(t *testing.T, dir, wfKey string, deps []dep.Dependency, pm map[string][]string, direct map[string]bool) []byte {
 	t.Helper()
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("reopening store: %v", err)
 	}
@@ -586,7 +581,7 @@ func TestState_BumpYieldsMinimalDiff(t *testing.T) {
 	}
 	direct := map[string]bool{"owner/a@v1": true, "owner/b@v2": true, "owner/c@v3": true}
 
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -636,7 +631,7 @@ func TestState_BumpTransitiveRemoval(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		store, _ := LoadState(dir, fakeMetadataResolver{})
+		store, _ := LoadState(dir, testfixture.Metadata{})
 		deps := []dep.Dependency{
 			{NWO: "owner/a", Ref: "v1", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", HashAlgo: "sha1", Branch: "main"},
 			{NWO: "trans/x", Ref: "v1", SHA: "1111111111111111111111111111111111111111", HashAlgo: "sha1", Branch: "main"},
@@ -668,7 +663,7 @@ func TestState_BumpTransitiveRemoval(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		store, _ := LoadState(dir, fakeMetadataResolver{})
+		store, _ := LoadState(dir, testfixture.Metadata{})
 		shared := dep.Dependency{NWO: "shared/s", Ref: "v1", SHA: "5555555555555555555555555555555555555555", HashAlgo: "sha1", Branch: "main"}
 		ci := []dep.Dependency{
 			{NWO: "owner/a", Ref: "v1", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", HashAlgo: "sha1", Branch: "main"},
@@ -718,7 +713,7 @@ func TestState_BumpTransitiveRemoval(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		store, _ := LoadState(dir, fakeMetadataResolver{})
+		store, _ := LoadState(dir, testfixture.Metadata{})
 		deps := []dep.Dependency{
 			{NWO: "owner/a", Ref: "v1", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", HashAlgo: "sha1", Branch: "main"},
 			{NWO: "mid/m", Ref: "v1", SHA: "3333333333333333333333333333333333333333", HashAlgo: "sha1", Branch: "main"},
@@ -784,7 +779,7 @@ func TestState_SaveFormatIsStable(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -895,7 +890,7 @@ func TestState_TransitiveClosureGolden(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -961,7 +956,7 @@ func TestState_TransitiveClosureGolden(t *testing.T) {
 func TestStateClosureIncludesTransitivePins(t *testing.T) {
 	dir := t.TempDir()
 	setupClosure(t, dir)
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -990,7 +985,7 @@ func TestStateClosureIncludesTransitivePins(t *testing.T) {
 // TestState_SetUnionsUsesAcrossRenames: two old names can dedup to one
 // canonical pin, and every old entry's recorded children must carry over.
 func TestState_SetUnionsUsesAcrossRenames(t *testing.T) {
-	store, err := LoadState(t.TempDir(), fakeMetadataResolver{})
+	store, err := LoadState(t.TempDir(), testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
@@ -1022,7 +1017,7 @@ func TestStateClosureDirectPinIsNeverTransitive(t *testing.T) {
 		"    uses:\n      - 'actions/checkout@" + sha + "'\n" +
 		"workflows:\n  '.github/workflows/ci.yml':\n    - 'octo/composite@v1'\n    - 'actions/checkout@" + sha + "'\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lock), 0o600))
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	require.NoError(t, err)
 
 	got := map[string]string{}
@@ -1148,7 +1143,7 @@ func TestPrepareRefreshPreservesUnselectedWorkflows(t *testing.T) {
 		{name: "shared dangling edge cannot be dropped", shared: true, changedEdges: true, missingChild: true, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			store, err := LoadState(t.TempDir(), fakeMetadataResolver{})
+			store, err := LoadState(t.TempDir(), testfixture.Metadata{})
 			require.NoError(t, err)
 			root := dep.Dependency{NWO: "o/root", Ref: "Main", SHA: sha}
 			child := dep.Dependency{NWO: "o/child", Ref: "v2", SHA: sha}
@@ -1192,7 +1187,7 @@ func TestPrepareRefreshClearsDetachedRediscoveredEdges(t *testing.T) {
 		wf  = ".github/workflows/ci.yml"
 		sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	)
-	store, err := LoadState(t.TempDir(), fakeMetadataResolver{})
+	store, err := LoadState(t.TempDir(), testfixture.Metadata{})
 	require.NoError(t, err)
 	root := dep.Dependency{NWO: "o/root", Ref: "v1", SHA: sha}
 	child := dep.Dependency{NWO: "o/child", Ref: "v2", SHA: sha}
@@ -1214,7 +1209,7 @@ func TestPrepareRefreshLeavesNewEntriesToSet(t *testing.T) {
 		wf  = ".github/workflows/ci.yml"
 		sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	)
-	store, err := LoadState(t.TempDir(), fakeMetadataResolver{})
+	store, err := LoadState(t.TempDir(), testfixture.Metadata{})
 	require.NoError(t, err)
 	require.NoError(t, store.SetHostname("tenant.ghe.com"))
 	public := dep.Dependency{Hostname: "github.com", NWO: "actions/checkout", Ref: "v4", SHA: sha}
@@ -1253,7 +1248,7 @@ func TestPrepareRefreshRejectsIncompleteOrConflictingPlans(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			store, err := LoadState(t.TempDir(), fakeMetadataResolver{})
+			store, err := LoadState(t.TempDir(), testfixture.Metadata{})
 			require.NoError(t, err)
 			root := dep.Dependency{NWO: "o/root", Ref: "Main", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 			child := dep.Dependency{NWO: "o/child", Ref: "v2", SHA: root.SHA}
@@ -1289,7 +1284,7 @@ func TestLoadState_InvalidEntryRefIsCorrupt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := writeEntryRefLock(t, tt.key, tt.ref)
-			_, err := LoadState(dir, fakeMetadataResolver{})
+			_, err := LoadState(dir, testfixture.Metadata{})
 			require.ErrorIs(t, err, ErrCorruptLockfile)
 			assert.Contains(t, err.Error(), "actions/checkout@"+tt.key)
 		})
@@ -1304,7 +1299,7 @@ func TestLoadState_ValidEntryRefLoads(t *testing.T) {
 		{entryRefSHA, "pull/1/head"},
 	} {
 		dir := writeEntryRefLock(t, tt.key, tt.ref)
-		_, err := LoadState(dir, fakeMetadataResolver{})
+		_, err := LoadState(dir, testfixture.Metadata{})
 		require.NoError(t, err, "%s@%s", tt.key, tt.ref)
 	}
 }
@@ -1341,7 +1336,7 @@ func TestLoadState_ContentErrorNamesProblem(t *testing.T) {
 	lock := "version: 'v0.0.3'\ndependencies:\n  'actions/checkout@" + sha + "':\n    ref: 'main~1'\n    commit: 'sha1-" + sha + "'\n    owner_id: 1\n    repo_id: 1\nworkflows:\n  '.github/workflows/ci.yml':\n    - 'actions/checkout@" + sha + "'\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lock), 0o600))
 
-	_, err := LoadState(dir, fakeMetadataResolver{})
+	_, err := LoadState(dir, testfixture.Metadata{})
 	require.ErrorIs(t, err, ErrCorruptLockfile)
 	assert.Equal(t, `.github/workflows/actions.lock: line 3: entry for actions/checkout@`+sha+` records ref "main~1", which isn't a tag or branch name the Actions backend accepts`, err.Error())
 	assert.NotContains(t, err.Error(), "unreadable")
@@ -1551,7 +1546,7 @@ func newStoreWithWorkflows(t *testing.T, dir string) *State {
 	if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	store, err := LoadState(dir, fakeMetadataResolver{})
+	store, err := LoadState(dir, testfixture.Metadata{})
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}
