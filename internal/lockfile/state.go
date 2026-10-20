@@ -65,13 +65,21 @@ func (e *contentError) Error() string { return e.msg }
 
 func (e *contentError) Is(target error) bool { return target == ErrCorruptLockfile }
 
-// entryLine returns the 1-based line of the dependency entry keyed by
-// pinKey, or 0 if it can't be found. It matches the whole quoted mapping key
-// ('key':), so a workflow list item or a longer key doesn't match.
-func entryLine(contents []byte, pinKey string) int {
-	needle := []byte("'" + strings.ToLower(pinKey) + "':")
+// entryLine returns the 1-based line of the dependency entry for pin, or 0
+// if it can't be found. It matches whole quoted mapping keys ('key':), so a
+// workflow list item doesn't match, and compares canonical pin keys: owner
+// and repo fold, refs are case-sensitive.
+func entryLine(contents []byte, pin parserlock.Pin) int {
+	want := pin.String()
 	for n, line := range bytes.Split(contents, []byte("\n")) {
-		if bytes.Equal(bytes.ToLower(bytes.TrimSpace(line)), needle) {
+		key, ok := strings.CutPrefix(string(bytes.TrimSpace(line)), "'")
+		if !ok {
+			continue
+		}
+		if key, ok = strings.CutSuffix(key, "':"); !ok {
+			continue
+		}
+		if p, ok := parserlock.ParsePin(key); ok && p.String() == want {
 			return n + 1
 		}
 	}
@@ -149,7 +157,7 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 		}
 		if !ValidEntryRef(pin, action.Ref) {
 			where := parserlock.Path
-			if line := entryLine(contents, pinKey); line > 0 {
+			if line := entryLine(contents, pin); line > 0 {
 				where = fmt.Sprintf("%s: line %d", where, line)
 			}
 			return nil, &contentError{fmt.Sprintf("%s: entry for %s %s", where, pinKey, entryRefError(pin, action.Ref))}

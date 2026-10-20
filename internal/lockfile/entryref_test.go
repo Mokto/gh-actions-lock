@@ -1,6 +1,7 @@
 package lockfile
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,4 +152,41 @@ func TestLoadState_ContentErrorLineIsTheEntry(t *testing.T) {
 	_, err := LoadState(dir, fakeMetadataResolver{})
 	require.ErrorIs(t, err, ErrCorruptLockfile)
 	assert.Contains(t, err.Error(), "actions.lock: line 6: entry for "+key+" ")
+}
+
+// TestLoadState_ContentErrorLineKeepsRefCase: refs are case-sensitive, so
+// the line is the invalid entry's, not a case variant's, in either order;
+// owner and repo casing doesn't matter.
+func TestLoadState_ContentErrorLineKeepsRefCase(t *testing.T) {
+	const bad = "v1-g1234abcd"  // refused: shaped like `git describe` output
+	const good = "V1-G1234ABCD" // accepted: the describe suffix is lowercase hex
+	entry := func(key, ref string) string {
+		return "  '" + key + "':\n" +
+			"    ref: '" + ref + "'\n" +
+			"    commit: 'sha1-" + entryRefSHA + "'\n" +
+			"    owner_id: 1\n" +
+			"    repo_id: 1\n"
+	}
+	tests := []struct {
+		name     string
+		entries  []string
+		wantLine int
+		wantKey  string
+	}{
+		{"valid variant first", []string{entry("actions/checkout@"+good, good), entry("actions/checkout@"+bad, bad)}, 9, "actions/checkout@" + bad},
+		{"invalid variant first", []string{entry("actions/checkout@"+bad, bad), entry("actions/checkout@"+good, good)}, 4, "actions/checkout@" + bad},
+		{"owner and repo casing", []string{entry("actions/checkout@"+good, good), entry("Actions/Checkout@"+bad, bad)}, 9, "actions/checkout@" + bad},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+			lock := "version: 'v0.0.3'\nworkflows: {}\ndependencies:\n" + strings.Join(tt.entries, "")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			_, err := LoadState(dir, fakeMetadataResolver{})
+			require.ErrorIs(t, err, ErrCorruptLockfile)
+			assert.Contains(t, err.Error(), fmt.Sprintf("actions.lock: line %d: entry for %s ", tt.wantLine, tt.wantKey))
+		})
+	}
 }
