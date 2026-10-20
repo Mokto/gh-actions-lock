@@ -129,3 +129,26 @@ func TestLoadState_ContentErrorNamesProblem(t *testing.T) {
 	assert.Equal(t, `.github/workflows/actions.lock: line 3: entry for actions/checkout@`+sha+` records ref "main~1", which isn't a tag or branch name the Actions backend accepts`, err.Error())
 	assert.NotContains(t, err.Error(), "unreadable")
 }
+
+// TestLoadState_ContentErrorLineIsTheEntry: the reported line is the
+// dependency entry, not the workflow list item that names the same key.
+func TestLoadState_ContentErrorLineIsTheEntry(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	key := "actions/checkout@" + entryRefSHA
+	lock := "version: 'v0.0.3'\n" +
+		"workflows:\n" +
+		"  '.github/workflows/ci.yml':\n" +
+		"    - '" + key + "'\n" +
+		"dependencies:\n" +
+		"  '" + key + "':\n" +
+		"    ref: 'main~1'\n" +
+		"    commit: 'sha1-" + entryRefSHA + "'\n" +
+		"    owner_id: 1\n" +
+		"    repo_id: 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+	_, err := LoadState(dir, fakeMetadataResolver{})
+	require.ErrorIs(t, err, ErrCorruptLockfile)
+	assert.Contains(t, err.Error(), "actions.lock: line 6: entry for "+key+" ")
+}

@@ -65,14 +65,17 @@ func (e *contentError) Error() string { return e.msg }
 
 func (e *contentError) Is(target error) bool { return target == ErrCorruptLockfile }
 
-// lineOf returns the 1-based line of the first occurrence of needle in
-// contents, or 0 if it doesn't occur.
-func lineOf(contents []byte, needle string) int {
-	i := bytes.Index(contents, []byte(needle))
-	if i < 0 {
-		return 0
+// entryLine returns the 1-based line of the dependency entry keyed by
+// pinKey, or 0 if it can't be found. It matches the whole quoted mapping key
+// ('key':), so a workflow list item or a longer key doesn't match.
+func entryLine(contents []byte, pinKey string) int {
+	needle := []byte("'" + strings.ToLower(pinKey) + "':")
+	for n, line := range bytes.Split(contents, []byte("\n")) {
+		if bytes.Equal(bytes.ToLower(bytes.TrimSpace(line)), needle) {
+			return n + 1
+		}
 	}
-	return bytes.Count(contents[:i], []byte("\n")) + 1
+	return 0
 }
 
 // LoadState reads the lockfile at repoRoot, returning an empty in-memory file
@@ -146,7 +149,7 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 		}
 		if !ValidEntryRef(pin, action.Ref) {
 			where := parserlock.Path
-			if line := lineOf(contents, pinKey+"'"); line > 0 {
+			if line := entryLine(contents, pinKey); line > 0 {
 				where = fmt.Sprintf("%s: line %d", where, line)
 			}
 			return nil, &contentError{fmt.Sprintf("%s: entry for %s %s", where, pinKey, entryRefError(pin, action.Ref))}
