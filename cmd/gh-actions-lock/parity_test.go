@@ -1492,6 +1492,9 @@ func TestSHARecordedRef_ChildReadOnlyBlocks(t *testing.T) {
 				}
 				assert.Contains(t, blocking[0].Detail, "lock entry for actions/cache@"+parityTestSHA+", "+where+", records ref "+parserlock.ShortSHA(parityTestSHA))
 				assert.Equal(t, fix, blocking[0].Remediation)
+				if transitive {
+					assert.Equal(t, "actions/checkout@v6.1.0", blocking[0].RequiredBy, "JSON names the composite")
+				}
 				assert.Equal(t, lock, readTempLockfilePins(t))
 			})
 		}

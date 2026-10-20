@@ -150,6 +150,7 @@ func ownSHAEntryFinding(e lockfile.OwnSHAEntry) checks.Finding {
 		f.WorkflowPath = e.Workflows[0]
 		where = "in " + e.Workflows[0]
 	case len(e.Parents) > 0:
+		f.ParentNWO = e.Parents[0]
 		where = "used by " + e.Parents[0]
 	}
 	f.Detail = fmt.Sprintf("lock entry for %s, %s, records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", e.Key, where, parserlock.ShortSHA(pin.Ref))
