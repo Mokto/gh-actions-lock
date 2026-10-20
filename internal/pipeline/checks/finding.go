@@ -73,10 +73,13 @@ type Finding struct {
 	// without request URLs. --json and the run log keep Detail.
 	TermDetail string
 	// TrackedAction marks a not-pinned bare SHA whose owner/repo the
-	// workflow already locks at another ref. It is a ref change on a
-	// tracked action, not onboarding, so --no-onboard lets it through to
-	// be resolved and history-checked.
+	// workflow already locks at another ref, or whose entry records its own
+	// SHA as its ref. It is a change to a tracked action, not onboarding,
+	// so --no-onboard lets it through to be resolved and history-checked.
 	TrackedAction bool
+	// Reresolve asks planning to drop this finding's recorded dependency
+	// from the inventory and resolve it afresh (see PrunesDependency).
+	Reresolve bool
 }
 
 // InventoryEntry describes a single dependency with context.

@@ -21,6 +21,10 @@ type paritySubject struct {
 	pin parserlock.Pin
 	// fresh marks a pin resolved in this run: it is what the run would write.
 	fresh bool
+	// ownSHA marks a recorded entry that records its own SHA as its ref.
+	// Its check confirms only repository and commit, which the run then
+	// repairs on, so like a fresh pin it needs that check to finish.
+	ownSHA bool
 	// away marks a recorded entry planning provably replaces or removes
 	// (see plannedAway in parity.go), so what the run writes for it is not
 	// the recorded commit.
@@ -68,7 +72,7 @@ const (
 // (see heldBy) can't be repaired that way, so it stays an error, and advice
 // names the holder.
 func disposeParity(m parityMode, f *checks.Finding, s paritySubject) (parityVerdict, checks.Finding) {
-	if s.fresh {
+	if s.fresh || s.ownSHA && s.inconclusive {
 		if s.inconclusive {
 			f.Severity = checks.SeverityError
 			f.Remediation = "retry; nothing is written until the repository identity is confirmed"

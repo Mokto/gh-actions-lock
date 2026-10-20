@@ -61,11 +61,22 @@ owner/repo@<sha>`), must have its commit in that ref's history, so a fork
 commit can't pass as upstream. Tags can move: the Actions backend accepts an
 exact tag that moved ahead of the commit, so runs allow it and `--verify` only
 warns. A lockfile entry whose `ref` the Actions backend resolver would reject
-fails the run (exit 2), naming the entry and its line: it must be a short tag
-or branch name the backend accepts, never a SHA, a `refs/` name, revision
-syntax such as `main~1`, or a `git describe` name, and it must equal the
-`uses:` ref unless that is a full SHA. A `uses:` ref that is not such a tag or
-branch, such as `pull/1/head` or `main~1`, is never locked.
+fails the run (exit 2), naming the first such entry in the file and its line:
+it must be a short tag or branch name the backend accepts, never a SHA, a
+`refs/` name, revision syntax such as `main~1`, or a `git describe` name, and
+it must equal the `uses:` ref unless that is a full SHA. A `uses:` ref that is
+not such a tag or branch, such as `pull/1/head` or `main~1`, is never locked.
+
+One exception loads instead: an entry keyed by a full SHA whose `ref` is that
+same SHA. The Actions backend still rejects it, so `--verify`, `--no-fix` and
+`--verify-local` report it as a `not-pinned` error (exit 1) and write nothing,
+wherever it sits: in a scanned workflow, in a workflow the run didn't scan or
+that was deleted, under a composite, or used by nothing. A plain run or
+`--relock` records the tag at that commit, else a branch containing it, keeps
+the full-SHA `uses:`, and drops the entry if nothing uses it; a commit no tag
+or branch contains still fails the run and nothing is written. A run given
+workflow paths leaves another workflow's such entry as it is, warns about it
+(exit 0), and doesn't report every workflow valid.
 `--verify-local` runs
 offline, never writes, and only checks that every ref has a lockfile entry,
 not that the entries are trustworthy; use `--verify` in CI for that.

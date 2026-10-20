@@ -63,7 +63,7 @@ func TestLoadState_InvalidEntryRefIsCorrupt(t *testing.T) {
 		key  string
 		ref  string
 	}{
-		{"full-SHA key records the SHA", entryRefSHA, entryRefSHA},
+		{"full-SHA key records another SHA", entryRefSHA, "cccccccccccccccccccccccccccccccccccccccc"},
 		{"qualified tag", entryRefSHA, "refs/tags/v6.1.0"},
 		{"qualified pull request ref", entryRefSHA, "refs/pull/1/head"},
 		{"tag key records a branch", "v4", "main"},
@@ -91,6 +91,70 @@ func TestLoadState_ValidEntryRefLoads(t *testing.T) {
 		_, err := LoadState(dir, fakeMetadataResolver{})
 		require.NoError(t, err, "%s@%s", tt.key, tt.ref)
 	}
+}
+
+// TestLoadState_OwnSHARefLoads: a workflow's full-SHA pin recorded with
+// that SHA as its ref loads and stays recorded, so the run can report and
+// re-resolve it instead of failing the whole lockfile; it never seeds ref
+// resolution.
+func TestLoadState_OwnSHARefLoads(t *testing.T) {
+	dir := writeEntryRefLock(t, entryRefSHA, entryRefSHA)
+	s, err := LoadState(dir, fakeMetadataResolver{})
+	require.NoError(t, err)
+
+	key := "actions/checkout@" + entryRefSHA
+	assert.Equal(t, entryRefSHA, s.File().Dependencies[key].Ref, "the entry is kept as written")
+	deps, err := s.Get(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	require.Len(t, deps, 1, "still recorded for the workflow")
+	assert.False(t, Seedable(deps[0]), "never seeds ref resolution")
+	all := s.AllDeps()
+	require.Len(t, all, 1, "still recorded, so its host binds")
+	assert.False(t, Seedable(all[0]), "never seeds ref resolution")
+	pin, _ := parserlock.ParsePin(key)
+	assert.True(t, RecordsOwnSHA(pin, entryRefSHA))
+}
+
+// TestLoadState_OwnSHARefAnywhereLoads: an own-SHA entry reached only
+// through another entry's `uses:`, or by nothing, also loads; OwnSHAEntries
+// says who lists or uses it.
+func TestLoadState_OwnSHARefAnywhereLoads(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	parent, child, orphan := "actions/checkout@v4", "actions/cache@"+entryRefSHA, "actions/setup-go@"+entryRefSHA
+	entry := func(key, ref string, uses ...string) []string {
+		out := []string{"  '" + key + "':", "    ref: '" + ref + "'", "    commit: 'sha1-" + entryRefSHA + "'", "    owner_id: 1", "    repo_id: 1"}
+		if len(uses) > 0 {
+			out = append(out, "    uses:")
+			for _, u := range uses {
+				out = append(out, "      - '"+u+"'")
+			}
+		}
+		return out
+	}
+	lines := []string{"version: '" + parserlock.Version + "'", "dependencies:"}
+	lines = append(lines, entry(parent, "v4", child)...)
+	lines = append(lines, entry(child, entryRefSHA)...)
+	lines = append(lines, entry(orphan, entryRefSHA)...)
+	lines = append(lines, "workflows:", "  '.github/workflows/ci.yml':", "    - '"+parent+"'", "")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(strings.Join(lines, "\n")), 0o600))
+
+	s, err := LoadState(dir, fakeMetadataResolver{})
+	require.NoError(t, err)
+	assert.Equal(t, []OwnSHAEntry{
+		{Key: child, Parents: []string{parent}},
+		{Key: orphan},
+	}, s.OwnSHAEntries())
+	deps, err := s.Get(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	require.Len(t, deps, 1, "the parent is still recorded")
+	var seedable []string
+	for _, d := range s.AllDeps() {
+		if Seedable(d) {
+			seedable = append(seedable, d.NWO+"@"+d.Ref)
+		}
+	}
+	assert.Equal(t, []string{parent}, seedable, "only the parent seeds the resolver")
 }
 
 func writeEntryRefLock(t *testing.T, key, ref string) string {
@@ -189,4 +253,61 @@ func TestLoadState_ContentErrorLineKeepsRefCase(t *testing.T) {
 			assert.Contains(t, err.Error(), fmt.Sprintf("actions.lock: line %d: entry for %s ", tt.wantLine, tt.wantKey))
 		})
 	}
+}
+
+// TestLoadState_ContentErrorNamesFirstEntry: with several invalid entries,
+// the error always names the first in file order.
+func TestLoadState_ContentErrorNamesFirstEntry(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	lock := "version: 'v0.0.3'\nworkflows: {}\ndependencies:\n"
+	for _, repo := range []string{"zeta", "alpha", "mid", "beta", "omega", "gamma"} {
+		lock += "  'actions/" + repo + "@" + entryRefSHA + "':\n" +
+			"    ref: 'refs/heads/main'\n" +
+			"    commit: 'sha1-" + entryRefSHA + "'\n" +
+			"    owner_id: 1\n" +
+			"    repo_id: 1\n"
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(lock), 0o600))
+
+	for range 20 {
+		_, err := LoadState(dir, fakeMetadataResolver{})
+		require.ErrorIs(t, err, ErrCorruptLockfile)
+		require.Contains(t, err.Error(), "line 4: entry for actions/zeta@"+entryRefSHA+" ")
+	}
+}
+
+// TestLoadState_ContentErrorFirstEntryAnyKeyStyle: file order holds whatever
+// YAML style a dependency key is written in.
+func TestLoadState_ContentErrorFirstEntryAnyKeyStyle(t *testing.T) {
+	body := func(key string) string {
+		return "  " + key + "\n    ref: 'refs/heads/main'\n    commit: 'sha1-" + entryRefSHA + "'\n    owner_id: 1\n    repo_id: 1\n"
+	}
+	for name, first := range map[string]string{
+		"double-quoted": `"actions/zeta@` + entryRefSHA + `":`,
+		"plain":         "actions/zeta@" + entryRefSHA + ":",
+		"commented":     "'actions/zeta@" + entryRefSHA + "': # pinned",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+			lock := "version: 'v0.0.3'\nworkflows: {}\ndependencies:\n" + body(first) + body("'actions/alpha@"+entryRefSHA+"':")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(lock), 0o600))
+			for range 10 {
+				_, err := LoadState(dir, fakeMetadataResolver{})
+				require.ErrorIs(t, err, ErrCorruptLockfile)
+				require.Contains(t, err.Error(), "line 4: entry for actions/zeta@"+entryRefSHA+" ")
+			}
+		})
+	}
+}
+
+// TestLoadState_FullSHAKeyCommitMustMatch: a full-SHA key always records its
+// own commit, so an own-SHA entry's key names the commit to repair from.
+func TestLoadState_FullSHAKeyCommitMustMatch(t *testing.T) {
+	const tagObject = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	dir := writeEntryRefLock(t, tagObject, tagObject)
+	_, err := LoadState(dir, fakeMetadataResolver{})
+	require.ErrorIs(t, err, ErrCorruptLockfile)
+	assert.Contains(t, err.Error(), "does not match")
 }

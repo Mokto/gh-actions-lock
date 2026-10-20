@@ -228,6 +228,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	preservedDeps := make(map[int]bool)
 
 	narrowDirectDeps(ctx, opts, deps, rewriteTracker, rewrites, preservedDeps)
+	reRecorded := preserveReRecorded(opts, deps, rewriteTracker, preservedDeps)
 
 	// ReverseLookup canonicalizes each dep's ref while preserving the tags
 	// narrowing chose and transitive deps' declared refs.
@@ -308,7 +309,10 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	}
 
 	// Build entries for all pinned deps (skip any already emitted from inventory).
-	entries = append(entries, buildPinnedEntries(opts, wr, deps, parentMap, rootTracker, inventorySHA)...)
+	for _, e := range buildPinnedEntries(opts, wr, deps, parentMap, rootTracker, inventorySHA) {
+		e.ReRecorded = reRecorded[e.NWO+"@"+e.Ref]
+		entries = append(entries, e)
+	}
 
 	// Record findings that are informational (ref-moved, misleading-sha).
 	entries = append(entries, informationalEntries(wr, opts)...)
@@ -363,6 +367,24 @@ func rejectPartialSelfActionRewrites(opts PlanOptions, selfActionRefs []parserlo
 		}
 	}
 	return nil
+}
+
+// preserveReRecorded keeps the `uses:` of each direct full-SHA pin whose
+// entry recorded the SHA itself as its ref: the run only re-records the
+// entry's tag or branch. It returns the keys of those deps.
+func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, directTracker lockfile.DirectTracker, preservedDeps map[int]bool) map[string]bool {
+	out := map[string]bool{}
+	if opts.Store == nil {
+		return out
+	}
+	for i, d := range deps {
+		owner, repo := d.OwnerRepo()
+		if directTracker.IsDirect(i) && parserlock.IsFullSha(d.Ref) && opts.Store.RecordsOwnSHA(owner, repo, d.Ref) {
+			preservedDeps[i] = true
+			out[d.Key()] = true
+		}
+	}
+	return out
 }
 
 // narrowDirectDeps rewrites direct partial semver refs to exact patch tags,
@@ -692,6 +714,26 @@ func retainedLockTargets(report *checks.Report, opts PlanOptions) map[string]boo
 	if opts.Store == nil {
 		return nil
 	}
+	staleByWorkflow := staleRoots(report, opts)
+
+	// A stale direct pin can still be required by another workflow or by a
+	// surviving composite. Only ignore targets absent from every closure.
+	retained := make(map[string]bool)
+	for _, wfKey := range opts.Store.WorkflowKeys() {
+		live := func(p parserlock.Pin, _ parserlock.Action) bool {
+			return !staleByWorkflow[wfKey][p.String()]
+		}
+		for _, locked := range opts.Store.Closure(wfKey, live) {
+			retained[locked.Pin.String()] = true
+		}
+	}
+	return retained
+}
+
+// staleRoots returns, per workflow key, the pin keys of the lock roots this
+// run prunes (stale findings, see lockfile.UsedRoot), for workflows planning
+// may write.
+func staleRoots(report *checks.Report, opts PlanOptions) map[string]map[string]bool {
 	staleByWorkflow := make(map[string]map[string]bool)
 	for _, wr := range report.Workflows {
 		if wr.SkipCommit || wr.BlockingResolverError || wr.CountByCategory(checks.InvalidSelfRepositoryRef) > 0 {
@@ -708,19 +750,7 @@ func retainedLockTargets(report *checks.Report, opts PlanOptions) map[string]boo
 		}
 		staleByWorkflow[workflowfile.KeyFromPath(wr.Path)] = stale
 	}
-
-	// A stale direct pin can still be required by another workflow or by a
-	// surviving composite. Only ignore targets absent from every closure.
-	retained := make(map[string]bool)
-	for _, wfKey := range opts.Store.WorkflowKeys() {
-		live := func(p parserlock.Pin) bool {
-			return !staleByWorkflow[wfKey][p.String()]
-		}
-		for _, locked := range opts.Store.Closure(wfKey, live) {
-			retained[locked.Pin.String()] = true
-		}
-	}
-	return retained
+	return staleByWorkflow
 }
 
 func hasConflictingLockTarget(opts PlanOptions, nwo, ref, sha string) bool {

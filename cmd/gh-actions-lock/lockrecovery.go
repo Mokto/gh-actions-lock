@@ -21,9 +21,12 @@ type lockRecovery func(lockPath string, parseErr error) (recovered bool, err err
 
 // newLockRecovery builds the recovery policy: always fail, naming the
 // problem. A bad entry usually means a hand edit, and deleting the lockfile
-// or fixing it automatically would lose the pins it records.
+// or fixing it automatically would lose the pins it records. When the
+// committed file is itself bad, version control can't help, so the
+// guidance also names the way to lock afresh.
 func newLockRecovery() lockRecovery {
 	return func(lockPath string, parseErr error) (bool, error) {
-		return false, fmt.Errorf("%w; if you edited %s by hand, restore it from version control", parseErr, filepath.Base(lockPath))
+		name := filepath.Base(lockPath)
+		return false, fmt.Errorf("%w; if you edited %s by hand, restore it from version control; otherwise move it aside and run `gh actions-lock` to lock your workflows again", parseErr, name)
 	}
 }

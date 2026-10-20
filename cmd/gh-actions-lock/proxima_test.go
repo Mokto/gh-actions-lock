@@ -263,3 +263,54 @@ jobs:
 		})
 	}
 }
+
+// TestOwnSHAEntryKeepsRecordedHost: an entry recording its own SHA as its
+// ref is re-resolved, but its recorded host still binds the repository
+// before any lookup: a github.com pin never reaches a tenant namesake, and a
+// pin to another host fails as it would for any other entry.
+func TestOwnSHAEntryKeepsRecordedHost(t *testing.T) {
+	writeLock := func(t *testing.T, version, hostname string) string {
+		t.Helper()
+		path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/public@`+publicSHA+`
+`)
+		lock := "version: '" + version + "'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - 'actions/public@" + publicSHA + "'\n" +
+			"dependencies:\n    'actions/public@" + publicSHA + "':\n        hostname: '" + hostname + "'\n        ref: '" + publicSHA + "'\n        commit: 'sha1-" + publicSHA + "'\n        owner_id: 22\n        repo_id: 222\n"
+		require.NoError(t, os.WriteFile(parserlock.Path, []byte(lock), 0o600))
+		return path
+	}
+
+	t.Run("github.com pin on a tenant", func(t *testing.T) {
+		path := writeLock(t, "v0.0.3", "github.com")
+		base := proximaFixture(t, 200)
+		transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+			assert.False(t, req.URL.Host == "api.tenant.ghe.com" && strings.Contains(req.URL.Path, "actions/public"),
+				"a recorded github.com pin must bypass tenant namesakes: %s", req.URL)
+			if req.URL.Host == "api.tenant.ghe.com" && req.URL.Path == "/graphql" {
+				return parityRepoID(req, 200, 222)
+			}
+			return base.RoundTrip(req)
+		})
+		stdout, stderr, err := runCommandWithHTTP(t, transport, "--hostname", "tenant.ghe.com", "--verify", "--json=valid,findings", path)
+		require.ErrorIs(t, err, errSilent, stderr)
+		assert.Contains(t, stdout, "records ref "+parserlock.ShortSHA(publicSHA))
+	})
+
+	t.Run("pin to another host", func(t *testing.T) {
+		path := writeLock(t, "v0.0.3", "other.ghe.com")
+		transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+			t.Errorf("unexpected request: %s", req.URL)
+			return nil, fmt.Errorf("unexpected request")
+		})
+		_, _, err := runCommandWithHTTP(t, transport, "--verify", path)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, errSilent)
+		assert.ErrorContains(t, err, "actions/public is pinned to other.ghe.com, not the selected host github.com")
+	})
+}

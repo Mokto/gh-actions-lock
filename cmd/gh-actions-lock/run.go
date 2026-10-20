@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,8 @@ import (
 	"github.com/cli/go-gh/v2/pkg/repository"
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
+	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pinpool"
 	"github.com/github/gh-actions-lock/internal/pipeline"
@@ -228,7 +231,8 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if err := store.SetHostname(r.Hostname()); err != nil {
 		return err
 	}
-	if err := r.SeedHosts(store.AllDeps()); err != nil {
+	recorded := store.AllDeps()
+	if err := r.SeedHosts(recorded); err != nil {
 		return err
 	}
 	scope := make([]string, len(paths))
@@ -238,12 +242,13 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if err := store.VerifyHosts(ctx, scope); err != nil {
 		return err
 	}
-	r.SeedBranchHints(store.AllDeps())
+	seedable := slices.DeleteFunc(recorded, func(d dep.Dependency) bool { return !lockfile.Seedable(d) })
+	r.SeedBranchHints(seedable)
 	// Locked refs are sticky: resolve them from the lockfile. --accept-moved
 	// and --relock must see what moved, so they resolve everything live.
 	relock := opts.acceptMoved || opts.relock
 	if !relock {
-		r.SeedFromLockfile(store.AllDeps())
+		r.SeedFromLockfile(seedable)
 	}
 	endSetup()
 
@@ -349,6 +354,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if opts.noFix && len(staleWorkflows) > 0 {
 		appendStaleWorkflowFindings(report, staleWorkflows, false)
 	}
+	if opts.noFix {
+		appendOwnSHAEntryFindings(report, store)
+		valid = report.IsValid()
+	}
 
 	// --no-onboard: refuse to onboard new workflows or actions. Rewrite the
 	// relevant not-pinned findings to onboarding-required and drop their refs
@@ -448,6 +457,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	})
 	endPlan()
 	rl.record = record
+	copts := &pin.CommitOptions{SkipNewWorkflowEntries: noOnboardFlag(cmd)}
+	if planErr == nil {
+		planErr = pin.PlanEntryRepairs(ctx, record, store, r, report, copts)
+	}
 	if planErr == nil && len(record.Unresolved()) > 0 {
 		planErr = fmt.Errorf("cannot write an incomplete lockfile: %d unresolved dependencies", len(record.Unresolved()))
 	}
@@ -482,7 +495,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 
 	// Parity excused or accepted some findings on the strength of this
 	// write; any it doesn't bear out block it.
-	if err := pin.Audit(ctx, record, store, report, &pin.CommitOptions{SkipNewWorkflowEntries: noOnboardFlag(cmd)}); err != nil {
+	if err := pin.Audit(ctx, record, store, report, copts); err != nil {
 		console.StopProgress()
 		return fmt.Errorf("checking the planned write: %w", err)
 	}
@@ -509,7 +522,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	// Commit: write all changes to disk atomically (fast local I/O, no
 	// spinner label — it finishes before the user could read one).
 	endCommit := prof.Phase("pin.Commit (disk writes)")
-	if err := pin.Commit(ctx, record, store, &pin.CommitOptions{SkipNewWorkflowEntries: noOnboardFlag(cmd)}); err != nil {
+	if err := pin.Commit(ctx, record, store, copts); err != nil {
 		console.StopProgress()
 		return fmt.Errorf("committing pins: %w", err)
 	}
@@ -520,6 +533,8 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if migrated > 0 && opts.jsonFields == "" {
 		console.TermSuccess("Migrated %d local %s to `$/…`", migrated, ui.Pluralize(migrated, "action", "actions"))
 	}
+
+	appendUnselectedOwnSHAWarnings(report, store)
 
 	// Record the prune in the report so --json consumers see what was
 	// dropped. The terminal surface reports it via the pin summary instead.

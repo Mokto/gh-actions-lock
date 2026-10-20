@@ -132,6 +132,9 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 		renderPinnedEntries(console, pinned)
 	}
 
+	// A re-recorded entry keeps its key and commit, so it may be Verified.
+	renderReRecorded(console, append(slices.Clone(pinned), record.Verified()...), record.EntryRepairs)
+
 	if len(narrowed) > 0 && len(pinned) == 0 {
 		console.TermBlank()
 	}
@@ -145,6 +148,7 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 
 	renderFullScanWarnings(console, pinned)
 	renderCooldownFindings(console, report)
+	ownSHAWarnings := renderOwnSHAWarnings(console, report)
 	presentErrors := reportHasNonInvestigatedUnfixableErrors(report) ||
 		len(investigated) == 0 && reportHasUnfixableErrors(report, acceptMoved)
 	if !noNarrow {
@@ -169,7 +173,7 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	onboardingRefused := len(refusedLabels)
 	allClean := len(pinned) == 0 && len(investigated) == 0 && len(unresolvedEntries) == 0
 	hasUnfixable := reportHasUnfixableErrors(report, acceptMoved)
-	if allClean && !hasUnfixable && onboardingRefused == 0 {
+	if allClean && !hasUnfixable && onboardingRefused == 0 && !ownSHAWarnings {
 		console.TermBlank()
 		console.TermSuccess("All %d %s valid", total, ui.Pluralize(total, "workflow", "workflows"))
 		return nil
@@ -207,6 +211,22 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 		return errSilent
 	}
 	return nil
+}
+
+// renderOwnSHAWarnings shows each entry the run left recording its own SHA
+// as its ref (see appendUnselectedOwnSHAWarnings) and reports whether there
+// was one, since the run then can't call every workflow valid.
+func renderOwnSHAWarnings(console *ui.UI, report *checks.Report) bool {
+	found := false
+	for _, f := range report.RepoFindings {
+		if f.Category != checks.NotPinned || f.Severity != checks.SeverityWarning {
+			continue
+		}
+		found = true
+		console.TermWarn("%s", f.Detail)
+		console.TermDetail("  %s", f.Remediation)
+	}
+	return found
 }
 
 // renderCooldownFindings surfaces the fresh-tag nudge on the terminal in fix
@@ -260,6 +280,23 @@ func renderAcceptedOverrides(console *ui.UI, report *checks.Report, pinned []pin
 				}
 			}
 		}
+	}
+}
+
+// renderReRecorded names each pin whose entry recorded its commit SHA as
+// its ref, now re-recorded with a tag or branch.
+func renderReRecorded(console *ui.UI, entries []pin.Entry, repairs []pin.EntryRepair) {
+	seen := map[string]bool{}
+	for _, e := range entries {
+		key := e.NWO + "@" + e.Ref
+		if !e.ReRecorded || seen[key] {
+			continue
+		}
+		seen[key] = true
+		console.TermWarn("%s: recorded ref was the commit SHA; re-recorded as %s", key, recordedEntryRef(e))
+	}
+	for _, r := range repairs {
+		console.TermWarn("%s: recorded ref was the commit SHA; re-recorded as %s", r.Key, r.Ref)
 	}
 }
 
@@ -829,7 +866,7 @@ func replaceOffHistoryFindings(report *checks.Report, unresolved []pin.Entry) []
 					}
 					kept = append(kept, f)
 				}
-				wr.Findings = append(kept, checks.Finding{
+				f := checks.Finding{
 					WorkflowPath: wf,
 					Category:     checks.UnreachablePin,
 					Severity:     checks.SeverityError,
@@ -837,7 +874,14 @@ func replaceOffHistoryFindings(report *checks.Report, unresolved []pin.Entry) []
 					Dependency:   &dep.Dependency{NWO: e.NWO, Ref: e.Ref, SHA: e.SHA},
 					Detail:       fmt.Sprintf("commit %s is not on any tag or branch of %s: it may be a fork or impostor commit served under the upstream name", parserlock.ShortSHA(e.SHA), e.NWO),
 					Remediation:  "use a current upstream tag instead",
-				})
+				}
+				// A composite's pin: only the composite can change it.
+				if len(e.RequiredBy) > 0 {
+					f.ParentNWO = e.RequiredBy[0]
+					f.Detail += fmt.Sprintf(" (used by %s)", f.ParentNWO)
+					f.Remediation = checks.UnreachableRemediation(f.ParentNWO, e.NWO)
+				}
+				wr.Findings = append(kept, f)
 			}
 		}
 	}

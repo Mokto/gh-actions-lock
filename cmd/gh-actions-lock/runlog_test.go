@@ -232,15 +232,7 @@ func TestCheck_RunLogOnEveryExitPath(t *testing.T) {
 
 	t.Run("a tool failure prints before the run log path", func(t *testing.T) {
 		isolateRunLogs(t)
-		path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@`+parityTestSHA+`
-`, "actions/checkout@"+parityTestSHA+"=sha1-"+parityTestSHA)
+		path := writeFullSHAWorkflow(t, "refs/heads/main")
 
 		_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify", path)
 		require.Error(t, err)

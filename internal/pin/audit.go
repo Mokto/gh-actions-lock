@@ -26,23 +26,14 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 	if !deferred {
 		return nil
 	}
-	byPath := make(map[string]*checks.WorkflowReport, len(report.Workflows))
-	for i := range report.Workflows {
-		byPath[report.Workflows[i].Path] = &report.Workflows[i]
-	}
 	for {
-		var writers []WorkflowPlan
-		for _, wp := range committedWorkflows(rec, store, copts) {
-			if wr, ok := byPath[wp.Path]; !ok || !wr.SkipCommit && !wr.BlockingResolverError {
-				writers = append(writers, wp)
-			}
-		}
+		ws := writers(rec, store, report, copts)
 		preview := store.Preview()
-		if err := updateLockfile(ctx, rec, writers, preview); err != nil {
+		if err := updateLockfile(ctx, rec, ws, preview); err != nil {
 			return err
 		}
 		preview.GC()
-		verified := carryVerified(preview, report.Verified, writers)
+		verified := carryVerified(preview, report.Verified, ws)
 		blocked := false
 		for i := range report.Workflows {
 			wr := &report.Workflows[i]
@@ -88,6 +79,22 @@ func carryVerified(preview *lockfile.State, verified map[string]bool, writers []
 			if verified[checks.VerifiedKey(oldKey, sha)] {
 				out[checks.VerifiedKey(newKey, sha)] = true
 			}
+		}
+	}
+	return out
+}
+
+// writers are the planned workflows a write would still update: those
+// Commit writes, less any whose report blocks writing.
+func writers(rec *Record, store *lockfile.State, report *checks.Report, copts *CommitOptions) []WorkflowPlan {
+	byPath := make(map[string]*checks.WorkflowReport, len(report.Workflows))
+	for i := range report.Workflows {
+		byPath[report.Workflows[i].Path] = &report.Workflows[i]
+	}
+	var out []WorkflowPlan
+	for _, wp := range committedWorkflows(rec, store, copts) {
+		if wr, ok := byPath[wp.Path]; !ok || !wr.SkipCommit && !wr.BlockingResolverError {
+			out = append(out, wp)
 		}
 	}
 	return out

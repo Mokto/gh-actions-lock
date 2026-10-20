@@ -37,7 +37,8 @@ func PruneEffectOf(f Finding, acceptMoved, relock bool) PruneEffect {
 	case f.Category == Stale,
 		f.Category == RepoRenamed && f.Severity == SeverityWarning:
 		return Dropped
-	case f.Category == UnreachablePin && acceptMoved,
+	case f.Reresolve,
+		f.Category == UnreachablePin && acceptMoved,
 		f.Category == RefMoved && (acceptMoved || relock):
 		return Reresolved
 	}

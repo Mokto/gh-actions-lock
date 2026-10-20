@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
@@ -370,6 +371,104 @@ jobs:
 			if tc.wantEntry != "" {
 				assert.Contains(t, readTempLockfilePins(t), tc.wantEntry)
 			}
+		})
+	}
+}
+
+// TestVerifyModes_SameLockfileError: --verify and --verify-local report an
+// invalid lockfile with the same words.
+func TestVerifyModes_SameLockfileError(t *testing.T) {
+	writeFullSHAWorkflow(t, "refs/heads/main")
+	var msgs []string
+	for _, mode := range []string{"--verify", "--verify-local"} {
+		_, _, err := runCommandWithHTTP(t, &httpmock.Registry{}, mode, "--no-interactive")
+		require.Error(t, err, mode)
+		assert.NotErrorIs(t, err, errSilent, mode)
+		msgs = append(msgs, err.Error())
+	}
+	assert.Equal(t, msgs[0], msgs[1])
+	assert.Contains(t, msgs[1], "restore it from version control")
+}
+
+// TestSHARecordedRef_OutOfScopeBlocks: a path-scoped read-only run still
+// fails on an own-SHA entry of a workflow it didn't scan, pointing at a
+// full-scan run, and writes nothing.
+func TestSHARecordedRef_OutOfScopeBlocks(t *testing.T) {
+	for _, mode := range []string{"--verify", "--no-fix", "--verify-local"} {
+		t.Run(mode, func(t *testing.T) {
+			ci := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+`)
+			other := filepath.Join(".github", "workflows", "other.yml")
+			require.NoError(t, os.WriteFile(other, []byte("on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"+parityTestSHA+"\n"), 0o600))
+			lock := "version: 'v0.0.3'\nworkflows:\n" +
+				"    '.github/workflows/other.yml':\n        - 'actions/checkout@" + parityTestSHA + "'\n" +
+				"    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n" +
+				"dependencies:\n" +
+				"    'actions/checkout@" + parityTestSHA + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n" +
+				"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+			lockPath := filepath.Join(".github", "workflows", "actions.lock")
+			require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive", ci)
+			require.ErrorIs(t, err, errSilent)
+			assert.Contains(t, stderr, "run `gh actions-lock` without workflow paths", "the terminal names the fix")
+
+			p, err := runParity(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive", ci)
+			require.ErrorIs(t, err, errSilent)
+			assert.False(t, p.Valid)
+			var blocking []format.Finding
+			for _, f := range p.Findings {
+				if f.Severity == "error" {
+					blocking = append(blocking, f)
+				}
+			}
+			require.Len(t, blocking, 1, "findings: %+v", p.Findings)
+			assert.Equal(t, "not-pinned", blocking[0].Category)
+			assert.Contains(t, blocking[0].Detail, "lock entry for actions/checkout@"+parityTestSHA+", in .github/workflows/other.yml, records ref "+parserlock.ShortSHA(parityTestSHA))
+			assert.Equal(t, "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from", blocking[0].Remediation)
+			got, err := os.ReadFile(lockPath)
+			require.NoError(t, err)
+			assert.Equal(t, lock, string(got))
+		})
+	}
+}
+
+// TestSHARecordedRef_DeletedWorkflowBlocks: a full-scan read-only run fails
+// on an own-SHA entry of a workflow that no longer exists, like one it
+// didn't select, and writes nothing.
+func TestSHARecordedRef_DeletedWorkflowBlocks(t *testing.T) {
+	for _, mode := range []string{"--verify", "--no-fix", "--verify-local"} {
+		t.Run(mode, func(t *testing.T) {
+			writeTempWorkflow(t, "name: ci\non: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n")
+			lock := "version: 'v0.0.3'\nworkflows:\n" +
+				"    '.github/workflows/gone.yml':\n        - 'actions/checkout@" + parityTestSHA + "'\n" +
+				"    '.github/workflows/workflow.yml': []\n" +
+				"dependencies:\n" +
+				"    'actions/checkout@" + parityTestSHA + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+			lockPath := filepath.Join(".github", "workflows", "actions.lock")
+			require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+			p, err := runParity(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive")
+			require.ErrorIs(t, err, errSilent)
+			assert.False(t, p.Valid)
+			var blocking []format.Finding
+			for _, f := range p.Findings {
+				if f.Severity == "error" {
+					blocking = append(blocking, f)
+				}
+			}
+			require.Len(t, blocking, 1, "findings: %+v", p.Findings)
+			assert.Contains(t, blocking[0].Detail, "lock entry for actions/checkout@"+parityTestSHA+", in .github/workflows/gone.yml, records ref")
+			got, err := os.ReadFile(lockPath)
+			require.NoError(t, err)
+			assert.Equal(t, lock, string(got))
 		})
 	}
 }

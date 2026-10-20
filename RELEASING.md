@@ -58,3 +58,12 @@ and currently
 [accepts only lockfile schema `v0.0.2`](https://github.com/dependabot/dependabot-core/blob/main/github_actions/lib/dependabot/github_actions/constants.rb).
 Add schema support there before this CLI emits a new version. Unrelated releases
 do not need a Dependabot bump.
+
+The findings JSON fields can stay the same while behavior changes, which still
+needs this decision. Unreleased changes of that kind:
+
+- A lockfile entry keyed by a full SHA whose `ref` is that same SHA no longer
+  fails loading with exit 2. Read-only modes report it as a `not-pinned` error
+  and exit 1; a fix run re-records its tag or branch and exits 0, or fails
+  when no tag or branch contains the commit; a run given workflow paths warns
+  about another workflow's such entry and exits 0.

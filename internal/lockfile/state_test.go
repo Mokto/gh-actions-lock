@@ -968,7 +968,7 @@ func TestStateClosureIncludesTransitivePins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	all := func(parserlock.Pin) bool { return true }
+	all := func(parserlock.Pin, parserlock.Action) bool { return true }
 	got := map[string]string{}
 	for _, lp := range store.Closure(".github/workflows/ci.yml", all) {
 		got[lp.Pin.String()] = lp.Parent
@@ -983,7 +983,7 @@ func TestStateClosureIncludesTransitivePins(t *testing.T) {
 	if c := store.Closure(".github/workflows/missing.yml", all); len(c) != 0 {
 		t.Errorf("Closure(missing) = %v, want empty", c)
 	}
-	none := func(parserlock.Pin) bool { return false }
+	none := func(parserlock.Pin, parserlock.Action) bool { return false }
 	if c := store.Closure(".github/workflows/ci.yml", none); len(c) != 0 {
 		t.Errorf("Closure(stale roots) = %v, want empty: children of removed roots must not be walked", c)
 	}
@@ -1028,7 +1028,7 @@ func TestStateClosureDirectPinIsNeverTransitive(t *testing.T) {
 	require.NoError(t, err)
 
 	got := map[string]string{}
-	for _, lp := range store.Closure(".github/workflows/ci.yml", func(parserlock.Pin) bool { return true }) {
+	for _, lp := range store.Closure(".github/workflows/ci.yml", func(parserlock.Pin, parserlock.Action) bool { return true }) {
 		got[lp.Pin.String()] = lp.Parent
 	}
 	assert.Equal(t, map[string]string{"octo/composite@v1": "", "actions/checkout@" + sha: ""}, got)

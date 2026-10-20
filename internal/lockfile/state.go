@@ -2,11 +2,14 @@ package lockfile
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +18,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"golang.org/x/sync/singleflight"
+	"gopkg.in/yaml.v3"
 )
 
 // lockfileHeader is prepended to every write of the lockfile. It warns
@@ -67,25 +71,34 @@ func (e *contentError) Error() string { return e.msg }
 
 func (e *contentError) Is(target error) bool { return target == ErrCorruptLockfile }
 
-// entryLine returns the 1-based line of the dependency entry for pin, or 0
-// if it can't be found. It matches whole quoted mapping keys ('key':), so a
-// workflow list item doesn't match, and compares canonical pin keys: owner
-// and repo fold, refs are case-sensitive.
-func entryLine(contents []byte, pin parserlock.Pin) int {
-	want := pin.String()
-	for n, line := range bytes.Split(contents, []byte("\n")) {
-		key, ok := strings.CutPrefix(string(bytes.TrimSpace(line)), "'")
-		if !ok {
+// entryLines maps each dependency entry's canonical pin key to the 1-based
+// line of its key in the dependencies: mapping, whatever YAML style the key
+// is written in. Keys fold owner and repo; refs are case-sensitive. The
+// first line wins for duplicate keys.
+func entryLines(contents []byte) (map[string]int, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(contents, &doc); err != nil {
+		return nil, err
+	}
+	lines := map[string]int{}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return lines, nil
+	}
+	top := doc.Content[0].Content
+	for i := 0; i+1 < len(top); i += 2 {
+		if top[i].Value != "dependencies" || top[i+1].Kind != yaml.MappingNode {
 			continue
 		}
-		if key, ok = strings.CutSuffix(key, "':"); !ok {
-			continue
-		}
-		if p, ok := parserlock.ParsePin(key); ok && p.String() == want {
-			return n + 1
+		deps := top[i+1].Content
+		for j := 0; j+1 < len(deps); j += 2 {
+			if p, ok := parserlock.ParsePin(deps[j].Value); ok {
+				if _, seen := lines[p.String()]; !seen {
+					lines[p.String()] = deps[j].Line
+				}
+			}
 		}
 	}
-	return 0
+	return lines, nil
 }
 
 // LoadState reads the lockfile at repoRoot, returning an empty in-memory file
@@ -150,17 +163,36 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 	}
 	// Normalize on-disk entries to the canonical (lowercased) pin form so any
 	// legacy mixed-case keys are rewritten on the next Save.
+	// Check entries in file order, so an invalid lockfile is always reported
+	// by its first bad entry.
+	lines, err := entryLines(contents)
+	if err != nil {
+		return nil, &contentError{fmt.Sprintf("%s: %v", parserlock.Path, err)}
+	}
+	line := func(key string) int {
+		if p, ok := parserlock.ParsePin(key); ok {
+			if n, ok := lines[p.String()]; ok {
+				return n
+			}
+		}
+		return len(contents) + 1
+	}
+	keys := slices.Collect(maps.Keys(file.Dependencies))
+	slices.SortFunc(keys, func(a, b string) int {
+		return cmp.Or(cmp.Compare(line(a), line(b)), strings.Compare(a, b))
+	})
 	normalizedDependencies := make(map[string]parserlock.Action, len(file.Dependencies))
-	for pinKey, action := range file.Dependencies {
+	for _, pinKey := range keys {
+		action := file.Dependencies[pinKey]
 		pin, ok := parserlock.ParsePin(pinKey)
 		if !ok {
 			normalizedDependencies[pinKey] = action
 			continue
 		}
-		if !ValidEntryRef(pin, action.Ref) {
+		if !ValidEntryRef(pin, action.Ref) && !RecordsOwnSHA(pin, action.Ref) {
 			where := parserlock.Path
-			if line := entryLine(contents, pin); line > 0 {
-				where = fmt.Sprintf("%s: line %d", where, line)
+			if n, ok := lines[pin.String()]; ok {
+				where = fmt.Sprintf("%s: line %d", where, n)
 			}
 			return nil, &contentError{fmt.Sprintf("%s: entry for %s %s", where, pinKey, entryRefError(pin, action.Ref))}
 		}
@@ -390,7 +422,7 @@ type LockedPin struct {
 // are skipped so their children are not reported. Each pin appears once; a
 // pin the workflow uses directly is always reported as direct (no Parent),
 // even when a composite also uses it.
-func (s *State) Closure(workflowKey string, live func(parserlock.Pin) bool) []LockedPin {
+func (s *State) Closure(workflowKey string, live func(parserlock.Pin, parserlock.Action) bool) []LockedPin {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []LockedPin
@@ -419,7 +451,7 @@ func (s *State) Closure(workflowKey string, live func(parserlock.Pin) bool) []Lo
 	// Claim every root first, so traversal order can't make one transitive.
 	var roots []string
 	for _, key := range s.file.Workflows[workflowKey] {
-		if pin, ok := parserlock.ParsePin(key); ok && live(pin) {
+		if pin, ok := parserlock.ParsePin(key); ok && live(pin, s.file.Dependencies[key]) {
 			if _, ok := add(key, ""); ok {
 				roots = append(roots, key)
 			}
@@ -433,6 +465,78 @@ func (s *State) Closure(workflowKey string, live func(parserlock.Pin) bool) []Lo
 	return out
 }
 
+// RecordsOwnSHA reports whether the lockfile's entry for owner/repo@sha
+// records that SHA as its ref (see the RecordsOwnSHA function).
+func (s *State) RecordsOwnSHA(owner, repo, sha string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pin := parserlock.Pin{Owner: owner, Repo: repo, Ref: sha}.Canonical()
+	action, ok := s.file.Dependencies[pin.String()]
+	return ok && RecordsOwnSHA(pin, action.Ref)
+}
+
+// OwnSHAEntry is an entry that records its own SHA as its ref, with the
+// workflows that list it directly and the entries whose `uses:` reach it,
+// both sorted. An entry with neither is an orphan the next Save drops.
+type OwnSHAEntry struct {
+	Key       string
+	Workflows []string
+	Parents   []string
+}
+
+// OwnSHAEntries returns every entry that records its own SHA as its ref,
+// sorted by key.
+func (s *State) OwnSHAEntries() []OwnSHAEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byKey := map[string]*OwnSHAEntry{}
+	for key, action := range s.file.Dependencies {
+		if pin, ok := parserlock.ParsePin(key); ok && RecordsOwnSHA(pin, action.Ref) {
+			byKey[key] = &OwnSHAEntry{Key: key}
+		}
+	}
+	for wf, keys := range s.file.Workflows {
+		for _, key := range keys {
+			if e, ok := byKey[key]; ok {
+				e.Workflows = append(e.Workflows, wf)
+			}
+		}
+	}
+	for parent, action := range s.file.Dependencies {
+		for _, key := range action.Uses {
+			if e, ok := byKey[key]; ok && key != parent {
+				e.Parents = append(e.Parents, parent)
+			}
+		}
+	}
+	out := make([]OwnSHAEntry, 0, len(byKey))
+	for _, key := range slices.Sorted(maps.Keys(byKey)) {
+		e := byKey[key]
+		slices.Sort(e.Workflows)
+		slices.Sort(e.Parents)
+		out = append(out, *e)
+	}
+	return out
+}
+
+// SetEntryRef records ref for the existing entry key, which must be one
+// the Actions backend accepts.
+func (s *State) SetEntryRef(key, ref string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pin, ok := parserlock.ParsePin(key)
+	action, found := s.file.Dependencies[key]
+	if !ok || !found {
+		return fmt.Errorf("no lockfile entry for %s", key)
+	}
+	if !ValidEntryRef(pin, ref) {
+		return fmt.Errorf("entry for %s %w", key, entryRefError(pin, ref))
+	}
+	action.Ref = ref
+	s.file.Dependencies[key] = action
+	return nil
+}
+
 // RecordedRepoID returns the repo ID recorded for owner/repo, or 0. It never
 // hits the network.
 func (s *State) RecordedRepoID(owner, repo string) int64 {
@@ -444,7 +548,8 @@ func (s *State) RecordedRepoID(owner, repo string) int64 {
 // AllDeps returns every action entry in the lockfile as a Dependency,
 // populated with Tag and Branch inferred from the action's ref field.
 // Order is undefined. Intended for callers that need the union of recorded
-// pins across all workflows (e.g. seeding resolver caches on startup).
+// pins across all workflows (e.g. seeding resolver caches on startup);
+// filter ref seeding with Seedable.
 func (s *State) AllDeps() []dep.Dependency {
 	s.mu.Lock()
 	defer s.mu.Unlock()

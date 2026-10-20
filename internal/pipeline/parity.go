@@ -65,12 +65,19 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		// (the recorded ref, and what this run will write), so the target is
 		// part of the key. The lockfile parser has already rejected an entry
 		// ref the Actions backend resolver would not accept.
-		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + o.lp.Action.Ref
+		// An entry that records its own SHA has no ref to look up: only the
+		// repository and commit are checked here, and the entry is reported
+		// or re-recorded elsewhere (see lockfile.RecordsOwnSHA).
+		head := o.lp.Action.Ref
+		if lockfile.RecordsOwnSHA(o.lp.Pin, head) {
+			head = ""
+		}
+		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + head
 		i, seen := pinIdx[key]
 		if !seen {
 			i = len(pins)
 			pinIdx[key] = i
-			pins = append(pins, ghapi.PinCheck{Owner: o.lp.Pin.Owner, Repo: o.lp.Pin.Repo, SHA: lockedSHA(o.lp.Action.Commit), Head: o.lp.Action.Ref})
+			pins = append(pins, ghapi.PinCheck{Owner: o.lp.Pin.Owner, Repo: o.lp.Pin.Repo, SHA: lockedSHA(o.lp.Action.Commit), Head: head})
 		}
 		if j, dup := owned[[2]int{o.report, i}]; dup {
 			owners[i][j].fresh = owners[i][j].fresh || o.fresh
@@ -86,12 +93,15 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			continue
 		}
 		recorded, _ := pw.PartitionRefs()
-		direct := make(map[string]parserlock.ActionRef, len(recorded))
-		for _, r := range recorded {
-			direct[strings.ToLower(r.Owner+"/"+r.Repo)+"@"+r.Ref] = r
+		// rootRef is the workflow ref that still uses a recorded root, by
+		// the same rule as the stale check (lockfile.RootUse): the use
+		// naming its key, else one naming its commit.
+		use := lockfile.RootUse(recorded)
+		rootRef := func(p parserlock.Pin, a parserlock.Action) (parserlock.ActionRef, bool) {
+			return use(p, a.Commit)
 		}
-		live := func(p parserlock.Pin) bool {
-			_, ok := direct[strings.ToLower(p.Owner+"/"+p.Repo)+"@"+p.Ref]
+		live := func(p parserlock.Pin, a parserlock.Action) bool {
+			_, ok := rootRef(p, a)
 			return ok
 		}
 		// Planning writes a recorded entry back verbatim unless one of
@@ -109,7 +119,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		closure := store.Closure(workflowfile.KeyFromPath(pw.Path), live)
 		edges := compositeEdges(closure)
 		for _, lp := range closure {
-			ref := direct[strings.ToLower(lp.Pin.Owner+"/"+lp.Pin.Repo)+"@"+lp.Pin.Ref]
+			ref, _ := rootRef(lp.Pin, lp.Action)
 			if lp.Parent != "" {
 				ref = parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref}
 			}
@@ -192,7 +202,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				}
 				continue
 			}
-			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
+			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
 			if verdict != verdictKeep {
 				wr.Deferred = append(wr.Deferred, checks.Deferred{
 					Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,

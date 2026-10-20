@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -95,8 +96,21 @@ func committedWorkflows(rec *Record, store *lockfile.State, copts *CommitOptions
 	return workflows
 }
 
-// updateLockfile sets each planned workflow's entries in store.
+// updateLockfile applies rec's entry repairs for the workflows it writes,
+// then sets each of those workflows' entries in store.
 func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, store *lockfile.State) error {
+	written := make(map[string]bool, len(workflows))
+	for _, wp := range workflows {
+		written[wp.Path] = true
+	}
+	for _, r := range rec.EntryRepairs {
+		if !slices.ContainsFunc(r.Workflows, func(p string) bool { return written[p] }) {
+			continue
+		}
+		if err := store.SetEntryRef(r.Key, r.Ref); err != nil {
+			return fmt.Errorf("updating lockfile: %w", err)
+		}
+	}
 	pinnedByWorkflow := groupPinnedByWorkflow(rec)
 	for _, wp := range workflows {
 		wfPath := wp.Path

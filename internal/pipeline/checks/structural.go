@@ -6,6 +6,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/lockfile"
 )
 
 // checkUntracked emits NotPinned for a workflow with no uses: refs that
@@ -59,6 +60,37 @@ func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]
 		f.Detail = fmt.Sprintf("used in workflow but not pinned in lockfile (%s@%s)", formatUseName(ref.Owner, ref.Repo, ref.Path), ref.Ref)
 		f.Remediation = "pin with `gh actions-lock`"
 		f.TrackedAction = knownAction[nwoLower(ref.Owner, ref.Repo)]
+		out = append(out, f)
+	}
+	return out
+}
+
+// checkSHARecordedRef emits a remediable NotPinned error for each workflow
+// pin whose entry records its own SHA as its ref. The Actions backend
+// rejects the pin, so it is not pinned; the finding asks a fix run to
+// re-resolve the entry and record the tag or branch the commit came from
+// (see lockfile.RecordsOwnSHA).
+func checkSHARecordedRef(pw ParsedWorkflow, wfEntry []string, deps map[string]parserlock.Action) []Finding {
+	use := lockfile.RootUse(pw.Refs)
+	var out []Finding
+	for _, raw := range wfEntry {
+		pin, ok := parserlock.ParsePin(raw)
+		action, found := deps[raw]
+		if !ok || !found || !lockfile.RecordsOwnSHA(pin, action.Ref) {
+			continue
+		}
+		ref, ok := use(pin, action.Commit)
+		if !ok {
+			continue
+		}
+		f := newRefFinding(pw, ref, NotPinned, SeverityError, ConfidenceHigh)
+		f.Detail = fmt.Sprintf("lock entry for %s records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", raw, parserlock.ShortSHA(action.Ref))
+		f.Remediation = "run `gh actions-lock` to record the tag or branch this commit came from"
+		// The finding is about the entry, which the use may name by commit.
+		f.Dependency = synthDep(parserlock.ActionRef{Owner: ref.Owner, Repo: ref.Repo, Path: ref.Path, Ref: pin.Ref}, lockedPin{Commit: action.Commit}.SHA())
+		f.Reresolve = true
+		// The entry exists, so --no-onboard must not treat this as onboarding.
+		f.TrackedAction = true
 		out = append(out, f)
 	}
 	return out
@@ -140,23 +172,11 @@ func checkStale(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 	if len(depPins) == 0 {
 		return nil
 	}
-	used := make(map[string]bool, len(pw.Refs))
-	usedBySHA := make(map[string]bool, len(pw.Refs))
-	for _, ref := range pw.Refs {
-		used[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)] = true
-		nwo := strings.ToLower(ref.Owner + "/" + ref.Repo)
-		usedBySHA[nwo+"@"+strings.ToLower(ref.Ref)] = true
-	}
+	used := lockfile.UsedRoot(pw.Refs)
 	var out []Finding
 	for _, p := range depPins {
-		if used[p.IndexKey()] {
+		if used(p.Pin, p.Commit) {
 			continue
-		}
-		if p.SHA() != "" {
-			nwo := strings.ToLower(p.NWO)
-			if usedBySHA[nwo+"@"+strings.ToLower(p.SHA())] {
-				continue
-			}
 		}
 		f := Finding{
 			WorkflowPath: pw.Path,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -75,6 +76,28 @@ func TestParity_TransferredRepoWarns(t *testing.T) {
 	assert.Contains(t, stderr, "rewrite it as `uses: typesafegithub/github-actions-typing@v2.2.2`")
 	assert.Contains(t, stderr, path)
 	assert.Contains(t, stderr, "All 1 workflow valid")
+}
+
+// TestParity_TransferredRepoNamesTheKeyUse: a tag-keyed entry the workflow
+// also uses by its commit SHA, earlier in the file, is still checked as
+// the tag use, so the rename advice rewrites that use.
+func TestParity_TransferredRepoNamesTheKeyUse(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(1))
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: krzema12/github-actions-typing@`+parityTestSHA+`
+      - uses: krzema12/github-actions-typing@v2.2.2
+`, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
+
+	_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--verify", path)
+	require.NoError(t, err, stderr)
+	assert.Contains(t, stderr, "rewrite it as `uses: typesafegithub/github-actions-typing@v2.2.2`")
 }
 
 // TestParity_TransferredRepoRewrites: in fix mode a recorded same-ID
@@ -1270,7 +1293,6 @@ func TestParity_InvalidEntryRefIsParseError(t *testing.T) {
 		key  string
 		ref  string
 	}{
-		{"full-SHA key records the SHA", parityTestSHA, parityTestSHA},
 		{"full-SHA key records a qualified branch", parityTestSHA, "refs/heads/main"},
 		{"full-SHA key records revision syntax", parityTestSHA, "main~1"},
 		{"full-SHA key records a describe name", parityTestSHA, "v6.1.0-1-g373d742f768e"},
@@ -1304,6 +1326,889 @@ jobs:
 				require.NoError(t, err)
 				assert.Equal(t, string(wfBefore), string(wfAfter))
 				assert.Equal(t, lock, readTempLockfilePins(t))
+			})
+		}
+	}
+}
+
+// TestSHARecordedRef_ReadOnlyBlocks: a workflow's full-SHA pin whose entry
+// records that SHA as its ref is rejected by the Actions backend. Read-only
+// modes report it as an error finding (exit 1), not a load error, and write
+// nothing.
+func TestSHARecordedRef_ReadOnlyBlocks(t *testing.T) {
+	for mode, args := range map[string][]string{
+		"verify":            {"--verify"},
+		"no-fix":            {"--no-fix"},
+		"verify-local":      {"--verify-local"},
+		"verify no-onboard": {"--verify", "--no-onboard"},
+		"no-fix no-onboard": {"--no-fix", "--no-onboard"},
+	} {
+		t.Run(mode, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			if mode != "verify-local" {
+				reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+					"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+				}))
+			}
+			path := writeFullSHAWorkflow(t, parityTestSHA)
+			lockBefore := readTempLockfilePins(t)
+			wfBefore, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			stdout, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, append(args, "--no-interactive", "--json=valid,findings", path)...)
+			require.ErrorIs(t, err, errSilent, stderr)
+			var p parityPayload
+			require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout+stderr)
+			assert.False(t, p.Valid)
+			var blocking []format.Finding
+			for _, f := range p.Findings {
+				if f.Severity == "error" {
+					blocking = append(blocking, f)
+				}
+			}
+			require.Len(t, blocking, 1, "findings: %+v", p.Findings)
+			assert.Equal(t, "not-pinned", blocking[0].Category)
+			assert.Contains(t, blocking[0].Detail, "actions/checkout@"+parityTestSHA+" records ref "+parserlock.ShortSHA(parityTestSHA)+", a commit SHA")
+			assert.Equal(t, "run `gh actions-lock` to record the tag or branch this commit came from", blocking[0].Remediation)
+			wfAfter, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, string(wfBefore), string(wfAfter))
+			assert.Equal(t, lockBefore, readTempLockfilePins(t))
+		})
+	}
+}
+
+// TestSHARecordedRef_StaleEntryBlocks: an own-SHA entry the workflow no
+// longer uses still fails read-only modes, as a stale entry.
+func TestSHARecordedRef_StaleEntryBlocks(t *testing.T) {
+	for _, mode := range []string{"--verify", "--no-fix", "--verify-local"} {
+		t.Run(mode, func(t *testing.T) {
+			path := writeFullSHAWorkflow(t, parityTestSHA)
+			require.NoError(t, os.WriteFile(path, []byte("name: ci\non: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n"), 0o600))
+			lockBefore := readTempLockfilePins(t)
+
+			p, err := runParity(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive", path)
+			require.ErrorIs(t, err, errSilent)
+			assert.False(t, p.Valid)
+			require.NotEmpty(t, p.Findings)
+			assert.Equal(t, "stale", p.Findings[0].Category)
+			assert.Equal(t, "error", p.Findings[0].Severity)
+			assert.Equal(t, lockBefore, readTempLockfilePins(t))
+		})
+	}
+}
+
+// TestSHARecordedRef_FixReRecords: a fix run re-records a pin whose entry
+// records its own SHA with the tag at the commit, else a branch containing
+// it, keeping the full-SHA `uses:`. A commit no tag or branch contains, such
+// as a fork commit served under the upstream name, still blocks.
+func TestSHARecordedRef_FixReRecords(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	tests := []struct {
+		name    string
+		tags    []string
+		compare string
+		want    string
+	}{
+		{name: "tag at the commit", tags: []string{"v6.1.0", parityTestSHA}, compare: "behind", want: "v6.1.0"},
+		{name: "branch containing the commit", compare: "behind", want: "main"},
+		{name: "on no tag or branch", compare: "diverged"},
+	}
+	for _, tt := range tests {
+		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}, "no-onboard": {"--no-onboard"}} {
+			t.Run(tt.name+"/"+mode, func(t *testing.T) {
+				base := parityTestSHA
+				if tt.compare == "diverged" {
+					base = "cccccccccccccccccccccccccccccccccccccccc"
+				}
+				reg := &httpmock.Registry{}
+				for range 4 {
+					reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+						"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+					}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
+						httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+						httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse(tt.tags...)))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+						httpmock.JSONResponse(map[string]any{"status": tt.compare, "merge_base_commit": map[string]any{"sha": base}}))
+				}
+				httpmock.NoTagsNamed(reg, "actions", "checkout")
+				isolateRunLogs(t)
+				path := writeFullSHAWorkflow(t, parityTestSHA)
+				lockBefore := readTempLockfilePins(t)
+				wfBefore, err := os.ReadFile(path)
+				require.NoError(t, err)
+
+				_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, append(args, "--no-interactive", path)...)
+				wfAfter, rerr := os.ReadFile(path)
+				require.NoError(t, rerr)
+				assert.Equal(t, string(wfBefore), string(wfAfter), "`uses:` keeps the full SHA")
+				lock := readTempLockfilePins(t)
+				if tt.want == "" {
+					require.ErrorIs(t, err, errSilent, stderr)
+					assert.Contains(t, stderr, "is not on any tag or branch")
+					assert.Equal(t, lockBefore, lock)
+					return
+				}
+				require.NoError(t, err, stderr)
+				assert.Contains(t, lock, "'actions/checkout@"+parityTestSHA+"':")
+				assert.Contains(t, lock, "ref: '"+tt.want+"'")
+				assert.Contains(t, lock, "commit: 'sha1-"+parityTestSHA+"'")
+				assert.Equal(t, 1, strings.Count(stderr, "actions/checkout@"+parityTestSHA+": recorded ref was the commit SHA; re-recorded as "+tt.want), stderr)
+			})
+		}
+	}
+}
+
+// writeOwnSHAChildLock locks workflow.yml on actions/checkout@v6.1.0 plus an
+// actions/cache entry recording its own SHA as its ref, reached through the
+// checkout entry's `uses:` when transitive, or by nothing.
+func writeOwnSHAChildLock(t *testing.T, transitive bool) (wf, lock string) {
+	t.Helper()
+	wf = writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+`)
+	uses := ""
+	if transitive {
+		uses = "        uses:\n            - 'actions/cache@" + parityTestSHA + "'\n"
+	}
+	lock = "version: 'v0.0.3'\nworkflows:\n" +
+		"    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n" +
+		"dependencies:\n" +
+		"    'actions/cache@" + parityTestSHA + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 2\n" +
+		"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n" + uses
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+	return wf, lock
+}
+
+// TestSHARecordedRef_ChildReadOnlyBlocks: an own-SHA entry reached only
+// through another entry, or by nothing, fails read-only modes as an error
+// and nothing is written.
+func TestSHARecordedRef_ChildReadOnlyBlocks(t *testing.T) {
+	for _, transitive := range []bool{true, false} {
+		for _, mode := range []string{"--verify", "--no-fix", "--verify-local"} {
+			t.Run(fmt.Sprintf("transitive=%v/%s", transitive, mode), func(t *testing.T) {
+				wf, lock := writeOwnSHAChildLock(t, transitive)
+				p, err := runParity(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive", wf)
+				require.ErrorIs(t, err, errSilent)
+				assert.False(t, p.Valid)
+				var blocking []format.Finding
+				for _, f := range p.Findings {
+					if f.Severity == "error" {
+						blocking = append(blocking, f)
+					}
+				}
+				require.Len(t, blocking, 1, "findings: %+v", p.Findings)
+				where, fix := "used by no workflow", "run `gh actions-lock` to drop it"
+				if transitive {
+					where, fix = "used by actions/checkout@v6.1.0", "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from; if none contains it, upgrade or replace actions/checkout@v6.1.0"
+				}
+				assert.Contains(t, blocking[0].Detail, "lock entry for actions/cache@"+parityTestSHA+", "+where+", records ref "+parserlock.ShortSHA(parityTestSHA))
+				assert.Equal(t, fix, blocking[0].Remediation)
+				if transitive {
+					assert.Equal(t, "actions/checkout@v6.1.0", blocking[0].RequiredBy, "JSON names the composite")
+				}
+				assert.Equal(t, lock, readTempLockfilePins(t))
+			})
+		}
+	}
+}
+
+// TestSHARecordedRef_ChildFixRepairs: a fix run drops an orphan own-SHA
+// entry and re-records a transitive one with the tag at its commit, else a
+// branch containing it, leaving its parent as it was. A commit no tag or
+// branch contains still blocks and nothing is written.
+func TestSHARecordedRef_ChildFixRepairs(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	tests := []struct {
+		name       string
+		transitive bool
+		tags       []string
+		compare    string
+		want       string
+	}{
+		{name: "orphan dropped", compare: "behind"},
+		{name: "transitive tag", transitive: true, tags: []string{"v4.2.0", parityTestSHA}, compare: "behind", want: "v4.2.0"},
+		{name: "transitive branch", transitive: true, compare: "behind", want: "main"},
+		{name: "transitive on no tag or branch", transitive: true, compare: "diverged"},
+	}
+	for _, tt := range tests {
+		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}} {
+			t.Run(tt.name+"/"+mode, func(t *testing.T) {
+				base := parityTestSHA
+				if tt.compare == "diverged" {
+					base = "cccccccccccccccccccccccccccccccccccccccc"
+				}
+				reg := &httpmock.Registry{}
+				// The parity stub goes first: a repo stub matches any query for the repo.
+				for range 2 {
+					reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+						body, err := io.ReadAll(req.Body)
+						require.NoError(t, err)
+						assert.NotContains(t, string(body), "refs/tags/"+parityTestSHA, "a recorded commit SHA is never looked up as a ref")
+						req.Body = io.NopCloser(strings.NewReader(string(body)))
+						return parityOKWithIDs(map[string]int{"checkout": 1, "cache": 2})(req)
+					})
+				}
+				for _, repo := range []string{"checkout", "cache"} {
+					for range 4 {
+						reg.Register(httpmock.GraphQLForRepo("actions", repo), httpmock.JSONResponse(map[string]any{
+							"data": map[string]any{"a0": testRepoResponse("actions/"+repo, parityTestSHA, nodeActionYAML)},
+						}))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
+							httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/git/ref/heads/main`),
+							httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/tags`), httpmock.JSONResponse(httpmock.TagListResponse(tt.tags...)))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/releases`), httpmock.JSONResponse([]map[string]any{}))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+						reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/compare/`),
+							httpmock.JSONResponse(map[string]any{"status": tt.compare, "merge_base_commit": map[string]any{"sha": base}}))
+					}
+					httpmock.NoTagsNamed(reg, "actions", repo)
+				}
+				isolateRunLogs(t)
+				wf, lockBefore := writeOwnSHAChildLock(t, tt.transitive)
+				wfBefore, err := os.ReadFile(wf)
+				require.NoError(t, err)
+
+				_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, append(args, "--no-interactive")...)
+				lock := readTempLockfilePins(t)
+				if tt.transitive && tt.want == "" {
+					require.ErrorIs(t, err, errSilent, stderr)
+					assert.Contains(t, stderr, "is not on any tag or branch of actions/cache: it may be a fork or impostor commit served under the upstream name (used by actions/checkout@v6.1.0)")
+					assert.Contains(t, stderr, "upgrade or replace actions/checkout@v6.1.0 with a version whose pin of actions/cache can be verified, or stop using it")
+					assert.Equal(t, lockBefore, lock)
+					return
+				}
+				require.NoError(t, err, stderr)
+				wfAfter, err := os.ReadFile(wf)
+				require.NoError(t, err)
+				assert.Equal(t, string(wfBefore), string(wfAfter))
+				assert.NotContains(t, lock, "ref: '"+parityTestSHA+"'")
+				assert.Contains(t, lock, "'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'")
+				if !tt.transitive {
+					assert.NotContains(t, lock, "actions/cache")
+					return
+				}
+				assert.Contains(t, lock, "'actions/cache@"+parityTestSHA+"':\n        ref: '"+tt.want+"'")
+				assert.Contains(t, lock, "            - 'actions/cache@"+parityTestSHA+"'")
+				assert.Equal(t, 1, strings.Count(stderr, "actions/cache@"+parityTestSHA+": recorded ref was the commit SHA; re-recorded as "+tt.want), stderr)
+			})
+		}
+	}
+}
+
+// TestSHARecordedRef_RootClosureChecked: a workflow pin whose entry records
+// its own SHA is re-resolved, which stops at seeded entries, so parity must
+// still check its stored closure: a replaced repository two levels down
+// blocks.
+func TestSHARecordedRef_RootClosureChecked(t *testing.T) {
+	for _, args := range [][]string{{"--verify"}, nil} {
+		t.Run(fmt.Sprint(args), func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			for range 3 {
+				reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+					var body struct {
+						Variables map[string]any `json:"variables"`
+					}
+					require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+					data := map[string]any{}
+					for i := 0; ; i++ {
+						owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+						if !ok {
+							break
+						}
+						name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+						id := 1
+						if name == "setup-go" {
+							id = 999
+						}
+						oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+						data[fmt.Sprintf("a%d", i)] = map[string]any{
+							"nameWithOwner": owner + "/" + name, "databaseId": id,
+							"commit": oid, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+						}
+					}
+					return httpmock.JSONResponse(map[string]any{"data": data})(req)
+				})
+			}
+			composite := "runs:\n  using: composite\n  steps:\n    - uses: actions/cache@v1\n"
+			reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, composite)},
+			}))
+			isolateRunLogs(t)
+			writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+parityTestSHA+`
+`)
+			entry := func(key, ref string, uses ...string) string {
+				out := "    '" + key + "':\n        ref: '" + ref + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+				for i, u := range uses {
+					if i == 0 {
+						out += "        uses:\n"
+					}
+					out += "            - '" + u + "'\n"
+				}
+				return out
+			}
+			lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - 'actions/checkout@" + parityTestSHA + "'\n" +
+				"dependencies:\n" + entry("actions/cache@v1", "v1", "actions/setup-go@v1") +
+				entry("actions/checkout@"+parityTestSHA, parityTestSHA, "actions/cache@v1") + entry("actions/setup-go@v1", "v1")
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			p, err := runParity(t, parityFallback{reg}, append(args, "--no-interactive")...)
+			require.ErrorIs(t, err, errSilent)
+			var replaced bool
+			for _, f := range p.Findings {
+				replaced = replaced || f.Category == "repo-replaced" && strings.Contains(f.Detail, "actions/setup-go")
+			}
+			assert.True(t, replaced, "findings: %+v", p.Findings)
+			assert.Equal(t, lock, readTempLockfilePins(t))
+		})
+	}
+}
+
+// TestParity_RootUsedBySHAClosureChecked: a tag-keyed root the workflow
+// uses by its commit SHA (`uses:` rewritten to the commit) is still used,
+// so parity checks its stored closure like any other root's: a replaced
+// repository or a commit missing from it blocks, and a healthy one passes.
+func TestParity_RootUsedBySHAClosureChecked(t *testing.T) {
+	for _, deep := range []string{"replaced", "missing commit", "healthy"} {
+		t.Run(deep, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+				var body struct {
+					Variables map[string]any `json:"variables"`
+				}
+				require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+				data := map[string]any{}
+				for i := 0; ; i++ {
+					owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+					if !ok {
+						break
+					}
+					name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+					id := 1
+					if deep == "replaced" && name == "cache" {
+						id = 999
+					}
+					oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+					var commit any = oid
+					if deep == "missing commit" && name == "cache" {
+						commit = nil
+					}
+					data[fmt.Sprintf("a%d", i)] = map[string]any{
+						"nameWithOwner": owner + "/" + name, "databaseId": id,
+						"commit": commit, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+					}
+				}
+				return httpmock.JSONResponse(map[string]any{"data": data})(req)
+			})
+			writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+parityTestSHA+`
+`)
+			lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n" +
+				"dependencies:\n" +
+				"    'actions/cache@v1':\n        ref: 'v1'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n" +
+				"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - 'actions/cache@v1'\n"
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			p, err := runParity(t, reg, "--verify", "--no-interactive")
+			assert.Equal(t, lock, readTempLockfilePins(t))
+			if deep == "healthy" {
+				require.NoError(t, err, "%+v", p.Findings)
+				assert.True(t, p.Valid)
+				return
+			}
+			require.ErrorIs(t, err, errSilent)
+			want := map[string]string{"replaced": "repo-replaced", "missing commit": "unreachable-pin"}[deep]
+			var found bool
+			for _, f := range p.Findings {
+				found = found || f.Category == want && f.Severity == "error" && strings.Contains(f.Detail, "actions/cache")
+			}
+			assert.True(t, found, "findings: %+v", p.Findings)
+		})
+	}
+}
+
+// TestSHARecordedRef_StaleRootRepairs: entry repair follows only the roots
+// a fix run keeps. An own-SHA child of a stale root is dropped with it, even
+// when no tag or branch contains its commit, and a stale own-SHA root that a
+// kept entry still uses is repaired as that entry's child.
+func TestSHARecordedRef_StaleRootRepairs(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	entry := func(key, ref string, uses ...string) string {
+		out := "    '" + key + "':\n        ref: '" + ref + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+		if len(uses) > 0 {
+			out += "        uses:\n"
+			for _, u := range uses {
+				out += "            - '" + u + "'\n"
+			}
+		}
+		return out
+	}
+	cache := "actions/cache@" + parityTestSHA
+	tests := []struct {
+		name    string
+		roots   []string
+		deps    string
+		compare string
+		want    string
+	}{
+		{
+			name:    "child of a stale root",
+			roots:   []string{"actions/checkout@v6.1.0", "actions/setup-go@v1"},
+			deps:    entry(cache, parityTestSHA) + entry("actions/checkout@v6.1.0", "v6.1.0") + entry("actions/setup-go@v1", "v1", cache),
+			compare: "diverged",
+		},
+		{
+			name:    "stale root a kept entry uses",
+			roots:   []string{"actions/cache@" + parityTestSHA, "actions/checkout@v6.1.0"},
+			deps:    entry(cache, parityTestSHA) + entry("actions/checkout@v6.1.0", "v6.1.0", cache),
+			compare: "behind",
+			want:    "v4.2.0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := parityTestSHA
+			if tt.compare == "diverged" {
+				base = "cccccccccccccccccccccccccccccccccccccccc"
+			}
+			reg := &httpmock.Registry{}
+			for range 3 {
+				reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOKWithIDs(map[string]int{"checkout": 1, "cache": 1, "setup-go": 1}))
+			}
+			for _, repo := range []string{"checkout", "cache", "setup-go"} {
+				for range 4 {
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
+						httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/git/ref/heads/main`),
+						httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+					tags := []string{}
+					if tt.want != "" {
+						tags = []string{tt.want, parityTestSHA}
+					}
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/tags`), httpmock.JSONResponse(httpmock.TagListResponse(tags...)))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/releases`), httpmock.JSONResponse([]map[string]any{}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/compare/`),
+						httpmock.JSONResponse(map[string]any{"status": tt.compare, "merge_base_commit": map[string]any{"sha": base}}))
+				}
+				httpmock.NoTagsNamed(reg, "actions", repo)
+			}
+			isolateRunLogs(t)
+			writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+`)
+			lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n"
+			for _, r := range tt.roots {
+				lock += "        - '" + r + "'\n"
+			}
+			lock += "dependencies:\n" + tt.deps
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive")
+			require.NoError(t, err, stderr)
+			after := readTempLockfilePins(t)
+			assert.NotContains(t, after, "ref: '"+parityTestSHA+"'")
+			assert.NotContains(t, after, "actions/setup-go")
+			assert.Contains(t, after, "    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n")
+			if tt.want == "" {
+				assert.NotContains(t, after, "actions/cache")
+				return
+			}
+			assert.Contains(t, after, "    '"+cache+"':\n        ref: '"+tt.want+"'\n")
+		})
+	}
+}
+
+// TestSHARecordedRef_RepairFollowsTheWrite: entry repair follows what the
+// run writes, not the selected workflow's old lock roots. A workflow onboarded
+// onto, or replacing a root with, a composite another workflow already
+// locked writes that composite's stored `uses:`, so its own-SHA child is
+// repaired, or blocks the run when no tag or branch contains its commit.
+func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	for _, tt := range []struct {
+		name       string
+		repairable bool
+		// replaces gives new.yml an existing lock root its `uses:` no
+		// longer names, so the run replaces it with the shared composite.
+		replaces bool
+		// identity is how the repair candidate's own identity check, which
+		// no other check in the run covers, answers: "" confirms it.
+		identity string
+	}{
+		{"onboarding/repairable", true, false, ""},
+		{"onboarding/unrepairable", false, false, ""},
+		{"root replacement/repairable", true, true, ""},
+		{"root replacement/unrepairable", false, true, ""},
+		{"onboarding/replaced repository", true, false, "replaced"},
+		{"onboarding/unconfirmed identity", true, false, "inconclusive"},
+		{"onboarding/missing repository ID", true, false, "no id"},
+	} {
+		repairable := tt.repairable
+		t.Run(tt.name, func(t *testing.T) {
+			base, compare, tags := parityTestSHA, "behind", []string{"v4.2.0", parityTestSHA}
+			if !repairable {
+				base, compare, tags = "cccccccccccccccccccccccccccccccccccccccc", "diverged", nil
+			}
+			reg := &httpmock.Registry{}
+			candidateChecks := 0
+			for range 4 {
+				reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+					var body struct {
+						Variables map[string]any `json:"variables"`
+					}
+					require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+					data := map[string]any{}
+					for i := 0; ; i++ {
+						owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+						if !ok {
+							break
+						}
+						name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+						_, hasHead := body.Variables[fmt.Sprintf("head%d", i)]
+						var id any = 1
+						if name == "cache" && !hasHead {
+							candidateChecks++
+							switch tt.identity {
+							case "inconclusive":
+								continue
+							case "replaced":
+								id = 999
+							case "no id":
+								id = nil
+							}
+						}
+						oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+						data[fmt.Sprintf("a%d", i)] = map[string]any{
+							"nameWithOwner": owner + "/" + name, "databaseId": id,
+							"commit": oid, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+						}
+					}
+					return httpmock.JSONResponse(map[string]any{"data": data})(req)
+				})
+			}
+			for _, repo := range []string{"checkout", "cache", "setup-go"} {
+				for range 4 {
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
+						httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/git/ref/heads/main`),
+						httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/tags`), httpmock.JSONResponse(httpmock.TagListResponse(tags...)))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/releases`), httpmock.JSONResponse([]map[string]any{}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/compare/`),
+						httpmock.JSONResponse(map[string]any{"status": compare, "merge_base_commit": map[string]any{"sha": base}}))
+				}
+				httpmock.NoTagsNamed(reg, "actions", repo)
+			}
+			isolateRunLogs(t)
+			writeTempWorkflow(t, "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n")
+			body := "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v6.1.0\n"
+			for _, wf := range []string{"old.yml", "new.yml"} {
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", wf), []byte(body), 0o600))
+			}
+			cache := "actions/cache@" + parityTestSHA
+			newRoot, setupGo := "", ""
+			if tt.replaces {
+				newRoot = "    '.github/workflows/new.yml':\n        - 'actions/setup-go@v1'\n"
+				setupGo = "    'actions/setup-go@v1':\n        ref: 'v1'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+			}
+			lock := "version: 'v0.0.3'\nworkflows:\n" + newRoot +
+				"    '.github/workflows/old.yml':\n        - 'actions/checkout@v6.1.0'\n" +
+				"    '.github/workflows/workflow.yml': []\n" +
+				"dependencies:\n" +
+				"    '" + cache + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n" +
+				"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - '" + cache + "'\n" + setupGo
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive", filepath.Join(".github", "workflows", "new.yml"))
+			after := readTempLockfilePins(t)
+			assert.Equal(t, 1, candidateChecks, "the candidate's identity is checked once")
+			if tt.identity != "" {
+				require.ErrorIs(t, err, errSilent, stderr)
+				assert.Contains(t, stderr, "actions/cache@"+parityTestSHA)
+				assert.Contains(t, stderr, "--relock")
+				assert.Equal(t, lock, after)
+				return
+			}
+			if !repairable {
+				require.ErrorIs(t, err, errSilent, stderr)
+				assert.Contains(t, stderr, "is not on any tag or branch of actions/cache")
+				assert.Equal(t, lock, after)
+				return
+			}
+			require.NoError(t, err, stderr)
+			assert.Contains(t, after, "    '.github/workflows/new.yml':\n        - 'actions/checkout@v6.1.0'\n")
+			assert.Contains(t, after, "    '"+cache+"':\n        ref: 'v4.2.0'\n")
+			assert.NotContains(t, after, "ref: '"+parityTestSHA+"'")
+			assert.NotContains(t, after, "actions/setup-go")
+		})
+	}
+}
+
+// TestSHARecordedRef_SameCommitTagAndSHA: a workflow that locks one commit
+// under its tag and under its own SHA, which a composite also uses, still
+// gets the SHA entry re-recorded.
+func TestSHARecordedRef_SameCommitTagAndSHA(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	reg := &httpmock.Registry{}
+	// The parity stub goes first: a repo stub matches any query for the repo.
+	for range 3 {
+		registerParity(reg)
+	}
+	for _, repo := range []string{"checkout", "cache"} {
+		for range 4 {
+			reg.Register(httpmock.GraphQLForRepo("actions", repo), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": testRepoResponse("actions/"+repo, parityTestSHA, nodeActionYAML)},
+			}))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
+				httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/git/ref/heads/main`),
+				httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v4.2.0", parityTestSHA)))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/releases`), httpmock.JSONResponse([]map[string]any{}))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/compare/`),
+				httpmock.JSONResponse(map[string]any{"status": "behind", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+		}
+		httpmock.NoTagsNamed(reg, "actions", repo)
+	}
+	isolateRunLogs(t)
+	cache := "actions/cache@" + parityTestSHA
+	writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+      - uses: actions/cache@v4.2.0
+      - uses: `+cache+`
+`)
+	entry := func(key, ref string, uses ...string) string {
+		out := "    '" + key + "':\n        ref: '" + ref + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+		for i, u := range uses {
+			if i == 0 {
+				out += "        uses:\n"
+			}
+			out += "            - '" + u + "'\n"
+		}
+		return out
+	}
+	lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n" +
+		"        - '" + cache + "'\n        - 'actions/cache@v4.2.0'\n        - 'actions/checkout@v6.1.0'\n" +
+		"dependencies:\n" + entry(cache, parityTestSHA) + entry("actions/cache@v4.2.0", "v4.2.0") + entry("actions/checkout@v6.1.0", "v6.1.0", cache)
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive", "--no-narrow")
+	require.NoError(t, err, stderr)
+	after := readTempLockfilePins(t)
+	assert.NotContains(t, after, "ref: '"+parityTestSHA+"'")
+	assert.Contains(t, after, "            - '"+cache+"'\n")
+}
+
+// TestSHARecordedRef_InconclusiveIdentityBlocks: an own-SHA entry's parity
+// check confirms only its repository and commit, so if that check can't
+// finish the run fails closed, as for a pin it resolved itself, even when
+// a tag for the commit is found.
+func TestSHARecordedRef_InconclusiveIdentityBlocks(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	reg := &httpmock.Registry{}
+	// Parity answers for checkout but leaves the own-SHA cache entry out.
+	for range 3 {
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+			var body struct {
+				Variables map[string]any `json:"variables"`
+			}
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			data := map[string]any{}
+			for i := 0; ; i++ {
+				owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+				if !ok {
+					break
+				}
+				name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+				if name == "cache" {
+					continue
+				}
+				oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+				data[fmt.Sprintf("a%d", i)] = map[string]any{
+					"nameWithOwner": owner + "/" + name, "databaseId": 1,
+					"commit": oid, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+				}
+			}
+			return httpmock.JSONResponse(map[string]any{"data": data})(req)
+		})
+	}
+	for range 4 {
+		reg.Register(httpmock.REST("GET", `repos/actions/cache$`),
+			httpmock.JSONResponse(map[string]any{"full_name": "actions/cache", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/git/ref/heads/main`),
+			httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v4.2.0", parityTestSHA)))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/releases`), httpmock.JSONResponse([]map[string]any{}))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/compare/`),
+			httpmock.JSONResponse(map[string]any{"status": "behind", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+	}
+	httpmock.NoTagsNamed(reg, "actions", "cache")
+	isolateRunLogs(t)
+	wf, lock := writeOwnSHAChildLock(t, true)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", wf)
+	require.ErrorIs(t, err, errSilent, stderr)
+	assert.Contains(t, stderr, "could not verify locked actions/cache")
+	assert.Equal(t, lock, readTempLockfilePins(t))
+}
+
+// TestSHARecordedRef_CoveredByAnyUseBlocks: an own-SHA entry the workflow
+// uses by its SHA in other letter case still fails read-only modes. (A
+// full-SHA key whose commit differs from it never loads, so no other use
+// can cover such an entry.)
+func TestSHARecordedRef_CoveredByAnyUseBlocks(t *testing.T) {
+	for _, tt := range []struct{ name, key, commit, use string }{
+		{"uppercase use", parityTestSHA, parityTestSHA, strings.ToUpper(parityTestSHA)},
+	} {
+		for _, mode := range []string{"--verify-local", "--verify", "--no-fix"} {
+			t.Run(tt.name+"/"+mode, func(t *testing.T) {
+				wf := writeTempWorkflow(t, "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"+tt.use+"\n")
+				key := "actions/checkout@" + tt.key
+				lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - '" + key + "'\n" +
+					"dependencies:\n    '" + key + "':\n        ref: '" + tt.key + "'\n        commit: 'sha1-" + tt.commit + "'\n        owner_id: 1\n        repo_id: 1\n"
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+				p, err := runParity(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive", wf)
+				require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
+				assert.False(t, p.Valid)
+				var found bool
+				for _, f := range p.Findings {
+					found = found || f.Severity == "error" && strings.Contains(f.Detail, key) && strings.Contains(f.Detail, "a commit SHA rather than the tag or branch")
+				}
+				assert.True(t, found, "findings: %+v", p.Findings)
+				assert.Equal(t, lock, readTempLockfilePins(t))
+			})
+		}
+	}
+}
+
+// TestSHARecordedRef_ScopedFixWarns: a fix run given workflow paths warns
+// about an own-SHA entry of a workflow it didn't select, names the entry and
+// the full-scan repair, never claims every workflow is valid, still writes
+// the selected workflow and exits 0, and leaves the unselected workflow and
+// its entry untouched.
+func TestSHARecordedRef_ScopedFixWarns(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	for _, locked := range []bool{true, false} {
+		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}} {
+			t.Run(fmt.Sprintf("selected locked=%v/%s", locked, mode), func(t *testing.T) {
+				reg := &httpmock.Registry{}
+				for range 4 {
+					reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+						"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+					}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
+						httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+						httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", parityTestSHA)))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+				}
+				httpmock.NoTagsNamed(reg, "actions", "checkout")
+				isolateRunLogs(t)
+				ci := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+`)
+				other := filepath.Join(".github", "workflows", "other.yml")
+				otherBody := "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + parityTestSHA + "\n"
+				require.NoError(t, os.WriteFile(other, []byte(otherBody), 0o600))
+				otherLock := "    '.github/workflows/other.yml':\n        - 'actions/checkout@" + parityTestSHA + "'\n"
+				legacy := "    'actions/checkout@" + parityTestSHA + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+				lock := "version: 'v0.0.3'\nworkflows:\n" + otherLock + "dependencies:\n" + legacy
+				if locked {
+					lock = "version: 'v0.0.3'\nworkflows:\n" + otherLock +
+						"    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n" +
+						"dependencies:\n" + legacy +
+						"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+				// An unselected workflow's entry is no repair candidate: the
+				// run spends no identity check on it.
+				headless := 0
+				counting := proximaTransport(func(req *http.Request) (*http.Response, error) {
+					if req.Body != nil && httpmock.GraphQL(`commit: object\(oid`)(req) {
+						b, err := io.ReadAll(req.Body)
+						require.NoError(t, err)
+						var body struct {
+							Variables map[string]any `json:"variables"`
+						}
+						require.NoError(t, json.Unmarshal(b, &body))
+						for i := 0; ; i++ {
+							if _, ok := body.Variables[fmt.Sprintf("owner%d", i)]; !ok {
+								break
+							}
+							if _, ok := body.Variables[fmt.Sprintf("head%d", i)]; !ok {
+								headless++
+							}
+						}
+						req.Body = io.NopCloser(bytes.NewReader(b))
+					}
+					return parityFallback{reg}.RoundTrip(req)
+				})
+				_, stderr, err := runCommandWithHTTP(t, counting, append(args, "--no-interactive", ci)...)
+				assert.Zero(t, headless, "no identity check for an entry the run doesn't rewrite")
+				require.NoError(t, err, stderr)
+				assert.Contains(t, stderr, "actions/checkout@"+parityTestSHA+", in .github/workflows/other.yml, records ref "+parserlock.ShortSHA(parityTestSHA))
+				assert.Contains(t, stderr, "run `gh actions-lock` without a path to repair it")
+				assert.NotRegexp(t, `All \d+ workflows? valid`, stderr)
+				gotOther, err := os.ReadFile(other)
+				require.NoError(t, err)
+				assert.Equal(t, otherBody, string(gotOther))
+				after := readTempLockfilePins(t)
+				assert.Contains(t, after, otherLock)
+				assert.Contains(t, after, legacy)
+				assert.Contains(t, after, "    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n")
+				assert.Contains(t, after, "    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n")
 			})
 		}
 	}
