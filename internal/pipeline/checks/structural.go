@@ -91,6 +91,8 @@ func checkSHARecordedRef(pw ParsedWorkflow, wfEntry []string, deps map[string]pa
 		f.Remediation = "run `gh actions-lock` to record the tag or branch this commit came from"
 		f.Dependency = synthDep(ref, lockedPin{Commit: deps[raw].Commit}.SHA())
 		f.Reresolve = true
+		// The entry exists, so --no-onboard must not treat this as onboarding.
+		f.TrackedAction = true
 		out = append(out, f)
 	}
 	return out

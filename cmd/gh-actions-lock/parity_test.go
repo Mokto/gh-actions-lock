@@ -1314,9 +1314,11 @@ jobs:
 // nothing.
 func TestSHARecordedRef_ReadOnlyBlocks(t *testing.T) {
 	for mode, args := range map[string][]string{
-		"verify":       {"--verify"},
-		"no-fix":       {"--no-fix"},
-		"verify-local": {"--verify-local"},
+		"verify":            {"--verify"},
+		"no-fix":            {"--no-fix"},
+		"verify-local":      {"--verify-local"},
+		"verify no-onboard": {"--verify", "--no-onboard"},
+		"no-fix no-onboard": {"--no-fix", "--no-onboard"},
 	} {
 		t.Run(mode, func(t *testing.T) {
 			reg := &httpmock.Registry{}
@@ -1390,7 +1392,7 @@ func TestSHARecordedRef_FixReRecords(t *testing.T) {
 		{name: "on no tag or branch", compare: "diverged"},
 	}
 	for _, tt := range tests {
-		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}} {
+		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}, "no-onboard": {"--no-onboard"}} {
 			t.Run(tt.name+"/"+mode, func(t *testing.T) {
 				base := parityTestSHA
 				if tt.compare == "diverged" {
