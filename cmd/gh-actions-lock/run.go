@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,8 @@ import (
 	"github.com/cli/go-gh/v2/pkg/repository"
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
+	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pinpool"
 	"github.com/github/gh-actions-lock/internal/pipeline"
@@ -228,7 +231,8 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if err := store.SetHostname(r.Hostname()); err != nil {
 		return err
 	}
-	if err := r.SeedHosts(store.RecordedHosts()); err != nil {
+	recorded := store.AllDeps()
+	if err := r.SeedHosts(recorded); err != nil {
 		return err
 	}
 	scope := make([]string, len(paths))
@@ -238,12 +242,13 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if err := store.VerifyHosts(ctx, scope); err != nil {
 		return err
 	}
-	r.SeedBranchHints(store.AllDeps())
+	seedable := slices.DeleteFunc(recorded, func(d dep.Dependency) bool { return !lockfile.Seedable(d) })
+	r.SeedBranchHints(seedable)
 	// Locked refs are sticky: resolve them from the lockfile. --accept-moved
 	// and --relock must see what moved, so they resolve everything live.
 	relock := opts.acceptMoved || opts.relock
 	if !relock {
-		r.SeedFromLockfile(store.AllDeps())
+		r.SeedFromLockfile(seedable)
 	}
 	endSetup()
 

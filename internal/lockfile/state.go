@@ -540,33 +540,18 @@ func (s *State) RecordedRepoID(owner, repo string) int64 {
 	return s.idCache[repoIDKey(s.hostname, owner, repo)][1]
 }
 
-// RecordedHosts returns the owner/repo and host of every entry, including
-// one AllDeps leaves out, so host binding sees each recorded host before
-// any lookup.
-func (s *State) RecordedHosts() []dep.Dependency {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]dep.Dependency, 0, len(s.file.Dependencies))
-	for raw, action := range s.file.Dependencies {
-		if pin, ok := parserlock.ParsePin(raw); ok {
-			out = append(out, dep.Dependency{NWO: pin.NWO, Hostname: s.hostOrHome(action.Hostname)})
-		}
-	}
-	return out
-}
-
 // AllDeps returns every action entry in the lockfile as a Dependency,
 // populated with Tag and Branch inferred from the action's ref field.
 // Order is undefined. Intended for callers that need the union of recorded
-// pins across all workflows (e.g. seeding resolver caches on startup).
-// Like Get, it leaves out an entry that records its own SHA as its ref.
+// pins across all workflows (e.g. seeding resolver caches on startup);
+// filter ref seeding with Seedable.
 func (s *State) AllDeps() []dep.Dependency {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]dep.Dependency, 0, len(s.file.Dependencies))
 	for raw, action := range s.file.Dependencies {
 		pin, ok := parserlock.ParsePin(raw)
-		if !ok || RecordsOwnSHA(pin, action.Ref) {
+		if !ok {
 			continue
 		}
 		d := pinToDep(pin)

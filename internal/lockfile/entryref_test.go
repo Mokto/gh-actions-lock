@@ -106,7 +106,9 @@ func TestLoadState_OwnSHARefIsUnrecorded(t *testing.T) {
 	deps, err := s.Get(".github/workflows/ci.yml")
 	require.NoError(t, err)
 	assert.Empty(t, deps)
-	assert.Empty(t, s.AllDeps(), "never seeds the resolver")
+	all := s.AllDeps()
+	require.Len(t, all, 1, "still recorded, so its host binds")
+	assert.False(t, Seedable(all[0]), "never seeds ref resolution")
 	pin, _ := parserlock.ParsePin(key)
 	assert.True(t, RecordsOwnSHA(pin, entryRefSHA))
 }
@@ -144,7 +146,13 @@ func TestLoadState_OwnSHARefAnywhereLoads(t *testing.T) {
 	deps, err := s.Get(".github/workflows/ci.yml")
 	require.NoError(t, err)
 	require.Len(t, deps, 1, "the parent is still recorded")
-	assert.Len(t, s.AllDeps(), 1, "only the parent seeds the resolver")
+	var seedable []string
+	for _, d := range s.AllDeps() {
+		if Seedable(d) {
+			seedable = append(seedable, d.NWO+"@"+d.Ref)
+		}
+	}
+	assert.Equal(t, []string{parent}, seedable, "only the parent seeds the resolver")
 }
 
 func writeEntryRefLock(t *testing.T, key, ref string) string {

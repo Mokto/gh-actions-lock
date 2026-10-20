@@ -55,6 +55,14 @@ func RecordsOwnSHA(pin parserlock.Pin, ref string) bool {
 	return parserlock.IsFullSha(pin.Ref) && strings.EqualFold(ref, pin.Ref)
 }
 
+// Seedable reports whether a recorded dependency (from Get or AllDeps) may
+// seed ref resolution or branch hints. One whose entry records its own SHA
+// names no tag or branch, so it is resolved afresh; its host and repository
+// identity still bind.
+func Seedable(d dep.Dependency) bool {
+	return !(parserlock.IsFullSha(d.Ref) && strings.EqualFold(parserlock.BestRef(d.Tag, d.Branch), d.Ref))
+}
+
 // entryRefError says what is wrong with an entry's recorded ref. It reads
 // as a predicate of "entry for <pin>".
 func entryRefError(pin parserlock.Pin, ref string) error {

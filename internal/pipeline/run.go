@@ -79,7 +79,11 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			continue
 		}
 		recorded, _ := parsed[i].PartitionRefs()
-		seedDeps = append(seedDeps, parsed[i].RecordedDeps(recorded)...)
+		for _, d := range parsed[i].RecordedDeps(recorded) {
+			if lockfile.Seedable(d) {
+				seedDeps = append(seedDeps, d)
+			}
+		}
 		for _, rr := range recorded {
 			recordedKeys[strings.ToLower(rr.Owner+"/"+rr.Repo)+"@"+rr.Ref] = true
 		}
