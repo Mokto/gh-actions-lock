@@ -1184,6 +1184,25 @@ func TestPrepareRefreshPreservesUnselectedWorkflows(t *testing.T) {
 	}
 }
 
+func TestPrepareRefreshClearsDetachedRediscoveredEdges(t *testing.T) {
+	const (
+		wf  = ".github/workflows/ci.yml"
+		sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	store, err := LoadState(t.TempDir(), fakeMetadataResolver{})
+	require.NoError(t, err)
+	root := dep.Dependency{NWO: "o/root", Ref: "v1", SHA: sha}
+	child := dep.Dependency{NWO: "o/child", Ref: "v2", SHA: sha}
+	obsolete := dep.Dependency{NWO: "o/obsolete", Ref: "v1", SHA: sha}
+	require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{root, child, obsolete},
+		dep.ParentMap{child.Key(): {root.Key()}, obsolete.Key(): {child.Key()}}, map[string]bool{root.Key(): true}))
+	// The deleted root leaves the recorded graph unable to reach child.
+	delete(store.File().Dependencies, root.Key())
+
+	require.NoError(t, store.PrepareRefresh([]string{wf}, []dep.Dependency{root, child}, dep.ParentMap{child.Key(): {root.Key()}}))
+	assert.Empty(t, store.File().Dependencies[child.Key()].Uses, "a rediscovered entry must not keep its obsolete edges")
+}
+
 func TestPrepareRefreshRejectsIncompleteOrConflictingPlans(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
