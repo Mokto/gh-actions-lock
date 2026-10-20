@@ -1353,6 +1353,26 @@ func TestSHARecordedRef_ReadOnlyBlocks(t *testing.T) {
 	}
 }
 
+// TestSHARecordedRef_StaleEntryBlocks: an own-SHA entry the workflow no
+// longer uses still fails read-only modes, as a stale entry.
+func TestSHARecordedRef_StaleEntryBlocks(t *testing.T) {
+	for _, mode := range []string{"--verify", "--no-fix", "--verify-local"} {
+		t.Run(mode, func(t *testing.T) {
+			path := writeFullSHAWorkflow(t, parityTestSHA)
+			require.NoError(t, os.WriteFile(path, []byte("name: ci\non: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n"), 0o600))
+			lockBefore := readTempLockfilePins(t)
+
+			p, err := runParity(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive", path)
+			require.ErrorIs(t, err, errSilent)
+			assert.False(t, p.Valid)
+			require.NotEmpty(t, p.Findings)
+			assert.Equal(t, "stale", p.Findings[0].Category)
+			assert.Equal(t, "error", p.Findings[0].Severity)
+			assert.Equal(t, lockBefore, readTempLockfilePins(t))
+		})
+	}
+}
+
 // TestSHARecordedRef_FixReRecords: a fix run re-records a pin whose entry
 // records its own SHA with the tag at the commit, else a branch containing
 // it, keeping the full-SHA `uses:`. A commit no tag or branch contains, such
