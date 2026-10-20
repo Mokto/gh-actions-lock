@@ -74,6 +74,10 @@ func TestPlanNormalizationPrunesStaleTargetsInOneRun(t *testing.T) {
 					tags = httpmock.TagListResponse(tt.tag, headSHA)
 				}
 				reg.Register(httpmock.REST("GET", `repos/owner/action/tags`), httpmock.JSONResponse(tags))
+			}
+			// Branch normalization requires the branch head to equal the pin,
+			// even when the lockfile already records the containing branch.
+			if !tt.recorded || tt.tag == "" {
 				reg.Register(httpmock.REST("GET", `repos/owner/action/git/ref/heads/main`),
 					httpmock.JSONResponse(map[string]any{
 						"ref": "refs/heads/main", "object": map[string]any{"sha": headSHA, "type": "commit"},
