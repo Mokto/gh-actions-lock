@@ -536,7 +536,10 @@ func TestResolveActionFiles_RESTDockerfileOnlyAction(t *testing.T) {
 				}
 			}))
 			defer srv.Close()
-			c, err := New("github.com")
+			c, err := New("github.com", WithClientTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("REST-only mode used authenticated transport: %s %s", req.Method, req.URL)
+				return nil, nil
+			})))
 			if err != nil {
 				t.Fatal(err)
 			}
