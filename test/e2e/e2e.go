@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,7 +27,6 @@ import (
 	"time"
 
 	"github.com/cli/go-gh/v2/pkg/jq"
-	"github.com/creack/pty"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/github/gh-actions-lock/test/scenarios"
@@ -54,6 +54,9 @@ func CoverDir(raw string) (string, error) {
 // Build compiles the binary into dir, instrumented for coverage if cover.
 func Build(dir string, cover bool) (string, error) {
 	bin := filepath.Join(dir, "gh-actions-lock")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	args := []string{"build", "-o", bin}
 	if cover {
 		args = append(args, "-cover")
@@ -85,6 +88,9 @@ type result struct {
 // Run lays down the scenario's repository, runs the binary, and checks the
 // scenario's expectations.
 func (r *Runner) Run(t *testing.T, sc scenarios.Scenario) {
+	if len(sc.Input) > 0 && runtime.GOOS == "windows" {
+		t.Skip("interactive scenarios need a PTY, which Windows lacks")
+	}
 	dir := t.TempDir()
 	env, _ := r.scenarioEnv(t, sc)
 	if sc.LiveRepo != "" {
@@ -112,6 +118,11 @@ func (r *Runner) Run(t *testing.T, sc scenarios.Scenario) {
 // scenarios or touch the developer's own.
 func (r *Runner) scenarioEnv(t *testing.T, sc scenarios.Scenario) (map[string]string, string) {
 	env := environ()
+	// Never inherit the developer's host: live scenarios run against
+	// github.com, stub scenarios against their fake.
+	for _, k := range []string{"GH_HOST", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		delete(env, k)
+	}
 	if sc.Live() {
 		token := liveToken()
 		if token == "" {
@@ -126,6 +137,9 @@ func (r *Runner) scenarioEnv(t *testing.T, sc scenarios.Scenario) (map[string]st
 	env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
 	env["XDG_STATE_HOME"] = filepath.Join(home, ".local", "state")
 	env["GH_CONFIG_DIR"] = filepath.Join(home, ".config", "gh")
+	env["USERPROFILE"] = home
+	env["APPDATA"] = filepath.Join(home, "AppData", "Roaming")
+	env["LOCALAPPDATA"] = filepath.Join(home, "AppData", "Local")
 	env["GH_ACTIONS_LOCK_CONFIG"] = os.DevNull
 	if r.CoverDir != "" {
 		env["GOCOVERDIR"] = r.CoverDir
@@ -248,54 +262,6 @@ func exitCode(t *testing.T, err error) int {
 
 var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
-// runPTY plays the terminal: it answers cursor-position queries and types
-// each response once its prompt has rendered and output has settled.
-func runPTY(t *testing.T, cmd *exec.Cmd, prompts []scenarios.Prompt) result {
-	f, err := pty.Start(cmd)
-	require.NoError(t, err)
-	defer f.Close()
-
-	chunks := make(chan []byte)
-	go func() {
-		defer close(chunks)
-		buf := make([]byte, 4096)
-		for {
-			n, err := f.Read(buf)
-			if n > 0 {
-				chunks <- bytes.Clone(buf[:n])
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	var out strings.Builder
-	var settled <-chan time.Time
-	answered := 0
-	for chunks != nil {
-		select {
-		case c, ok := <-chunks:
-			if !ok {
-				chunks = nil
-				break
-			}
-			out.Write(c)
-			if bytes.Contains(c, []byte("\x1b[6n")) {
-				_, _ = f.WriteString("\x1b[1;1R")
-			}
-			if len(prompts) > 0 && strings.Contains(ansiEscape.ReplaceAllString(out.String()[answered:], ""), prompts[0].Prompt) {
-				settled = time.After(300 * time.Millisecond)
-			}
-		case <-settled:
-			_, _ = f.WriteString(prompts[0].Response + "\r")
-			prompts, settled, answered = prompts[1:], nil, out.Len()
-		}
-	}
-	all := out.String()
-	return result{exit: exitCode(t, cmd.Wait()), stdout: all, output: all}
-}
-
 func (r *Runner) check(t *testing.T, sc scenarios.Scenario, dir string, res result) {
 	e := sc.Expect
 	if e.Exit != nil {
@@ -372,6 +338,29 @@ func usesRef(src, nwo, ref string) bool {
 	return re.MatchString(src)
 }
 
+var usesLine = regexp.MustCompile(`(?m)^\s*(?:-\s*)?uses:\s*['"]?([^\s'"#]+)`)
+
+// remoteUses returns each remote `uses:` in workflow src as owner/repo@ref,
+// the form lockfile keys take. Local (./), self-repository ($/), docker://,
+// reusable-workflow and expression references are not locked and are
+// skipped.
+func remoteUses(src string) []string {
+	var out []string
+	for _, m := range usesLine.FindAllStringSubmatch(src, -1) {
+		u := m[1]
+		if strings.HasPrefix(u, "./") || strings.HasPrefix(u, "$/") || strings.HasPrefix(u, "docker://") || strings.Contains(u, "${{") {
+			continue
+		}
+		path, ref, ok := strings.Cut(u, "@")
+		parts := strings.SplitN(path, "/", 3)
+		if !ok || len(parts) < 2 || strings.Contains(path, "/.github/workflows/") {
+			continue
+		}
+		out = append(out, parts[0]+"/"+parts[1]+"@"+ref)
+	}
+	return out
+}
+
 func checkDeps(t *testing.T, dir string, lock []byte, direct, indirect bool) {
 	var lf struct {
 		Workflows    map[string][]string `yaml:"workflows"`
@@ -385,13 +374,20 @@ func checkDeps(t *testing.T, dir string, lock []byte, direct, indirect bool) {
 		require.NotNil(t, lf.Workflows, "lockfile has no workflows:\n%s", lock)
 		for wf, refs := range lf.Workflows {
 			src, err := os.ReadFile(filepath.Join(dir, wf))
+			if !assert.NoError(t, err, "lockfile lists %s", wf) {
+				continue
+			}
+			listed := map[string]bool{}
 			for _, ref := range refs {
+				listed[ref] = true
 				assert.Contains(t, lf.Dependencies, ref, "direct dep from %s", wf)
 				nwo, tag, ok := strings.Cut(ref, "@")
-				if err != nil || !ok {
-					continue
+				if assert.True(t, ok, "%s: lockfile ref %q has no @ref", wf, ref) {
+					assert.True(t, usesRef(string(src), nwo, tag), "%s no longer uses %s", wf, ref)
 				}
-				assert.True(t, usesRef(string(src), nwo, tag), "%s no longer uses %s", wf, ref)
+			}
+			for _, u := range remoteUses(string(src)) {
+				assert.True(t, listed[u], "%s uses %s but the lockfile does not list it", wf, u)
 			}
 		}
 	}

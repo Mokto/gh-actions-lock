@@ -156,3 +156,30 @@ func TestCoverDirIsAbsolute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want, resolved)
 }
+
+func TestRemoteUses(t *testing.T) {
+	src := `jobs:
+  build:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: 'actions/cache/save@v4' # subpath
+      - uses: ./local/action
+      - uses: $/tools/act
+      - uses: docker://alpine:3
+      - uses: ${{ matrix.action }}
+  call:
+    uses: octo/wf/.github/workflows/ci.yml@main
+`
+	assert.Equal(t, []string{"actions/checkout@v4", "actions/cache@v4"}, remoteUses(src))
+}
+
+// TestScenarioEnvDropsAmbientHost: a developer's GH_HOST must not redirect
+// live scenarios away from github.com.
+func TestScenarioEnvDropsAmbientHost(t *testing.T) {
+	t.Setenv("GH_HOST", "example.ghe.com")
+	t.Setenv("GH_ENTERPRISE_TOKEN", "ambient")
+	t.Setenv("GH_TOKEN", "live-token")
+	env, _ := runner.scenarioEnv(t, scenarios.Scenario{Name: "live", NeedsToken: true})
+	assert.NotContains(t, env, "GH_HOST")
+	assert.NotContains(t, env, "GH_ENTERPRISE_TOKEN")
+}
