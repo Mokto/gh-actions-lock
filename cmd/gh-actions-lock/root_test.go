@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,59 +79,39 @@ func TestCheckCommand_HelpExplainsHostAndAuthOverrides(t *testing.T) {
 	}
 }
 
-const nodeActionYAML = "name: Test Action\nruns:\n  using: node20\n"
-
-func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
-	return map[string]any{
-		"nameWithOwner": nameWithOwner,
-		// commit, tag and head answer the parity query from the same fixture.
-		"commit":  map[string]any{"oid": oid},
-		"tag":     map[string]any{"oid": oid},
-		"tagRef":  map[string]any{"oid": oid},
-		"head":    map[string]any{"oid": oid},
-		"headRef": map[string]any{"oid": oid},
-		"object": map[string]any{
-			"oid": oid,
-			"file": map[string]any{
-				"object": map[string]any{
-					"text": actionYAML,
-				},
-			},
-			"fileYaml": nil,
-		},
+// workflowUsing returns a one-job workflow whose steps use each ref in order.
+func workflowUsing(uses ...string) string {
+	var b strings.Builder
+	b.WriteString("name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n")
+	for _, u := range uses {
+		b.WriteString("      - uses: " + u + "\n")
 	}
+	return b.String()
 }
 
-// registerParity stubs one parity query that reports every pin intact.
-func registerParity(reg *httpmock.Registry) {
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOK)
+// checkResult is the `--json=valid,findings` payload.
+type checkResult struct {
+	Valid    bool             `json:"valid"`
+	Findings []format.Finding `json:"findings"`
 }
 
-// parityOK answers a parity query as if every locked pin still matches.
-func parityOK(req *http.Request) (*http.Response, error) {
-	var body struct {
-		Variables map[string]any `json:"variables"`
+// categories returns the set of finding categories.
+func (c checkResult) categories() map[string]bool {
+	out := map[string]bool{}
+	for _, f := range c.Findings {
+		out[f.Category] = true
 	}
-	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-		return nil, err
-	}
-	data := map[string]any{}
-	for i := 0; ; i++ {
-		owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
-		if !ok {
-			break
-		}
-		oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
-		data[fmt.Sprintf("a%d", i)] = map[string]any{
-			"nameWithOwner": owner + "/" + body.Variables[fmt.Sprintf("name%d", i)].(string),
-			"commit":        oid,
-			"tag":           oid,
-			"tagRef":        oid,
-			"head":          oid,
-			"headRef":       oid,
-		}
-	}
-	return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	return out
+}
+
+// runCheckJSON runs the command with --json=valid,findings and decodes the
+// payload; err is the command's error.
+func runCheckJSON(t *testing.T, rt http.RoundTripper, args ...string) (checkResult, error) {
+	t.Helper()
+	stdout, _, err := runCommandWithHTTP(t, rt, append(args, "--json=valid,findings")...)
+	var c checkResult
+	require.NoError(t, json.Unmarshal([]byte(stdout), &c), stdout)
+	return c, err
 }
 
 // parityFallback answers parity queries the test did not stub as intact,
@@ -139,7 +119,7 @@ func parityOK(req *http.Request) (*http.Response, error) {
 type parityFallback struct{ rt http.RoundTripper }
 
 func (p parityFallback) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Body == nil || !httpmock.GraphQL(`commit: object\(oid`)(req) {
+	if req.Body == nil || !httpmock.ParityQuery(req) {
 		return p.rt.RoundTrip(req)
 	}
 	body, err := io.ReadAll(req.Body)
@@ -151,7 +131,7 @@ func (p parityFallback) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	return parityOK(req)
+	return httpmock.ParityIntact(req)
 }
 
 // writeTempWorkflow writes a workflow YAML body to a scratch repo at

@@ -503,7 +503,7 @@ func TestReverseLookup_FailsClosedOnImpostor(t *testing.T) {
 	// DiscoverContaining makes several REST calls (individual branch lookups,
 	// default-branch, protected branches, full listing, tags). Use a custom
 	// transport that returns empty lists / 404s so the dep reports as an issue.
-	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	transport := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if strings.Contains(req.URL.Path, "/git/ref/") {
 			return &http.Response{
 				StatusCode: 404,
@@ -555,12 +555,6 @@ func TestReverseLookup_FailsClosedOnImpostor(t *testing.T) {
 	if issues[0].Message != want {
 		t.Errorf("message = %q, want %q", issues[0].Message, want)
 	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
 }
 
 func TestReverseLookup_PreservesBranchRefOverTag(t *testing.T) {

@@ -19,7 +19,7 @@ func hostRequest(host, path string) httpmock.Matcher {
 	}
 }
 
-func TestProximaRepositorySelection(t *testing.T) {
+func TestTenantHostRepositorySelection(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
 		status     int
@@ -94,7 +94,7 @@ func TestProximaRepositorySelection(t *testing.T) {
 	}
 }
 
-func TestProximaMissingRefDoesNotFallBack(t *testing.T) {
+func TestTenantHostMissingRefDoesNotFallBack(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 	reg.Register(hostRequest("api.tenant.ghe.com", `repos/o/r$`), httpmock.JSONResponse(map[string]any{"id": 2, "owner": map[string]any{"id": 1}}))
@@ -131,7 +131,7 @@ func TestPinnedHostBoundaries(t *testing.T) {
 	}
 }
 
-func TestProximaContentErrorsAreNotLeafActions(t *testing.T) {
+func TestTenantHostContentErrorsAreNotLeafActions(t *testing.T) {
 	for _, status := range []int{403, 429, 500} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			reg := &httpmock.Registry{}
@@ -154,7 +154,7 @@ func TestProximaContentErrorsAreNotLeafActions(t *testing.T) {
 	}
 }
 
-func TestProximaPartialGraphQLErrorDoesNotSucceed(t *testing.T) {
+func TestTenantHostPartialGraphQLErrorDoesNotSucceed(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 	reg.Register(hostRequest("api.tenant.ghe.com", `repos/o/r$`), httpmock.JSONResponse(map[string]any{"id": 2, "owner": map[string]any{"id": 1}}))

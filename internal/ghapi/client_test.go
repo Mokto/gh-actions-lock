@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 )
 
 // --- retry transport tests ---
@@ -135,7 +137,7 @@ func TestRetryTransport_ResendsBodyOnRetry(t *testing.T) {
 	wantBody := `{"query":"some graphql"}`
 	var attempts atomic.Int32
 
-	inner := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	inner := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		n := attempts.Add(1)
 		got, err := io.ReadAll(req.Body)
 		if err != nil {
@@ -173,11 +175,4 @@ func TestRetryTransport_ResendsBodyOnRetry(t *testing.T) {
 	if got := attempts.Load(); got != 3 {
 		t.Fatalf("expected 3 attempts, got %d", got)
 	}
-}
-
-// roundTripFunc adapts a function into an http.RoundTripper.
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
 }

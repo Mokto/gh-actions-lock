@@ -18,15 +18,7 @@ import (
 func TestVerifyLocalNormalizesHostname(t *testing.T) {
 	for _, source := range []string{"flag", "environment", "repository"} {
 		t.Run(source, func(t *testing.T) {
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: tenant/internal@v1
-`, "tenant/internal@v1=sha1-"+tenantSHA)
+			path := writeTempWorkflow(t, workflowUsing("tenant/internal@v1"), "tenant/internal@v1=sha1-"+tenantSHA)
 			t.Setenv("GH_HOST", "")
 			t.Setenv("GH_REPO", "")
 			args := []string{"--verify-local", "--no-interactive", "--json", path}
@@ -168,15 +160,7 @@ jobs:
 // has error severity. An unused lockfile entry is an error in every mode; a
 // fix run prunes it and succeeds.
 func TestStaleEntry_SeverityMatchesVerdict(t *testing.T) {
-	const workflow = `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`
+	workflow := workflowUsing("actions/checkout@v4.2.1")
 	for _, tc := range []struct {
 		name    string
 		mode    []string
@@ -194,7 +178,7 @@ jobs:
 			reg := &httpmock.Registry{}
 			args := append(slices.Clone(tc.mode), "--no-interactive", path)
 
-			p, err := runParity(t, reg, args...)
+			p, err := runCheckJSON(t, reg, args...)
 			if tc.wantErr {
 				require.ErrorIs(t, err, errSilent)
 			} else {
@@ -229,15 +213,7 @@ jobs:
 func TestStaleEntry_TerminalShowsRemediation(t *testing.T) {
 	for _, mode := range []string{"--verify", "--verify-local"} {
 		t.Run(mode, func(t *testing.T) {
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`,
+			path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.1"),
 				"actions/checkout@v4.2.1=sha1-"+parityTestSHA,
 				"actions/setup-go@v5=sha1-"+parityTestSHA,
 			)
@@ -289,7 +265,7 @@ func TestVerifyLocal_LocalActionVerdictFollowsSeverity(t *testing.T) {
 				}
 			}
 
-			p, err := runParity(t, &httpmock.Registry{}, "--verify-local", "--no-interactive")
+			p, err := runCheckJSON(t, &httpmock.Registry{}, "--verify-local", "--no-interactive")
 			checkErr(err)
 			assert.Equal(t, !tc.wantErr, p.Valid)
 			if tc.wantErr {
@@ -345,7 +321,7 @@ jobs:
 			}
 			args := append(slices.Clone(tc.mode), "--no-interactive", path)
 
-			p, err := runParity(t, &httpmock.Registry{}, args...)
+			p, err := runCheckJSON(t, &httpmock.Registry{}, args...)
 			if tc.wantErr {
 				require.ErrorIs(t, err, errSilent)
 			} else {

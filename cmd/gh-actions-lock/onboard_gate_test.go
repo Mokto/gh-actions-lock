@@ -178,13 +178,13 @@ func trackedSHAStubs(reg *httpmock.Registry, uses, head string) *httpmock.Regist
 	compare := map[string]any{"status": status, "merge_base_commit": map[string]any{"sha": head}}
 	for range 8 {
 		reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{"a0": testRepoResponse("actions/checkout", uses, nodeActionYAML)},
+			"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", uses, httpmock.NodeActionYAML)},
 		}))
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 			"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1},
 		}))
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/commits/`), httpmock.JSONResponse(map[string]any{"sha": uses}))
-		reg.Register(httpmock.REST("GET", `repos/actions/checkout/contents/action\.yml`), raw(nodeActionYAML))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/contents/action\.yml`), raw(httpmock.NodeActionYAML))
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`), httpmock.JSONResponse(map[string]any{
 			"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"},
 		}))

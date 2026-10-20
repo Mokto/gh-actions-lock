@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestJSONHostnameOnlyForProximaDotcomDependencies(t *testing.T) {
+func TestJSONHostnameOnlyForTenantHostDotcomDependencies(t *testing.T) {
 	for _, tt := range []struct {
 		name, homeHost, depHost, want string
 	}{

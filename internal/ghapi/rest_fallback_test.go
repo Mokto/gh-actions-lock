@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 )
 
 func TestSSOFallbackEligible(t *testing.T) {
@@ -49,7 +51,7 @@ func TestNew_RESTOnlyForDependabotProxy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.value, func(t *testing.T) {
 			t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", tt.value)
-			c, err := New("github.com", WithClientTransport(roundTripFunc(nil)))
+			c, err := New("github.com", WithClientTransport(httpmock.RoundTripFunc(nil)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,7 +82,7 @@ func TestResolveActionFiles_SSOFallbackForActionsOrg(t *testing.T) {
 	defer srv.Close()
 
 	// GraphQL transport returns SAML error for actions/checkout.
-	tr := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	tr := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.Method == http.MethodGet {
 			return jsonHTTP(map[string]any{"visibility": "public"})
 		}
@@ -133,7 +135,7 @@ func TestResolveActionFiles_SSONoFallbackForNonActionsOrg(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tr := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	tr := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.Method == http.MethodGet {
 			return statusResponse(req, http.StatusUnauthorized)
 		}
@@ -190,7 +192,7 @@ func TestResolveActionFiles_RESTOnlyUsesPrivateRepo(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tr := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	tr := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		t.Fatalf("REST-only mode used authenticated transport: %s %s", req.Method, req.URL)
 		return nil, nil
 	})
@@ -235,7 +237,7 @@ func TestResolveActionFiles_BadCredentialsFallbackFailsClosed(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			tr := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			tr := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 				if req.Method == http.MethodGet {
 					if tt.repoStatus != http.StatusOK {
 						return statusResponse(req, tt.repoStatus)
@@ -287,7 +289,7 @@ func TestPeelTagObject_RESTOnlyUsesRESTFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tr := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	tr := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		t.Fatalf("REST-only mode used authenticated transport: %s %s", req.Method, req.URL)
 		return nil, nil
 	})
@@ -318,7 +320,7 @@ func TestBatchBranchContains_RESTOnlyUsesRESTFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tr := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	tr := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		t.Fatalf("REST-only mode used authenticated transport: %s %s", req.Method, req.URL)
 		return nil, nil
 	})
@@ -441,7 +443,7 @@ func TestSSOFallback_RateLimitedGuidance(t *testing.T) {
 			anonRateLimited = sync.Map{}
 			srv := httptest.NewServer(http.HandlerFunc(tt.anon))
 			defer srv.Close()
-			saml := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			saml := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 				resp, _ := jsonHTTP(map[string]any{"message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."})
 				resp.StatusCode = http.StatusForbidden
 				resp.Request = req
@@ -488,7 +490,7 @@ func TestCompareRefs_SSOFallback(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	saml := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	saml := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		resp, _ := jsonHTTP(map[string]any{"message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."})
 		resp.StatusCode = http.StatusForbidden
 		resp.Request = req

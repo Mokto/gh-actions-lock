@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -435,7 +436,7 @@ func TestResolveActionFiles_AdaptiveSplit(t *testing.T) {
 func TestResolveActionFiles_SingleRefBatchErrorSurfaced(t *testing.T) {
 	// A single-ref batch can't be split further, so a batch-level cost error
 	// must surface on the ref rather than being mislabeled "not found".
-	tr := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	tr := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return jsonHTTP(map[string]any{
 			"data": nil,
 			"errors": []map[string]any{

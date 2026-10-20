@@ -22,20 +22,13 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
-const graphWorkflow = `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: acme/parent@v1.0.0
-`
+var graphWorkflow = workflowUsing("acme/parent@v1.0.0")
 
 const (
 	graphParentSHA = "1111111111111111111111111111111111111111"
@@ -73,7 +66,7 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				break
 			}
 			ref := strings.TrimSuffix(body.Variables[fmt.Sprintf("expr%d", i)], "^{commit}")
-			sha, yml := graphLeafSHA, nodeActionYAML
+			sha, yml := graphLeafSHA, httpmock.NodeActionYAML
 			switch strings.ToLower(name) {
 			case "parent":
 				sha = graphParentSHA
@@ -84,11 +77,11 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				if g.parentUsesSubAtV1 {
 					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/parent/sub@v1\n"
 					if body.Variables[fmt.Sprintf("yml%d", i)] == "sub/action.yml" {
-						yml = nodeActionYAML
+						yml = httpmock.NodeActionYAML
 					}
 				}
 				if g.movedParent && ref == "v1.0.0" {
-					sha, yml = graphLeafSHA, nodeActionYAML
+					sha, yml = graphLeafSHA, httpmock.NodeActionYAML
 				}
 			case "child":
 				if g.failChild {
@@ -106,11 +99,11 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			default:
 				return nil, fmt.Errorf("unexpected fixture repository %s", name)
 			}
-			data[fmt.Sprintf("a%d", i)] = testRepoResponse("acme/"+name, sha, yml)
+			data[fmt.Sprintf("a%d", i)] = httpmock.RepoResponse("acme/"+name, sha, yml)
 		}
 		return httpmock.JSONResponse(map[string]any{"data": data})(req)
 	}
-	if httpmock.GraphQL(`commit: object\(oid`)(req) {
+	if httpmock.ParityQuery(req) {
 		if g.unreachableChild {
 			var body struct {
 				Variables map[string]string `json:"variables"`
@@ -125,7 +118,7 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					break
 				}
 				sha := body.Variables[fmt.Sprintf("oid%d", i)]
-				repo := testRepoResponse("acme/"+name, sha, nodeActionYAML)
+				repo := httpmock.RepoResponse("acme/"+name, sha, httpmock.NodeActionYAML)
 				if name == "child" && sha == graphChildSHA {
 					repo["commit"] = nil
 				}
@@ -133,7 +126,7 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 			return httpmock.JSONResponse(map[string]any{"data": data})(req)
 		}
-		return parityOK(req)
+		return httpmock.ParityIntact(req)
 	}
 	if req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/repos/acme/") {
 		switch req.URL.Path {
@@ -194,7 +187,7 @@ func TestCompleteness_DanglingEntriesFailWithoutWrites(t *testing.T) {
 				transport = counter
 				t.Cleanup(func() { assert.Zero(t, counter.calls.Load()) })
 			}
-			p, err := runParity(t, transport, append(tt.args, "--no-narrow", path)...)
+			p, err := runCheckJSON(t, transport, append(tt.args, "--no-narrow", path)...)
 			require.ErrorIs(t, err, errSilent)
 			assert.False(t, p.Valid)
 			require.Len(t, p.Findings, 1)
@@ -266,7 +259,7 @@ func TestCompleteness_VerifyInspectsLockedManifests(t *testing.T) {
 			_, _, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", path)
 			require.NoError(t, err, "offline verification cannot infer an erased remote edge")
 			transport := &graphTransport{movedParent: true}
-			p, err := runParity(t, transport, "--verify", path)
+			p, err := runCheckJSON(t, transport, "--verify", path)
 			require.ErrorIs(t, err, errSilent)
 			assert.False(t, p.Valid)
 			require.Len(t, p.Findings, 1)
@@ -313,7 +306,7 @@ func TestCompleteness_VerifyManifestFailureIsBlocking(t *testing.T) {
 				writeGraph(t, file)
 			}
 			before := snapshotWorkflows(t)
-			p, err := runParity(t, &graphTransport{failChild: true}, "--verify", path)
+			p, err := runCheckJSON(t, &graphTransport{failChild: true}, "--verify", path)
 			require.ErrorIs(t, err, errSilent)
 			assert.False(t, p.Valid)
 			var categories []string
@@ -366,7 +359,7 @@ func TestCompleteness_RelockCannotAcceptUnreachableTransitivePin(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", root, 1)), 0o600))
 			before := snapshotWorkflows(t)
 			transport := &graphTransport{movedChild: true, unreachableChild: true}
-			p, err := runParity(t, transport, "--relock", "--no-narrow", path)
+			p, err := runCheckJSON(t, transport, "--relock", "--no-narrow", path)
 			require.ErrorIs(t, err, errSilent)
 			assert.False(t, p.Valid)
 			found := false
@@ -438,7 +431,7 @@ func TestCompleteness_CancelledManifestInspectionWritesNothing(t *testing.T) {
 	defer cancel()
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
-	registerParity(reg)
+	reg.Register(httpmock.ParityQuery, httpmock.ParityIntact)
 	reg.Register(httpmock.GraphQL(`file: file\(path`), func(req *http.Request) (*http.Response, error) {
 		cancel()
 		return nil, req.Context().Err()
@@ -465,15 +458,7 @@ func TestCompleteness_ProxyTransientManifestReadIsRetry(t *testing.T) {
 	for range 10 {
 		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.ya?ml$`), httpmock.StatusResponse(http.StatusServiceUnavailable))
 	}
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-`, "actions/checkout@v4=sha1-"+parityTestSHA)
+	path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4"), "actions/checkout@v4=sha1-"+parityTestSHA)
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
 	require.Error(t, err, stderr)
@@ -492,7 +477,7 @@ func TestCompleteness_UsesCycleWritesNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := writeTempWorkflow(t, graphWorkflow)
 			before := snapshotWorkflows(t)
-			p, err := runParity(t, transport, path)
+			p, err := runCheckJSON(t, transport, path)
 			require.ErrorIs(t, err, errSilent)
 			var details []string
 			for _, f := range p.Findings {
@@ -538,7 +523,7 @@ func TestCompleteness_VerifyChecksFullSHAKeyUnderItsOwnEntry(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(graphWorkflow+"      - uses: "+shaKey+"\n"), 0o600))
 	before := snapshotWorkflows(t)
 
-	p, err := runParity(t, &graphTransport{}, "--verify", path)
+	p, err := runCheckJSON(t, &graphTransport{}, "--verify", path)
 	require.ErrorIs(t, err, errSilent)
 	var blocking []string
 	for _, f := range p.Findings {
@@ -626,47 +611,16 @@ func TestCheckCommand_JSONWithHTTPMocks(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "checkout"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd", nodeActionYAML),
-			},
-		}),
-	)
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "setup-go"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/setup-go", "4a3601121dd01d1626a1e23e37211e3254c1c06c", nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd")
+	reg.StubRepo("actions/setup-go", "4a3601121dd01d1626a1e23e37211e3254c1c06c")
 
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-`,
+	workflowPath := writeTempWorkflow(t, workflowUsing("actions/checkout@v6", "actions/setup-go@v6"),
 		"actions/checkout@v6=sha1-de0fac2e4500dabe0009e67214ff5f5447ce83dd",
 		"actions/setup-go@v6=sha1-4a3601121dd01d1626a1e23e37211e3254c1c06c",
 	)
 
-	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
-	)
+	payload, err := runCheckJSON(t, reg, "--relock", "--no-fix", workflowPath)
 	require.NoError(t, err)
-
-	var payload struct {
-		Valid    bool             `json:"valid"`
-		Findings []format.Finding `json:"findings"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
 	assert.True(t, payload.Valid)
 	assert.Empty(t, payload.Findings)
 }
@@ -680,14 +634,7 @@ func TestCheck_BareSHAUsesExactMajorTagAndVerifiesLocally(t *testing.T) {
 	reg := &httpmock.Registry{}
 
 	httpmock.NoTagsNamed(reg, "dawidd6", "action-download-artifact")
-	reg.Register(
-		httpmock.GraphQLForRepo("dawidd6", "action-download-artifact"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("dawidd6/action-download-artifact", sha, nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("dawidd6/action-download-artifact", sha)
 	reg.Register(
 		httpmock.REST("GET", `repos/dawidd6/action-download-artifact$`),
 		httpmock.JSONResponse(map[string]any{
@@ -718,15 +665,7 @@ func TestCheck_BareSHAUsesExactMajorTagAndVerifiesLocally(t *testing.T) {
 		httpmock.JSONResponse(httpmock.CompareAncestorResponse(ancestorSHA)),
 	)
 
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: dawidd6/action-download-artifact@b6e2e70617bc3265edd6dab6c906732b2f1ae151
-`)
+	workflowPath := writeTempWorkflow(t, workflowUsing("dawidd6/action-download-artifact@b6e2e70617bc3265edd6dab6c906732b2f1ae151"))
 
 	_, _, err := runCommandWithHTTP(t, reg, workflowPath)
 	require.NoError(t, err)
@@ -750,14 +689,7 @@ func TestCheck_ChangedTagAtSameCommitRekeysAndVerifiesLocally(t *testing.T) {
 	const sha = "94de994a9f6fffee200243214e17002e2920bb59"
 
 	reg := &httpmock.Registry{}
-	reg.Register(
-		httpmock.GraphQLForRepo("dawidd6", "action-send-mail"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("dawidd6/action-send-mail", sha, nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("dawidd6/action-send-mail", sha)
 	reg.Register(
 		httpmock.REST("GET", `repos/dawidd6/action-send-mail/tags`),
 		httpmock.JSONResponse(httpmock.TagListResponse("v18", sha, "v3.12.0", sha)),
@@ -767,15 +699,7 @@ func TestCheck_ChangedTagAtSameCommitRekeysAndVerifiesLocally(t *testing.T) {
 		httpmock.JSONResponse([]map[string]any{}),
 	)
 
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: dawidd6/action-send-mail@v18
-`, "dawidd6/action-send-mail@v3.12.0=sha1-"+sha)
+	workflowPath := writeTempWorkflow(t, workflowUsing("dawidd6/action-send-mail@v18"), "dawidd6/action-send-mail@v3.12.0=sha1-"+sha)
 
 	_, _, err := runCommandWithHTTP(t, reg, workflowPath)
 	require.NoError(t, err)
@@ -790,252 +714,75 @@ jobs:
 	require.NoError(t, err)
 }
 
-// TestCheck_TjActionsChangedFiles_TagMutationAttack models the March 2025
-// tj-actions/changed-files attack (CVE-2025-30066) where attackers
-// compromised a maintainer PAT and force-pushed tag v44 to a malicious
-// commit. The malicious commit is NOT reachable from the legitimate tag.
-// TestCheck_TamperedAndUnreachable verifies that when a pinned SHA differs
-// from live resolution AND the old SHA is unreachable, both errors are reported.
-// TestCheck_Reachable verifies the happy path: pinned SHA matches live
-// resolution and is reachable — validation passes with no errors or warnings.
-func TestCheck_Reachable(t *testing.T) {
-	reg := &httpmock.Registry{}
-	defer reg.Verify(t)
-
-	sha := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-
-	reg.Register(
-		httpmock.GraphQLForRepo("example", "action"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("example/action", sha, nodeActionYAML),
-			},
-		}),
-	)
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: example/action@v1
-`,
-		"example/action@v1=sha1-"+sha,
-	)
-
-	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
-	)
-	require.NoError(t, err)
-
-	var payload struct {
-		Valid    bool             `json:"valid"`
-		Findings []format.Finding `json:"findings"`
+// TestCheck_RelockAncestry covers how --relock classifies a locked commit
+// against the live ref: unchanged is clean, a moved ref whose history still
+// contains the lock is a benign move, a lock outside that history is a
+// forgery, and an unanswerable compare is reported as unknown rather than
+// guessed.
+func TestCheck_RelockAncestry(t *testing.T) {
+	locked := testfixture.Synthetic('a')
+	live := testfixture.Synthetic('b')
+	compare := func(status string, mergeBase string) httpmock.Responder {
+		return httpmock.JSONResponse(map[string]any{
+			"status":            status,
+			"merge_base_commit": map[string]any{"sha": mergeBase},
+		})
 	}
-	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
-	assert.True(t, payload.Valid)
-	assert.Empty(t, payload.Findings)
-}
-
-// ==========================================================================
-// Lockfile Forgery Detection Tests
-//
-// These tests verify that the ancestry check promotes ref-moved to
-// unreachable-pin when the pinned SHA is not an ancestor of the live SHA.
-// This detects cases where someone manually injected a SHA into the lockfile
-// that was never part of the ref's legitimate history.
-// ==========================================================================
-
-// TestCheck_UnreachablePin_NotAncestor verifies that when the Compare API
-// shows the pinned SHA is NOT an ancestor of the live SHA, the finding is
-// promoted from ref-moved to unreachable-pin.
-func TestCheck_UnreachablePin_NotAncestor(t *testing.T) {
-	reg := &httpmock.Registry{}
-	defer reg.Verify(t)
-
-	pinnedSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	liveSHA := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-	// GraphQL resolution returns the live SHA (different from pinned).
-	reg.Register(
-		httpmock.GraphQLForRepo("example", "action"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("example/action", liveSHA, nodeActionYAML),
-			},
-		}),
-	)
-
-	// Compare API: merge_base ≠ pinnedSHA → not an ancestor.
-	reg.Register(
-		httpmock.REST("GET", "repos/example/action/compare/"),
-		httpmock.JSONResponse(map[string]any{
-			"status": "diverged",
-			"merge_base_commit": map[string]any{
-				"sha": "cccccccccccccccccccccccccccccccccccccccc",
-			},
-		}),
-	)
-
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: example/action@v1
-`,
-		"example/action@v1=sha1-"+pinnedSHA,
-	)
-
-	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
-	)
-	require.ErrorIs(t, err, errSilent, "JSON mode should exit non-zero for forgery findings")
-
-	var payload struct {
-		Valid    bool             `json:"valid"`
-		Findings []format.Finding `json:"findings"`
+	tests := []struct {
+		name     string
+		live     string
+		compare  httpmock.Responder
+		wantErr  bool
+		want     string
+		excluded []string
+	}{
+		{name: "unchanged commit is clean", live: locked},
+		{
+			name: "lock in moved ref history is ref-moved", live: live,
+			compare: compare("ahead", locked), want: "ref-moved",
+			excluded: []string{"unreachable-pin"},
+		},
+		{
+			name: "lock outside ref history is unreachable-pin", live: live,
+			compare: compare("diverged", testfixture.Synthetic('c')), wantErr: true, want: "unreachable-pin",
+			excluded: []string{"ref-moved"},
+		},
+		{
+			name: "rate-limited compare is ancestry-unknown", live: live,
+			compare: httpmock.StatusResponse(429), want: "ancestry-unknown",
+			excluded: []string{"unreachable-pin", "ref-moved", "valid"},
+		},
 	}
-	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
-	assert.False(t, payload.Valid)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			reg.StubRepo("example/action", tt.live)
+			if tt.compare != nil {
+				reg.Register(httpmock.REST("GET", "repos/example/action/compare/"), tt.compare)
+			}
+			path := writeTempWorkflow(t, workflowUsing("example/action@v1"), "example/action@v1=sha1-"+locked)
 
-	categories := map[string]bool{}
-	for _, f := range payload.Findings {
-		categories[f.Category] = true
-	}
-	assert.True(t, categories["unreachable-pin"], "should detect lockfile forgery: %+v", payload.Findings)
-	assert.False(t, categories["ref-moved"], "should NOT have ref-moved (promoted to forgery): %+v", payload.Findings)
-}
-
-// TestCheck_UnreachablePin_LegitAncestor verifies that when the Compare API
-// confirms the pinned SHA IS an ancestor of the live SHA, the finding stays
-// as ref-moved (legitimate tag movement, not forgery).
-func TestCheck_UnreachablePin_LegitAncestor(t *testing.T) {
-	reg := &httpmock.Registry{}
-	defer reg.Verify(t)
-
-	pinnedSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	liveSHA := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-	reg.Register(
-		httpmock.GraphQLForRepo("example", "action"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("example/action", liveSHA, nodeActionYAML),
-			},
-		}),
-	)
-
-	// Compare API: merge_base == pinnedSHA → legitimate ancestor.
-	reg.Register(
-		httpmock.REST("GET", "repos/example/action/compare/"),
-		httpmock.JSONResponse(map[string]any{
-			"status": "ahead",
-			"merge_base_commit": map[string]any{
-				"sha": pinnedSHA,
-			},
-		}),
-	)
-
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: example/action@v1
-`,
-		"example/action@v1=sha1-"+pinnedSHA,
-	)
-
-	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
-	)
-	require.NoError(t, err, "ref-moved is a warning, should not error")
-
-	var payload struct {
-		Valid    bool             `json:"valid"`
-		Findings []format.Finding `json:"findings"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
-	assert.True(t, payload.Valid, "ref-moved is a warning, workflow is still valid")
-
-	categories := map[string]bool{}
-	for _, f := range payload.Findings {
-		categories[f.Category] = true
-	}
-	assert.True(t, categories["ref-moved"], "should keep as ref-moved for legit ancestor: %+v", payload.Findings)
-	assert.False(t, categories["unreachable-pin"], "should NOT have unreachable-pin: %+v", payload.Findings)
-}
-
-// TestCheck_UnreachablePin_RateLimited verifies that when the ancestry
-// check is rate-limited, the finding surfaces as ancestry-unknown — not
-// ref-moved (which would imply a benign-but-known move) and not
-// unreachable-pin (which requires an authoritative not-ancestor answer).
-func TestCheck_UnreachablePin_RateLimited(t *testing.T) {
-	reg := &httpmock.Registry{}
-	defer reg.Verify(t)
-
-	pinnedSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	liveSHA := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-	reg.Register(
-		httpmock.GraphQLForRepo("example", "action"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("example/action", liveSHA, nodeActionYAML),
-			},
-		}),
-	)
-
-	// Compare API: rate limited.
-	reg.Register(
-		httpmock.REST("GET", "repos/example/action/compare/"),
-		httpmock.StatusResponse(429),
-	)
-
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: example/action@v1
-`,
-		"example/action@v1=sha1-"+pinnedSHA,
-	)
-
-	stdout, _, err := runCommandWithHTTP(t, reg,
-		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
-	)
-	require.NoError(t, err, "ref-moved is a warning, should not error")
-
-	var payload struct {
-		Valid    bool             `json:"valid"`
-		Findings []format.Finding `json:"findings"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
-	assert.True(t, payload.Valid, "ancestry-unknown is a warning, workflow is still valid")
-
-	categories := map[string]bool{}
-	for _, f := range payload.Findings {
-		categories[f.Category] = true
-	}
-	assert.True(t, categories["ancestry-unknown"], "should classify as ancestry-unknown when rate limited: %+v", payload.Findings)
-	assert.False(t, categories["unreachable-pin"], "should NOT have unreachable-pin when rate limited: %+v", payload.Findings)
-	assert.False(t, categories["ref-moved"], "should NOT downgrade to ref-moved when rate limited: %+v", payload.Findings)
-	assert.False(t, categories["valid"], "rate-limited ancestry must not regress to CategoryValid: %+v", payload.Findings)
-
-	// Verify the detail mentions the inconclusive ancestry check.
-	for _, f := range payload.Findings {
-		if f.Category == "ancestry-unknown" {
-			assert.Contains(t, f.Detail, "ancestry check inconclusive")
-		}
+			payload, err := runCheckJSON(t, reg, "--relock", "--no-fix", path)
+			if tt.wantErr {
+				require.ErrorIs(t, err, errSilent)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, !tt.wantErr, payload.Valid)
+			if tt.want == "" {
+				assert.Empty(t, payload.Findings)
+				return
+			}
+			categories := payload.categories()
+			assert.True(t, categories[tt.want], "%+v", payload.Findings)
+			for _, c := range tt.excluded {
+				assert.False(t, categories[c], "unexpected %s: %+v", c, payload.Findings)
+			}
+			if tt.want == "ancestry-unknown" {
+				assert.Contains(t, payload.Findings[0].Detail, "ancestry check inconclusive")
+			}
+		})
 	}
 }
 
@@ -1046,42 +793,19 @@ func TestCheckCommand_JSONDependenciesWithRequiredBy(t *testing.T) {
 	compositeYAML := "name: Setup Go\nruns:\n  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
 
 	// Per-ref resolution queries (parallel resolver resolves one ref per worker).
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "checkout"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd", nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd")
 	reg.Register(
 		httpmock.GraphQLForRepo("actions", "setup-go"),
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
-				"a0": testRepoResponse("actions/setup-go", "d35c59abb061a4a6fb18e82ac0862c26744d6ab5", compositeYAML),
+				"a0": httpmock.RepoResponse("actions/setup-go", "d35c59abb061a4a6fb18e82ac0862c26744d6ab5", compositeYAML),
 			},
 		}),
 	)
 	// Transitive dep discovered from composite (cache/save).
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "cache"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/cache", "5a3ec84eff668545956fd18022155c47e93e2684", nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/cache", "5a3ec84eff668545956fd18022155c47e93e2684")
 
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-`,
+	workflowPath := writeTempWorkflow(t, workflowUsing("actions/checkout@v6", "actions/setup-go@v6"),
 		"actions/checkout@v6",
 		"actions/setup-go@v6",
 		// Transitive dependency (via actions/setup-go@v6).
@@ -1138,28 +862,13 @@ func TestCheckCommand_JSONDependenciesInfersRequiredByWithoutComments(t *testing
 		httpmock.GraphQLForRepo("actions", "setup-go"),
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
-				"a0": testRepoResponse("actions/setup-go", "d35c59abb061a4a6fb18e82ac0862c26744d6ab5", compositeYAML),
+				"a0": httpmock.RepoResponse("actions/setup-go", "d35c59abb061a4a6fb18e82ac0862c26744d6ab5", compositeYAML),
 			},
 		}),
 	)
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "cache"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/cache", "5a3ec84eff668545956fd18022155c47e93e2684", nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/cache", "5a3ec84eff668545956fd18022155c47e93e2684")
 
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-go@v6
-`,
+	workflowPath := writeTempWorkflow(t, workflowUsing("actions/setup-go@v6"),
 		"actions/setup-go@v6",
 		"actions/cache@v4",
 	)
@@ -1193,24 +902,9 @@ func TestCheckCommand_JSONDefaultFieldsExcludesDependencies(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "checkout"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd", nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd")
 
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-`,
+	workflowPath := writeTempWorkflow(t, workflowUsing("actions/checkout@v6"),
 		"actions/checkout@v6",
 	)
 
@@ -1245,28 +939,12 @@ func TestCheck_SeedFromLockfile_SkipsHTTPForCachedDeps(t *testing.T) {
 
 	// Only register an HTTP stub for setup-go (the NEW dep).
 	// No stub for checkout — the seed must serve it from cache.
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "setup-go"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/setup-go", setupGoSHA, nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/setup-go", setupGoSHA)
 
 	// Workflow references both, but lockfile only has checkout.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
-	wfBody := strings.TrimSpace(`
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-`) + "\n"
+	wfBody := strings.TrimSpace(workflowUsing("actions/checkout@v6", "actions/setup-go@v6")) + "\n"
 	wfPath := filepath.Join(dir, ".github", "workflows", "workflow.yml")
 	require.NoError(t, os.WriteFile(wfPath, []byte(wfBody), 0o600))
 
@@ -1281,7 +959,7 @@ jobs:
 	t.Chdir(dir)
 
 	// Locked checkout is only parity-checked, never re-resolved.
-	registerParity(reg)
+	reg.Register(httpmock.ParityQuery, httpmock.ParityIntact)
 	stdout, _, err := runCommandWithHTTP(t, reg,
 		"--no-fix", "--json=valid,findings",
 		".github/workflows/workflow.yml",
@@ -1317,27 +995,11 @@ func TestCheck_NoFix_WritesNothing(t *testing.T) {
 
 	// setup-go is the unpinned (new) dep — it resolves from the mock. checkout
 	// is seeded from the lockfile and must not hit the network.
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "setup-go"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/setup-go", setupGoSHA, nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/setup-go", setupGoSHA)
 
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
-	wfBody := strings.TrimSpace(`
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-`) + "\n"
+	wfBody := strings.TrimSpace(workflowUsing("actions/checkout@v6", "actions/setup-go@v6")) + "\n"
 	wfPath := filepath.Join(dir, ".github", "workflows", "workflow.yml")
 	require.NoError(t, os.WriteFile(wfPath, []byte(wfBody), 0o600))
 
@@ -1385,14 +1047,7 @@ func TestCheck_DefaultJSON_AutofixWrites(t *testing.T) {
 	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
 
 	// Resolve setup-go@v6.0.0 → setupGoSHA.
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "setup-go"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/setup-go", setupGoSHA, nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/setup-go", setupGoSHA)
 	repoMeta := httpmock.JSONResponse(map[string]any{
 		"id":    2,
 		"owner": map[string]any{"id": 1},
@@ -1401,15 +1056,7 @@ func TestCheck_DefaultJSON_AutofixWrites(t *testing.T) {
 
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
-	wfBody := strings.TrimSpace(`
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-go@v6.0.0
-`) + "\n"
+	wfBody := strings.TrimSpace(workflowUsing("actions/setup-go@v6.0.0")) + "\n"
 	wfPath := filepath.Join(dir, ".github", "workflows", "workflow.yml")
 	require.NoError(t, os.WriteFile(wfPath, []byte(wfBody), 0o600))
 	t.Chdir(dir)
@@ -1446,14 +1093,7 @@ func TestCheck_Relock_DetectsRefMovementDespiteLockfile(t *testing.T) {
 	liveSHA := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 	// HTTP returns the LIVE SHA (different from what the lockfile recorded).
-	reg.Register(
-		httpmock.GraphQLForRepo("example", "action"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("example/action", liveSHA, nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("example/action", liveSHA)
 
 	// Compare API: staleSHA is a legitimate ancestor of liveSHA (tag moved forward).
 	reg.Register(
@@ -1466,15 +1106,7 @@ func TestCheck_Relock_DetectsRefMovementDespiteLockfile(t *testing.T) {
 		}),
 	)
 
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: example/action@v1
-`,
+	workflowPath := writeTempWorkflow(t, workflowUsing("example/action@v1"),
 		"example/action@v1=sha1-"+staleSHA,
 	)
 
@@ -1514,15 +1146,7 @@ func TestCheckCommand_JSONDeduplicatesDependencies(t *testing.T) {
 	// the fast path skips every network round-trip. The dedup logic under
 	// test operates purely on the inventory built from disk.
 
-	wf1 := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-`,
+	wf1 := writeTempWorkflow(t, workflowUsing("actions/checkout@v6"),
 		"actions/checkout@v6",
 	)
 
@@ -1621,14 +1245,7 @@ func TestCheck_Relock_BumpsMovedBranchRef(t *testing.T) {
 	staleSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	liveSHA := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-	reg.Register(
-		httpmock.GraphQLForRepo("example", "action"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("example/action", liveSHA, nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("example/action", liveSHA)
 	// staleSHA is a legitimate ancestor of liveSHA (branch advanced) → ref-moved.
 	reg.Register(
 		httpmock.REST("GET", "repos/example/action/compare/"),
@@ -1651,15 +1268,7 @@ func TestCheck_Relock_BumpsMovedBranchRef(t *testing.T) {
 		httpmock.JSONResponse([]any{}),
 	)
 
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: example/action@main
-`,
+	workflowPath := writeTempWorkflow(t, workflowUsing("example/action@main"),
 		"example/action@main=sha1-"+staleSHA,
 	)
 
@@ -1682,15 +1291,7 @@ func TestCheck_DefaultRun_DoesNotBumpBranchRef(t *testing.T) {
 
 	staleSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-	workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: example/action@main
-`,
+	workflowPath := writeTempWorkflow(t, workflowUsing("example/action@main"),
 		"example/action@main=sha1-"+staleSHA,
 	)
 
@@ -1710,14 +1311,7 @@ func TestCheck_MixedCaseUsesAcrossWorkflowsPinsEach(t *testing.T) {
 	defer reg.Verify(t)
 
 	checkoutSHA := "11bd71901bbe5b1630ceea73d27597364c9af683"
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "checkout"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/checkout", checkoutSHA, nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/checkout", checkoutSHA)
 	reg.Register(httpmock.REST("GET", `repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 		"id":    2,
 		"owner": map[string]any{"id": 1},
@@ -1760,7 +1354,7 @@ func TestCheck_BareSHAOffHistoryRefuses(t *testing.T) {
 		reg.Register(
 			httpmock.GraphQLForRepo("actions", "checkout"),
 			httpmock.JSONResponse(map[string]any{
-				"data": map[string]any{"a0": testRepoResponse("actions/checkout", impostor, nodeActionYAML)},
+				"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", impostor, httpmock.NodeActionYAML)},
 			}),
 		)
 		reg.Register(
@@ -1896,17 +1490,9 @@ func testRemoteCompositeMalformedRef(t *testing.T, use, want string) {
 	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: " + use + "\n"
 	reg := &httpmock.Registry{}
 	reg.Register(httpmock.GraphQLForRepo("octo", "composite"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("octo/composite", sha, composite)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("octo/composite", sha, composite)},
 	}))
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: octo/composite@v1
-`)
+	path := writeTempWorkflow(t, workflowUsing("octo/composite@v1"))
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
 	require.ErrorIs(t, err, errSilent, stderr)
@@ -1944,7 +1530,7 @@ func writeCleanWorkflow(t *testing.T, reg *httpmock.Registry, withLocal bool) st
 // registerSetupGo stubs resolution of actions/setup-go@v5.0.0.
 func registerSetupGo(reg *httpmock.Registry) {
 	reg.Register(httpmock.GraphQLForRepo("actions", "setup-go"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("actions/setup-go", parityTestMoved, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("actions/setup-go", parityTestMoved, httpmock.NodeActionYAML)},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/tags`),
 		httpmock.JSONResponse(httpmock.TagListResponse("v5.0.0", parityTestMoved)))
@@ -1979,7 +1565,7 @@ func (repoIDMismatch) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	resp, err := parityOK(req)
+	resp, err := httpmock.ParityIntact(req)
 	if err != nil {
 		return nil, err
 	}
@@ -2017,16 +1603,8 @@ func TestRun_BlockingErrorWritesNothing(t *testing.T) {
 	for name, args := range map[string][]string{"terminal": nil, "json": {"--json"}} {
 		t.Run(name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
-			reg.Register(httpmock.GraphQL(`commit: object\(oid`), repoIDMismatch{}.RoundTrip)
-			blocked := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+			reg.Register(httpmock.ParityQuery, repoIDMismatch{}.RoundTrip)
+			blocked := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.1"), "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 			clean := writeCleanWorkflow(t, reg, true)
 			before := snapshotWorkflows(t)
 
@@ -2063,15 +1641,7 @@ func TestRun_UnloadableWorkflowWritesNothing(t *testing.T) {
 func TestRun_UnresolvedWritesNothing(t *testing.T) {
 	// acme/gone has no stub, so it can't be resolved.
 	reg := &httpmock.Registry{}
-	broken := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: acme/gone@v1.0.0
-`)
+	broken := writeTempWorkflow(t, workflowUsing("acme/gone@v1.0.0"))
 	clean := writeCleanWorkflow(t, reg, true)
 	before := snapshotWorkflows(t)
 
@@ -2118,15 +1688,7 @@ func testMissingRef(t *testing.T, ref, detail, remedy string, proxy bool) {
 		t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 		useDefaultTransport(t, reg)
 	}
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.2
-`, "actions/checkout@v4.2.2")
+	path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.2"), "actions/checkout@v4.2.2")
 	wf, err := os.ReadFile(path)
 	require.NoError(t, err)
 	wf = []byte(strings.Replace(string(wf), "@v4.2.2", "@"+ref, 1))
@@ -2294,15 +1856,7 @@ func writeStaleLockfileRepo(t *testing.T) string {
 
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
-	wfBody := strings.TrimSpace(`
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-`) + "\n"
+	wfBody := strings.TrimSpace(workflowUsing("actions/checkout@v6")) + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "workflow.yml"), []byte(wfBody), 0o600))
 
 	lockYAML := "version: '" + parserlock.Version + "'\ndependencies:\n" +
@@ -2489,7 +2043,7 @@ func TestCheck_EmptyRepo_NoLockfile_Errors(t *testing.T) {
 	assert.Contains(t, err.Error(), "no workflow files found")
 }
 
-func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
+func TestTenantHostPrunesBeforeVerifyingHosts(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
 		args       []string
@@ -2548,7 +2102,7 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 			}
 			require.NoError(t, os.WriteFile(path, []byte(before), 0o600))
 			staleCalls := 0
-			transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+			transport := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 				assert.Equal(t, "api.tenant.ghe.com", req.URL.Host)
 				switch req.URL.Path {
 				case "/repos/actions/checkout":
@@ -2564,7 +2118,7 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 					if tt.mismatch {
 						return parityRepoID(req, http.StatusOK, 2)
 					}
-					return parityOK(req)
+					return httpmock.ParityIntact(req)
 				case "/repos/actions/checkout/tags", "/repos/actions/checkout/releases":
 					return httpmock.JSONResponse([]any{})(req)
 				default:
@@ -2734,14 +2288,7 @@ func TestMigrateLocalActions_EndToEnd(t *testing.T) {
 
 	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
 
-	reg.Register(
-		httpmock.GraphQLForRepo("actions", "setup-go"),
-		httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{
-				"a0": testRepoResponse("actions/setup-go", setupGoSHA, nodeActionYAML),
-			},
-		}),
-	)
+	reg.StubRepo("actions/setup-go", setupGoSHA)
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/setup-go/tags`),
 		httpmock.JSONResponse([]map[string]any{
@@ -2764,15 +2311,7 @@ func TestMigrateLocalActions_EndToEnd(t *testing.T) {
 
 	// The workflow only names the local composite. The remote dependency lives
 	// three levels down the in-repo action chain.
-	write(".github/workflows/workflow.yml", strings.TrimSpace(`
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: ./my-action
-`)+"\n")
+	write(".github/workflows/workflow.yml", strings.TrimSpace(workflowUsing("./my-action"))+"\n")
 	// In-repo composite chain, all same-repo local refs.
 	write("my-action/action.yml", "name: My Action\nruns:\n  using: composite\n  steps:\n    - uses: ./helper\n")
 	write("helper/action.yml", "name: Helper\nruns:\n  using: composite\n  steps:\n    - uses: ./nested/deep\n")
@@ -2938,8 +2477,8 @@ type requestCountingTransport struct {
 }
 
 func (t *requestCountingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.parity && httpmock.GraphQL(`commit: object\(oid`)(req) {
-		return parityOK(req)
+	if t.parity && httpmock.ParityQuery(req) {
+		return httpmock.ParityIntact(req)
 	}
 	if t.tags != nil && strings.HasSuffix(req.URL.Path, "/releases") {
 		return httpmock.JSONResponse([]any{})(req)
@@ -3136,19 +2675,6 @@ const (
 	parityTestMoved = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-type parityPayload struct {
-	Valid    bool             `json:"valid"`
-	Findings []format.Finding `json:"findings"`
-}
-
-func runParity(t *testing.T, rt http.RoundTripper, args ...string) (parityPayload, error) {
-	t.Helper()
-	stdout, _, err := runCommandWithHTTP(t, rt, append(args, "--json=valid,findings")...)
-	var p parityPayload
-	require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout)
-	return p, err
-}
-
 func registerNodeManifests(reg *httpmock.Registry) {
 	reg.Register(httpmock.GraphQL(`file: file\(path`), func(req *http.Request) (*http.Response, error) {
 		var body struct {
@@ -3163,10 +2689,10 @@ func registerNodeManifests(reg *httpmock.Registry) {
 			if !ok {
 				break
 			}
-			data[fmt.Sprintf("a%d", i)] = testRepoResponse(
+			data[fmt.Sprintf("a%d", i)] = httpmock.RepoResponse(
 				owner+"/"+body.Variables[fmt.Sprintf("name%d", i)],
 				strings.TrimSuffix(body.Variables[fmt.Sprintf("expr%d", i)], "^{commit}"),
-				nodeActionYAML,
+				httpmock.NodeActionYAML,
 			)
 		}
 		return httpmock.JSONResponse(map[string]any{"data": data})(req)
@@ -3183,18 +2709,10 @@ func registerLockedCheckoutManifest(reg *httpmock.Registry, proxy bool) {
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`),
 		httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.yml$`),
-		httpmock.JSONResponse(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML))}))
+		httpmock.JSONResponse(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(httpmock.NodeActionYAML))}))
 }
 
-const transferWorkflow = `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: krzema12/github-actions-typing@v2.2.2
-`
+var transferWorkflow = workflowUsing("krzema12/github-actions-typing@v2.2.2")
 
 func transferParity(repoID int) httpmock.Responder {
 	return httpmock.JSONResponse(map[string]any{
@@ -3215,7 +2733,7 @@ func transferParity(repoID int) httpmock.Responder {
 func TestParity_TransferredRepoWarns(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(1))
+	reg.Register(httpmock.ParityQuery, transferParity(1))
 	registerNodeManifests(reg)
 	path := writeTempWorkflow(t, transferWorkflow, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
 
@@ -3231,7 +2749,7 @@ func TestParity_TransferredRepoWarns(t *testing.T) {
 func TestParity_TransferredRepoRewrites(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(1))
+	reg.Register(httpmock.ParityQuery, transferParity(1))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
 	}))
@@ -3247,7 +2765,7 @@ func TestParity_TransferredRepoRewrites(t *testing.T) {
 // `uses:` isn't; the rewrite must match the workflow's own text.
 func TestParity_MixedCaseRenameRewrites(t *testing.T) {
 	reg := &httpmock.Registry{}
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(1))
+	reg.Register(httpmock.ParityQuery, transferParity(1))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
 	}))
@@ -3267,9 +2785,9 @@ func TestParity_MixedCaseRenameRewrites(t *testing.T) {
 // mutable ref has since moved.
 func TestParity_RenameKeepsLockedCommit(t *testing.T) {
 	reg := &httpmock.Registry{}
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), renamedParity)
+	reg.Register(httpmock.ParityQuery, renamedParity)
 	reg.Register(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("typesafegithub/github-actions-typing", parityTestMoved, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("typesafegithub/github-actions-typing", parityTestMoved, httpmock.NodeActionYAML)},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
@@ -3308,10 +2826,10 @@ workflows:
             - 'actions/setup-node@v4'`)
 }
 
-// renamedParity answers like parityOK, with krzema12/github-actions-typing
+// renamedParity answers like httpmock.ParityIntact, with krzema12/github-actions-typing
 // redirected to typesafegithub under the same repo ID.
 func renamedParity(req *http.Request) (*http.Response, error) {
-	resp, err := parityOK(req)
+	resp, err := httpmock.ParityIntact(req)
 	if err != nil {
 		return nil, err
 	}
@@ -3326,7 +2844,7 @@ func renamedParity(req *http.Request) (*http.Response, error) {
 
 func registerTransferResolve(reg *httpmock.Registry, repoID int) {
 	reg.Register(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("typesafegithub/github-actions-typing", parityTestSHA, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("typesafegithub/github-actions-typing", parityTestSHA, httpmock.NodeActionYAML)},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": repoID, "owner": map[string]any{"id": 42},
@@ -3353,7 +2871,7 @@ func TestParity_RepoIDMismatchSameNameBlocks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
 			defer reg.Verify(t)
-			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+			reg.Register(httpmock.ParityQuery, httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
 					"nameWithOwner": "actions/checkout",
 					"databaseId":    99,
@@ -3362,15 +2880,7 @@ func TestParity_RepoIDMismatchSameNameBlocks(t *testing.T) {
 					"tagRef":        map[string]any{"oid": parityTestSHA},
 				}},
 			}))
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+			path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.1"), "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 
 			_, stderr, err := runCommandWithHTTP(t, reg, append(mode, path)...)
 			require.ErrorIs(t, err, errSilent)
@@ -3386,7 +2896,7 @@ func TestParity_ReclaimedNameBlocks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
 			defer reg.Verify(t)
-			reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(99))
+			reg.Register(httpmock.ParityQuery, transferParity(99))
 			path := writeTempWorkflow(t, transferWorkflow, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
 
 			_, stderr, err := runCommandWithHTTP(t, reg, append(mode, path)...)
@@ -3401,9 +2911,9 @@ func TestParity_ReclaimedNameBlocks(t *testing.T) {
 // the new commit reaches the lockfile.
 func TestParity_RelockReclaimedNameKeepsLock(t *testing.T) {
 	reg := &httpmock.Registry{}
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(99))
+	reg.Register(httpmock.ParityQuery, transferParity(99))
 	reg.Register(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("krzema12/github-actions-typing", parityTestMoved, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("krzema12/github-actions-typing", parityTestMoved, httpmock.NodeActionYAML)},
 	}))
 	path := writeTempWorkflow(t, transferWorkflow, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
 
@@ -3441,7 +2951,7 @@ func TestParity_MovedExactTagFollowsHistory(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
 			defer reg.Verify(t)
-			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+			reg.Register(httpmock.ParityQuery, httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
 					"nameWithOwner": "actions/checkout",
 					"commit":        map[string]any{"oid": parityTestSHA},
@@ -3451,19 +2961,11 @@ func TestParity_MovedExactTagFollowsHistory(t *testing.T) {
 			}))
 			reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
 				httpmock.JSONResponse(map[string]any{"status": tt.status, "merge_base_commit": map[string]any{"sha": tt.base}}))
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+			path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.1"), "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 			if !tt.block && tt.args[0] == "--verify" {
 				registerNodeManifests(reg)
 			}
-			p, err := runParity(t, reg, append(tt.args, path)...)
+			p, err := runCheckJSON(t, reg, append(tt.args, path)...)
 			lock := readTempLockfilePins(t)
 			assert.Contains(t, lock, "sha1-"+parityTestSHA)
 			assert.NotContains(t, lock, parityTestMoved, "the lock keeps its commit")
@@ -3493,15 +2995,7 @@ jobs:
 // A fail-closed history check prints as an error, never a warning; a moved
 // exact tag under --verify prints as a warning on a passing run.
 func TestParity_TerminalSeverity(t *testing.T) {
-	workflow := `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`
+	workflow := workflowUsing("actions/checkout@v4.2.1")
 	t.Run("inconclusive is an error", func(t *testing.T) {
 		path := writeTempWorkflow(t, workflow, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 		_, stderr, err := runCommandWithHTTP(t, parityDown{&httpmock.Registry{}}, "--verify", path)
@@ -3514,7 +3008,7 @@ jobs:
 	t.Run("moved exact tag warns", func(t *testing.T) {
 		reg := &httpmock.Registry{}
 		defer reg.Verify(t)
-		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+		reg.Register(httpmock.ParityQuery, httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{"a0": map[string]any{
 				"nameWithOwner": "actions/checkout",
 				"commit":        map[string]any{"oid": parityTestSHA},
@@ -3539,7 +3033,7 @@ jobs:
 func TestParity_DefaultRunPrintsParityFinding(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+	reg.Register(httpmock.ParityQuery, httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": map[string]any{
 			"nameWithOwner": "actions/checkout",
 			"commit":        map[string]any{"oid": parityTestSHA},
@@ -3549,15 +3043,7 @@ func TestParity_DefaultRunPrintsParityFinding(t *testing.T) {
 	}))
 	reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
 		httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": parityTestMoved}}))
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+	path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.1"), "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 
 	_, stderr, err := runCommandWithHTTP(t, reg, path)
 	require.ErrorIs(t, err, errSilent)
@@ -3575,17 +3061,17 @@ func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 	path := writeParityFixture(t)
 
 	for _, args := range [][]string{{path}, {"--verify", path}} {
-		registerParity(reg)
+		reg.Register(httpmock.ParityQuery, httpmock.ParityIntact)
 		wantRequests := 1
 		if args[0] == "--verify" {
 			registerNodeManifests(reg)
 			wantRequests = 2
 		}
-		ct := &countingTransport{inner: reg}
-		p, err := runParity(t, ct, args...)
+		ct := &httpmock.CountingTransport{Next: reg}
+		p, err := runCheckJSON(t, ct, args...)
 		require.NoError(t, err)
 		assert.True(t, p.Valid, "%+v", p.Findings)
-		assert.Equal(t, wantRequests, ct.n, "%v: parity and immutable manifest batches", args)
+		assert.Equal(t, wantRequests, ct.Count(), "%v: parity and immutable manifest batches", args)
 	}
 }
 
@@ -3597,7 +3083,7 @@ func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 	// Anonymous REST calls use http.DefaultClient.
-	ct := &countingTransport{inner: reg}
+	ct := &httpmock.CountingTransport{Next: reg}
 	orig := http.DefaultTransport
 	http.DefaultTransport = ct
 	t.Cleanup(func() { http.DefaultTransport = orig })
@@ -3612,38 +3098,15 @@ func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/git/ref/tags/v5$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v5", parityTestSHA)))
 	path := writeParityFixture(t)
 
-	p, err := runParity(t, ct, path)
+	p, err := runCheckJSON(t, ct, path)
 	require.NoError(t, err)
 	assert.True(t, p.Valid, "%+v", p.Findings)
-	assert.Equal(t, 5, ct.n, "2 repos + 3 pins: %v", ct.urls)
-}
-
-// countingTransport counts every request, matched or not.
-type countingTransport struct {
-	inner http.RoundTripper
-	n     int
-	urls  []string
-}
-
-func (c *countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	c.n++
-	c.urls = append(c.urls, req.URL.Path)
-	return c.inner.RoundTrip(req)
+	assert.Equal(t, 5, ct.Count(), "2 repos + 3 pins: %v", ct.Paths())
 }
 
 func writeParityFixture(t *testing.T) string {
 	t.Helper()
-	return writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4.2.1
-      - uses: actions/setup-go@v5
-`,
+	return writeTempWorkflow(t, workflowUsing("actions/checkout@v4", "actions/checkout@v4.2.1", "actions/setup-go@v5"),
 		"actions/checkout@v4=sha1-"+parityTestSHA,
 		"actions/checkout@v4.2.1=sha1-"+parityTestSHA,
 		"actions/setup-go@v5=sha1-"+parityTestSHA,
@@ -3656,16 +3119,16 @@ jobs:
 func TestParity_FirstRunTransferRewrites(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(502427408))
+	reg.Register(httpmock.ParityQuery, transferParity(502427408))
 	registerTransferResolve(reg, 502427408)
 	path := writeTempWorkflow(t, transferWorkflow)
 
-	ct := &countingTransport{inner: reg}
+	ct := &httpmock.CountingTransport{Next: reg}
 	_, stderr, err := runCommandWithHTTP(t, ct, path)
 	require.NoError(t, err, stderr)
 	assertTransferRewritten(t, path, stderr)
 	assert.NotContains(t, stderr, "rewrite it as")
-	assert.Equal(t, 2, countGraphQL(ct), "one resolve + one parity request: %v", ct.urls)
+	assert.Equal(t, 2, ct.CountMatching(httpmock.GraphQL("")), "one resolve + one parity request: %v", ct.Paths())
 	assert.Contains(t, readTempLockfilePins(t), "repo_id: 502427408")
 }
 
@@ -3676,28 +3139,20 @@ func TestParity_FirstRunTransferRewrites(t *testing.T) {
 func TestParity_RemoteCompositeRenameKeepsName(t *testing.T) {
 	reg := &httpmock.Registry{}
 	reg.Register(httpmock.GraphQLForRepo("acme", "comp"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("acme/comp", parityTestMoved,
+		"data": map[string]any{"a0": httpmock.RepoResponse("acme/comp", parityTestMoved,
 			"runs:\n  using: composite\n  steps:\n    - uses: krzema12/github-actions-typing@v2.2.2\n")},
 	}))
 	reg.Register(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("typesafegithub/github-actions-typing", parityTestSHA, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("typesafegithub/github-actions-typing", parityTestSHA, httpmock.NodeActionYAML)},
 	}))
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), renamedParity)
+	reg.Register(httpmock.ParityQuery, renamedParity)
 	reg.Register(httpmock.REST("GET", `^/repos/acme/comp$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "acme/comp", "id": 3, "owner": map[string]any{"id": 4},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
 	}))
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: acme/comp@v1.0.0
-`)
+	path := writeTempWorkflow(t, workflowUsing("acme/comp@v1.0.0"))
 
 	_, stderr, err := runCommandWithHTTP(t, reg, path)
 	require.NoError(t, err, stderr)
@@ -3706,13 +3161,13 @@ jobs:
 	assert.Contains(t, lock, "'krzema12/github-actions-typing@v2.2.2':")
 	assert.NotContains(t, lock, "typesafegithub")
 
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), renamedParity)
+	reg.Register(httpmock.ParityQuery, renamedParity)
 	reg.Register(httpmock.GraphQLForRepo("acme", "comp"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("acme/comp", parityTestMoved,
+		"data": map[string]any{"a0": httpmock.RepoResponse("acme/comp", parityTestMoved,
 			"runs:\n  using: composite\n  steps:\n    - uses: krzema12/github-actions-typing@v2.2.2\n")},
 	}))
 	reg.Register(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("typesafegithub/github-actions-typing", parityTestSHA, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("typesafegithub/github-actions-typing", parityTestSHA, httpmock.NodeActionYAML)},
 	}))
 	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
 	require.NoError(t, err, stderr)
@@ -3724,19 +3179,11 @@ jobs:
 func TestParity_FirstRunInconclusiveNotWritten(t *testing.T) {
 	reg := &httpmock.Registry{}
 	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", parityTestSHA, httpmock.NodeActionYAML)},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/tags`),
 		httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", parityTestSHA)))
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`)
+	path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.1"))
 
 	_, stderr, err := runCommandWithHTTP(t, parityDown{reg}, path)
 	require.ErrorIs(t, err, errSilent)
@@ -3749,20 +3196,12 @@ jobs:
 func TestParity_FirstRunMixedCaseRefChecked(t *testing.T) {
 	reg := &httpmock.Registry{}
 	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", parityTestSHA, httpmock.NodeActionYAML)},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 2},
 	}))
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@Release
-`)
+	path := writeTempWorkflow(t, workflowUsing("actions/checkout@Release"))
 
 	_, stderr, err := runCommandWithHTTP(t, parityDown{reg}, "--no-narrow", path)
 	require.ErrorIs(t, err, errSilent)
@@ -3775,18 +3214,10 @@ jobs:
 func TestParity_VerifyHintNamesVerify(t *testing.T) {
 	reg := &httpmock.Registry{}
 	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", parityTestSHA, httpmock.NodeActionYAML)},
 	}))
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOK)
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-`)
+	reg.Register(httpmock.ParityQuery, httpmock.ParityIntact)
+	path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4"))
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
 	require.ErrorIs(t, err, errSilent)
@@ -3797,20 +3228,10 @@ jobs:
 type parityDown struct{ inner http.RoundTripper }
 
 func (p parityDown) RoundTrip(req *http.Request) (*http.Response, error) {
-	if httpmock.GraphQL(`commit: object\(oid`)(req) {
+	if httpmock.ParityQuery(req) {
 		return httpmock.StatusResponse(http.StatusBadGateway)(req)
 	}
 	return p.inner.RoundTrip(req)
-}
-
-func countGraphQL(ct *countingTransport) int {
-	n := 0
-	for _, u := range ct.urls {
-		if u == "/graphql" {
-			n++
-		}
-	}
-	return n
 }
 
 // TestParity_FirstRunRequestCount: generation adds exactly one GraphQL
@@ -3818,29 +3239,21 @@ func countGraphQL(ct *countingTransport) int {
 func TestParity_FirstRunRequestCount(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
-	registerParity(reg)
+	reg.Register(httpmock.ParityQuery, httpmock.ParityIntact)
 	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", parityTestSHA, httpmock.NodeActionYAML)},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/tags`),
 		httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", parityTestSHA)))
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`)
+	path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.1"))
 
-	ct := &countingTransport{inner: reg}
+	ct := &httpmock.CountingTransport{Next: reg}
 	_, _, err := runCommandWithHTTP(t, ct, path)
 	require.NoError(t, err)
-	assert.Equal(t, 2, countGraphQL(ct), "resolve + parity: %v", ct.urls)
+	assert.Equal(t, 2, ct.CountMatching(httpmock.GraphQL("")), "resolve + parity: %v", ct.Paths())
 	assert.Contains(t, readTempLockfilePins(t), "actions/checkout@v4.2.1")
 }
 
@@ -3872,15 +3285,7 @@ func TestParity_DependabotProxyInconclusiveAborts(t *testing.T) {
 				reg := &httpmock.Registry{}
 				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), tc.resp)
 				useDefaultTransport(t, reg)
-				path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+				path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.1"), "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 				lockBefore := readTempLockfilePins(t)
 				wfBefore, err := os.ReadFile(path)
 				require.NoError(t, err)
@@ -3904,15 +3309,7 @@ jobs:
 func TestParity_InconclusiveBlocksWithoutProxy(t *testing.T) {
 	reg := &httpmock.Registry{}
 	registerNodeManifests(reg)
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.1
-`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+	path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4.2.1"), "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 
 	_, stderr, err := runCommandWithHTTP(t, parityDown{reg}, "--verify", path)
 	require.ErrorIs(t, err, errSilent, stderr)
@@ -3937,7 +3334,7 @@ func TestParity_DependabotProxyKeepsRenamedName(t *testing.T) {
 
 	stdout, stderr, err := runCommandWithHTTP(t, reg, "--no-onboard", "--no-narrow", "--no-interactive", "--json=findings", path)
 	require.NoError(t, err, stderr)
-	var p parityPayload
+	var p checkResult
 	require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout)
 	var renamed bool
 	for _, f := range p.Findings {
@@ -3965,7 +3362,7 @@ func TestParity_DependabotProxyFirstRunKeepsRenamedName(t *testing.T) {
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/commits/v2\.2\.2$`), commit)
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/git/ref/tags/v2\.2\.2$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2.2.2", parityTestSHA)))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/contents/action\.yml$`),
-		httpmock.JSONResponse(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML))}))
+		httpmock.JSONResponse(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(httpmock.NodeActionYAML))}))
 	useDefaultTransport(t, reg)
 	path := writeTempWorkflow(t, transferWorkflow)
 
@@ -4025,15 +3422,7 @@ func TestParity_VerifyMutableRefHistory(t *testing.T) {
 				if tt.want == "" {
 					registerLockedCheckoutManifest(reg, proxy)
 				}
-				path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-`, "actions/checkout@v4=sha1-"+parityTestSHA)
+				path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4"), "actions/checkout@v4=sha1-"+parityTestSHA)
 
 				stdout, stderr, err := runCommandWithHTTP(t, reg, "--verify", "--json=valid,findings", path)
 				if proxy && tt.want == "reachability-unknown" {
@@ -4042,7 +3431,7 @@ jobs:
 					assert.Contains(t, err.Error(), "GitHub returned 503 Service Unavailable")
 					return
 				}
-				var p parityPayload
+				var p checkResult
 				require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout+stderr)
 				switch tt.want {
 				case "":
@@ -4088,15 +3477,7 @@ jobs:
 				}))
 			}
 			reg.Register(httpmock.REST("GET", compareURL), httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-`, "actions/checkout@v4=sha1-"+parityTestSHA)
+			path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4"), "actions/checkout@v4=sha1-"+parityTestSHA)
 
 			_, stderr, err := runCommandWithHTTP(t, reg, "--no-onboard", "--no-narrow", "--no-interactive", path)
 			require.NoError(t, err, stderr)
@@ -4142,19 +3523,11 @@ func TestParity_VerifyMissingMutableRefBlocks(t *testing.T) {
 					}))
 				}
 			}
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-`, "actions/checkout@v4=sha1-"+parityTestSHA)
+			path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4"), "actions/checkout@v4=sha1-"+parityTestSHA)
 
 			stdout, stderr, err := runCommandWithHTTP(t, reg, "--verify", "--json=valid,findings", path)
 			require.ErrorIs(t, err, errSilent, stderr)
-			var p parityPayload
+			var p checkResult
 			require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout+stderr)
 			require.Len(t, p.Findings, 1)
 			assert.Equal(t, "unreachable-pin", p.Findings[0].Category)
@@ -4211,18 +3584,10 @@ func TestParity_DefaultAndNoFixCheckMutableHistory(t *testing.T) {
 						reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+live), tt.compare)
 					}
 				}
-				path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-`, "actions/checkout@v4=sha1-"+parityTestSHA)
+				path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4"), "actions/checkout@v4=sha1-"+parityTestSHA)
 				lockBefore := readTempLockfilePins(t)
 
-				p, err := runParity(t, reg, append(args, path)...)
+				p, err := runCheckJSON(t, reg, append(args, path)...)
 				require.ErrorIs(t, err, errSilent)
 				require.Len(t, p.Findings, 1, "%+v", p.Findings)
 				assert.Equal(t, tt.want, p.Findings[0].Category)
@@ -4267,16 +3632,7 @@ func TestParity_VerifyRefCaseSensitive(t *testing.T) {
 					return httpmock.JSONResponse(map[string]any{"data": map[string]any{"a0": repo, "a1": repo}})(req)
 				})
 			}
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@Main
-      - uses: actions/checkout@main
-`, "actions/checkout@Main=sha1-"+parityTestSHA, "actions/checkout@main=sha1-"+parityTestSHA)
+			path := writeTempWorkflow(t, workflowUsing("actions/checkout@Main", "actions/checkout@main"), "actions/checkout@Main=sha1-"+parityTestSHA, "actions/checkout@main=sha1-"+parityTestSHA)
 
 			for range 2 {
 				registerLockedCheckoutManifest(reg, proxy)
@@ -4322,15 +3678,7 @@ func TestParity_CancelDuringAncestryAborts(t *testing.T) {
 					return nil, ctx.Err()
 				})
 			}
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-`, "actions/checkout@v4=sha1-"+parityTestSHA)
+			path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4"), "actions/checkout@v4=sha1-"+parityTestSHA)
 			lockBefore := readTempLockfilePins(t)
 
 			_, stderr, err := runCommandWithHTTPContext(t, ctx, reg, "--verify", path)
@@ -4393,7 +3741,7 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 		for mode, args := range fullSHAModes {
 			t.Run(tt.name+"/"+mode, func(t *testing.T) {
 				reg := &httpmock.Registry{}
-				reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+				reg.Register(httpmock.ParityQuery, func(req *http.Request) (*http.Response, error) {
 					var body struct {
 						Variables map[string]any `json:"variables"`
 					}
@@ -4511,7 +3859,7 @@ func TestParity_NonBranchRefRefused(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					reg := &httpmock.Registry{}
 					// The parity stub goes first: the resolve stub matches any query for the repo.
-					reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+					reg.Register(httpmock.ParityQuery, func(req *http.Request) (*http.Response, error) {
 						var body struct {
 							Variables map[string]any `json:"variables"`
 						}
@@ -4527,7 +3875,7 @@ func TestParity_NonBranchRefRefused(t *testing.T) {
 						})(req)
 					})
 					reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-						"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+						"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", parityTestSHA, httpmock.NodeActionYAML)},
 					}))
 					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 						"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
@@ -4557,7 +3905,7 @@ jobs:
 						assert.NotErrorIs(t, err, errSilent, "an invalid lockfile exits 2")
 						assert.Contains(t, err.Error(), "actions/checkout@"+ref)
 					} else {
-						p, err := runParity(t, reg, append(cmdArgs, path)...)
+						p, err := runCheckJSON(t, reg, append(cmdArgs, path)...)
 						require.ErrorIs(t, err, errSilent)
 						var unreachable []string
 						for _, f := range p.Findings {
@@ -4603,7 +3951,7 @@ func TestParity_RevisionSyntaxRefRefused(t *testing.T) {
 				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
 			}
 			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.yml$`), func(req *http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(nodeActionYAML)), Request: req}, nil
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(httpmock.NodeActionYAML)), Request: req}, nil
 			})
 			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/`), func(req *http.Request) (*http.Response, error) {
 				t.Errorf("a refused name must not be looked up: %s", req.URL.Path)
@@ -4632,7 +3980,7 @@ func testRefusedRefName(t *testing.T, ref string) {
 	reg := &httpmock.Registry{}
 	// One run for --json, one for the terminal.
 	for range 2 {
-		reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		reg.Register(httpmock.ParityQuery, func(req *http.Request) (*http.Response, error) {
 			var body struct {
 				Variables map[string]any `json:"variables"`
 			}
@@ -4648,7 +3996,7 @@ func testRefusedRefName(t *testing.T, ref string) {
 			})(req)
 		})
 		reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+			"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", parityTestSHA, httpmock.NodeActionYAML)},
 		}))
 		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 			"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
@@ -4664,7 +4012,7 @@ jobs:
       - uses: actions/checkout@`+ref+`
 `)
 
-	p, err := runParity(t, reg, "--no-narrow", "--no-interactive", path)
+	p, err := runCheckJSON(t, reg, "--no-narrow", "--no-interactive", path)
 	require.ErrorIs(t, err, errSilent)
 	var unreachable []string
 	for _, f := range p.Findings {
@@ -4692,7 +4040,7 @@ jobs:
 func TestParity_RelockKeepsFreshPinFailures(t *testing.T) {
 	reg := &httpmock.Registry{}
 	// The parity stub goes first: the resolve stub matches any query for the repo.
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+	reg.Register(httpmock.ParityQuery, httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": map[string]any{
 			"nameWithOwner": "actions/checkout",
 			"databaseId":    1,
@@ -4702,7 +4050,7 @@ func TestParity_RelockKeepsFreshPinFailures(t *testing.T) {
 		}},
 	}))
 	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", parityTestSHA, httpmock.NodeActionYAML)},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
@@ -4710,17 +4058,9 @@ func TestParity_RelockKeepsFreshPinFailures(t *testing.T) {
 	reg.Register(httpmock.REST("GET", `compare/`), httpmock.JSONResponse(map[string]any{
 		"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"},
 	}))
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v1.0.0
-`)
+	path := writeTempWorkflow(t, workflowUsing("actions/checkout@v1.0.0"))
 
-	p, err := runParity(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
+	p, err := runCheckJSON(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
 	require.ErrorIs(t, err, errSilent)
 	var categories []string
 	for _, f := range p.Findings {
@@ -4749,7 +4089,7 @@ func testAcceptMovedGoneRef(t *testing.T, status string) {
 	reg := &httpmock.Registry{}
 	// Every pin check finds the commit; no recorded ref resolves.
 	for range 4 {
-		reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		reg.Register(httpmock.ParityQuery, func(req *http.Request) (*http.Response, error) {
 			var body struct {
 				Variables map[string]any `json:"variables"`
 			}
@@ -4770,7 +4110,7 @@ func testAcceptMovedGoneRef(t *testing.T, status string) {
 	}
 	for range 4 {
 		reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+			"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", parityTestSHA, httpmock.NodeActionYAML)},
 		}))
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
 			httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
@@ -4787,7 +4127,7 @@ func testAcceptMovedGoneRef(t *testing.T, status string) {
 
 	lockBefore := readTempLockfilePins(t)
 
-	p, err := runParity(t, reg, "--accept-moved", "--no-interactive", path)
+	p, err := runCheckJSON(t, reg, "--accept-moved", "--no-interactive", path)
 	lock := readTempLockfilePins(t)
 	if status == "diverged" {
 		require.ErrorIs(t, err, errSilent)
@@ -4817,7 +4157,7 @@ func TestParity_FullSHAKeyTitleMatchesCause(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
-			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+			reg.Register(httpmock.ParityQuery, httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
 					"nameWithOwner": "actions/checkout",
 					"databaseId":    1,
@@ -4847,7 +4187,7 @@ func TestParity_FullSHAKeyTitleMatchesCause(t *testing.T) {
 func TestParity_FullSHAKeyMovedTagWarns(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+	reg.Register(httpmock.ParityQuery, httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": map[string]any{
 			"nameWithOwner": "actions/checkout",
 			"databaseId":    1,
@@ -4875,7 +4215,7 @@ func TestParity_AcceptMovedKeepsTransitiveFullSHAPinBlocking(t *testing.T) {
 	const parentSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@" + parityTestSHA + "\n"
 	reg := &httpmock.Registry{}
-	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+	reg.RegisterReusable(httpmock.ParityQuery, func(req *http.Request) (*http.Response, error) {
 		var body struct {
 			Variables map[string]any `json:"variables"`
 		}
@@ -4899,20 +4239,12 @@ func TestParity_AcceptMovedKeepsTransitiveFullSHAPinBlocking(t *testing.T) {
 		return httpmock.JSONResponse(map[string]any{"data": data})(req)
 	})
 	reg.RegisterReusable(httpmock.GraphQLForRepo("octo", "composite"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("octo/composite", parentSHA, composite)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("octo/composite", parentSHA, composite)},
 	}))
 	reg.RegisterReusable(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+		"data": map[string]any{"a0": httpmock.RepoResponse("actions/checkout", parityTestSHA, httpmock.NodeActionYAML)},
 	}))
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: octo/composite@v1
-`)
+	path := writeTempWorkflow(t, workflowUsing("octo/composite@v1"))
 	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
 		"  'octo/composite@v1':\n    ref: 'v1'\n    commit: 'sha1-" + parentSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
 		"    uses:\n      - 'actions/checkout@" + parityTestSHA + "'\n" +
@@ -4967,7 +4299,7 @@ func assertFullSHARun(t *testing.T, reg *httpmock.Registry, args []string, path,
 	wfBefore, err := os.ReadFile(path)
 	require.NoError(t, err)
 	stdout, stderr, err := runCommandWithHTTP(t, reg, append(args, "--no-interactive", "--json=valid,findings", path)...)
-	var p parityPayload
+	var p checkResult
 	require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout+stderr)
 	var blocking []format.Finding
 	for _, f := range p.Findings {
@@ -4993,17 +4325,13 @@ func assertFullSHARun(t *testing.T, reg *httpmock.Registry, args []string, path,
 	assert.Equal(t, lockBefore, readTempLockfilePins(t), "a blocked pin must not reach the lockfile")
 }
 
-type proximaTransport func(*http.Request) (*http.Response, error)
-
-func (f proximaTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
-
 const tenantSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 const publicSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-func proximaFixture(t *testing.T, publicStatus int) http.RoundTripper {
+func tenantHostFixture(t *testing.T, publicStatus int) http.RoundTripper {
 	t.Helper()
-	return proximaTransport(func(req *http.Request) (*http.Response, error) {
+	return httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		tenant := req.URL.Host == "api.tenant.ghe.com"
 		if tenant {
 			assert.NotEmpty(t, req.Header.Get("Authorization"))
@@ -5038,7 +4366,7 @@ func proximaFixture(t *testing.T, publicStatus int) http.RoundTripper {
 			assert.Equal(t, "internal", body.Variables["name0"])
 			composite := "runs:\n  using: composite\n  steps:\n    - uses: actions/public@v2\n"
 			return httpmock.JSONResponse(map[string]any{"data": map[string]any{
-				"a0": testRepoResponse("tenant/internal", tenantSHA, composite),
+				"a0": httpmock.RepoResponse("tenant/internal", tenantSHA, composite),
 			}})(req)
 		case !tenant && (path == "/repos/actions/public/commits/v2" || path == "/repos/actions/public/commits/"+publicSHA):
 			return httpmock.JSONResponse(map[string]any{"sha": publicSHA})(req)
@@ -5046,7 +4374,7 @@ func proximaFixture(t *testing.T, publicStatus int) http.RoundTripper {
 			return httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2", publicSHA))(req)
 		case !tenant && path == "/repos/actions/public/contents/action.yml":
 			assert.Equal(t, publicSHA, req.URL.Query().Get("ref"))
-			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(nodeActionYAML)), Request: req}, nil
+			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(httpmock.NodeActionYAML)), Request: req}, nil
 		case strings.HasSuffix(path, "/releases"):
 			return httpmock.JSONResponse([]any{})(req)
 		}
@@ -5054,19 +4382,10 @@ func proximaFixture(t *testing.T, publicStatus int) http.RoundTripper {
 	})
 }
 
-func TestProximaGenerationPreservesHosts(t *testing.T) {
-	path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: tenant/internal@v1
-      - uses: actions/public@v2
-`)
+func TestTenantHostGenerationPreservesHosts(t *testing.T) {
+	path := writeTempWorkflow(t, workflowUsing("tenant/internal@v1", "actions/public@v2"))
 	args := []string{"--hostname", "tenant.ghe.com", "--no-interactive", "--no-narrow", "--no-migrate-local-actions", "--json", path}
-	_, _, err := runCommandWithHTTP(t, proximaFixture(t, 200), args...)
+	_, _, err := runCommandWithHTTP(t, tenantHostFixture(t, 200), args...)
 	require.NoError(t, err)
 	raw := readTempLockfilePins(t)
 	file, err := parserlock.Parse([]byte(raw))
@@ -5085,12 +4404,12 @@ jobs:
 	assert.EqualValues(t, 22, public.OwnerID)
 	assert.EqualValues(t, 222, public.RepoID)
 
-	_, _, err = runCommandWithHTTP(t, proximaFixture(t, 200), args...)
+	_, _, err = runCommandWithHTTP(t, tenantHostFixture(t, 200), args...)
 	require.NoError(t, err)
 	assert.Equal(t, raw, readTempLockfilePins(t), "repeat generation must retain hosts and IDs")
 
-	base := proximaFixture(t, 200)
-	pinnedTransport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+	base := tenantHostFixture(t, 200)
+	pinnedTransport := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		assert.False(t, req.URL.Host == "api.tenant.ghe.com" && req.URL.Path == "/repos/actions/public",
 			"recorded dotcom pins must bypass tenant namesakes")
 		return base.RoundTrip(req)
@@ -5104,28 +4423,20 @@ jobs:
 	explicit := strings.Replace(raw, "'tenant/internal@v1':\n", "'tenant/internal@v1':\n        hostname: 'tenant.ghe.com'\n", 1)
 	require.NotEqual(t, raw, explicit)
 	require.NoError(t, os.WriteFile(parserlock.Path, []byte(explicit), 0o600))
-	_, _, err = runCommandWithHTTP(t, proximaFixture(t, 200), args...)
+	_, _, err = runCommandWithHTTP(t, tenantHostFixture(t, 200), args...)
 	require.NoError(t, err)
 	assert.Equal(t, raw, readTempLockfilePins(t))
 }
 
-func TestProximaOmittedPinsCannotMoveToDotcomOrTenantNamesakes(t *testing.T) {
+func TestTenantHostOmittedPinsCannotMoveToDotcomOrTenantNamesakes(t *testing.T) {
 	for _, status := range []int{200, 401, 403, 404, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/public@v2
-`, "actions/public@v2=sha1-"+publicSHA)
+			path := writeTempWorkflow(t, workflowUsing("actions/public@v2"), "actions/public@v2=sha1-"+publicSHA)
 			raw := readTempLockfilePins(t)
 			raw = strings.ReplaceAll(raw, "owner_id: 1", "owner_id: 22")
 			raw = strings.ReplaceAll(raw, "repo_id: 1", "repo_id: 222")
 			require.NoError(t, os.WriteFile(parserlock.Path, []byte(raw), 0o600))
-			transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+			transport := httpmock.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 				assert.Equal(t, "api.tenant.ghe.com", req.URL.Host, "omitted pins must not fall back to dotcom")
 				assert.NotEmpty(t, req.Header.Get("Authorization"))
 				if req.URL.Path == "/graphql" {
@@ -5180,21 +4491,13 @@ func parityRepoID(req *http.Request, status int, repoID int) (*http.Response, er
 	}}})(req)
 }
 
-func TestProximaIncompleteGenerationDoesNotWrite(t *testing.T) {
+func TestTenantHostIncompleteGenerationDoesNotWrite(t *testing.T) {
 	for _, status := range []int{404, 403, 429, 500} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: tenant/internal@v1
-`)
+			path := writeTempWorkflow(t, workflowUsing("tenant/internal@v1"))
 			before, err := os.ReadFile(path)
 			require.NoError(t, err)
-			stdout, _, err := runCommandWithHTTP(t, proximaFixture(t, status),
+			stdout, _, err := runCommandWithHTTP(t, tenantHostFixture(t, status),
 				"--hostname", "tenant.ghe.com", "--no-narrow", "--no-migrate-local-actions", "--json", path)
 			require.ErrorIs(t, err, errSilent)
 			var result struct {
@@ -5211,25 +4514,17 @@ jobs:
 	}
 }
 
-func TestProximaLegacyPinsRequireDotcomIdentity(t *testing.T) {
+func TestTenantHostLegacyPinsRequireDotcomIdentity(t *testing.T) {
 	for _, matches := range []bool{true, false} {
 		t.Run(fmt.Sprintf("matching IDs=%v", matches), func(t *testing.T) {
-			path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/public@v2
-`, "actions/public@v2=sha1-"+publicSHA)
+			path := writeTempWorkflow(t, workflowUsing("actions/public@v2"), "actions/public@v2=sha1-"+publicSHA)
 			raw := strings.ReplaceAll(readTempLockfilePins(t), "v0.0.3", "v0.0.2")
 			if matches {
 				raw = strings.ReplaceAll(raw, "owner_id: 1", "owner_id: 22")
 				raw = strings.ReplaceAll(raw, "repo_id: 1", "repo_id: 222")
 			}
 			require.NoError(t, os.WriteFile(parserlock.Path, []byte(raw), 0o600))
-			stdout, _, err := runCommandWithHTTP(t, proximaFixture(t, 200),
+			stdout, _, err := runCommandWithHTTP(t, tenantHostFixture(t, 200),
 				"--hostname", "tenant.ghe.com", "--no-narrow", "--no-migrate-local-actions", "--json", path)
 			if matches {
 				require.NoError(t, err)
@@ -5278,9 +4573,9 @@ func TestCheckCommand_JSONGolden(t *testing.T) {
 		httpmock.GraphQLForRepo("actions", "checkout"),
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
-				"a0": testRepoResponse("actions/checkout", checkoutSHA, nodeActionYAML),
-				"a1": testRepoResponse("actions/setup-go", setupGoSHA, compositeYAML),
-				"a2": testRepoResponse("actions/cache", cacheSHA, nodeActionYAML),
+				"a0": httpmock.RepoResponse("actions/checkout", checkoutSHA, httpmock.NodeActionYAML),
+				"a1": httpmock.RepoResponse("actions/setup-go", setupGoSHA, compositeYAML),
+				"a2": httpmock.RepoResponse("actions/cache", cacheSHA, httpmock.NodeActionYAML),
 			},
 		}),
 	)
@@ -5292,8 +4587,8 @@ func TestCheckCommand_JSONGolden(t *testing.T) {
 		httpmock.GraphQLForRepo("actions", "cache"),
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
-				"a0": testRepoResponse("actions/cache", cacheSHA, nodeActionYAML),
-				"a1": testRepoResponse("helper/only-transitive", helperSHA, nodeActionYAML),
+				"a0": httpmock.RepoResponse("actions/cache", cacheSHA, httpmock.NodeActionYAML),
+				"a1": httpmock.RepoResponse("helper/only-transitive", helperSHA, httpmock.NodeActionYAML),
 			},
 		}),
 	)

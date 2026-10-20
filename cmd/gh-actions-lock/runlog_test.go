@@ -168,7 +168,7 @@ func TestCheck_FailedRunLogsRejectedWorkflow(t *testing.T) {
 		httpmock.GraphQLForRepo("pypa", "gh-action-pypi-publish"),
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
-				"a0": testRepoResponse("pypa/gh-action-pypi-publish", "76f52bc884231f62b9a034ebfe128415bbaabdfc", compositeYAML),
+				"a0": httpmock.RepoResponse("pypa/gh-action-pypi-publish", "76f52bc884231f62b9a034ebfe128415bbaabdfc", compositeYAML),
 			},
 		}),
 	)
@@ -261,15 +261,7 @@ jobs:
 		}))
 		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4$`), httpmock.StatusResponse(http.StatusServiceUnavailable))
 		useDefaultTransport(t, reg)
-		path := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-`, "actions/checkout@v4=sha1-"+parityTestSHA)
+		path := writeTempWorkflow(t, workflowUsing("actions/checkout@v4"), "actions/checkout@v4=sha1-"+parityTestSHA)
 
 		_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", path)
 		require.Error(t, err)
@@ -286,23 +278,8 @@ jobs:
 	t.Run("successful run logs success without printing the path", func(t *testing.T) {
 		logDir := isolateRunLogs(t)
 		reg := &httpmock.Registry{}
-		reg.Register(
-			httpmock.GraphQLForRepo("actions", "checkout"),
-			httpmock.JSONResponse(map[string]any{
-				"data": map[string]any{
-					"a0": testRepoResponse("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd", nodeActionYAML),
-				},
-			}),
-		)
-		workflowPath := writeTempWorkflow(t, `
-name: ci
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-`, "actions/checkout@v6=sha1-de0fac2e4500dabe0009e67214ff5f5447ce83dd")
+		reg.StubRepo("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd")
+		workflowPath := writeTempWorkflow(t, workflowUsing("actions/checkout@v6"), "actions/checkout@v6=sha1-de0fac2e4500dabe0009e67214ff5f5447ce83dd")
 
 		_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", workflowPath)
 		require.NoError(t, err)
