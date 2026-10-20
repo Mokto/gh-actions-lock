@@ -19,10 +19,10 @@ type paritySubject struct {
 	pin parserlock.Pin
 	// fresh marks a pin resolved in this run: it is what the run would write.
 	fresh bool
-	// pruned marks a recorded entry that the workflow's findings already
-	// make planning drop and re-resolve (checks.PrunesDependency), so what
-	// the run writes for it is not the recorded commit.
-	pruned bool
+	// away marks a recorded entry planning provably replaces or removes
+	// (see plannedAway in parity.go), so what the run writes for it is not
+	// the recorded commit.
+	away bool
 	// heldBy is the composite that keeps the entry as recorded even when
 	// --accept-moved re-resolves the workflow's use (see heldBy in
 	// parity.go); "" when that repairs it.
@@ -39,8 +39,9 @@ type paritySubject struct {
 // pin's state means.
 //
 // Planning writes every recorded entry back verbatim unless a finding
-// prunes it, so --relock excuses a recorded entry's findings only when the
-// entry is pruned. Even then only what re-resolving can't fix matters:
+// prunes the workflow's use of it, and even then a composite's recorded
+// edge can keep it, so --relock excuses a recorded entry's findings only
+// when planning provably replaces or removes it. Even then only what re-resolving can't fix matters:
 // repository identity, a full-SHA key's commit, which no relock moves, and
 // a ref that is not a tag or branch, which resolution would still accept by
 // rev-parse rules. Any other entry is judged as on a plain run: that
@@ -70,7 +71,7 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 		f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
 		return true
 	}
-	excused := m.relock && s.pruned
+	excused := m.relock && s.away
 	// A history check fails closed: the commit is otherwise unproven.
 	if s.inconclusive && s.head != "" && (!excused || fullSHA) {
 		f.Severity = checks.SeverityError

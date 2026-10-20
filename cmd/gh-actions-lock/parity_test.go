@@ -2174,6 +2174,161 @@ jobs:
 	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 }
 
+// TestParity_RelockKeepsStaleSharedChildBlocking: checkout@v4 was a direct
+// pin and also a composite's child. The workflow dropped the direct use, so
+// its stale finding prunes the direct entry, but the composite's recorded
+// edge keeps the entry in the lock. Its inconclusive history check must
+// still block.
+func TestParity_RelockKeepsStaleSharedChildBlocking(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	const liveRoot = "ffffffffffffffffffffffffffffffffffffffff"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			head := liveRoot
+			if nwo == "actions/checkout" {
+				head = parityTestMoved
+			}
+			data["a"+i] = map[string]any{"nameWithOwner": nwo, "databaseId": 1, "commit": map[string]any{"oid": v},
+				"tag": map[string]any{"oid": head}, "tagRef": map[string]any{"oid": head}}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQLForRepo("octo", "root"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("octo/root", liveRoot, nodeActionYAML)},
+	}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": rootSHA}}))
+	rt := reposDown{reg, []string{"actions/checkout"}}
+	useDefaultTransport(t, rt)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/root@v1
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@v4'\n" +
+		"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n    - 'actions/checkout@v4'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, rt, "--relock", "--no-narrow", "--no-interactive", path)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
+	assert.Contains(t, stderr, "could not check v4 history")
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
+// TestParity_RelockKeepsDifferentlyCasedChildBlocking: the workflow uses
+// actions/checkout@Release and a composite uses actions/checkout@release,
+// both locked at one commit. Release moved cleanly, which prunes it and,
+// since planning folds ref case, a key that also matches release. But only
+// the workflow's Release is re-resolved; the composite's release stays as
+// recorded, so its inconclusive history check must still block.
+func TestParity_RelockKeepsDifferentlyCasedChildBlocking(t *testing.T) {
+	const (
+		rootSHA     = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		releaseHead = "cccccccccccccccccccccccccccccccccccccccc"
+	)
+	root := "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@release\n"
+	heads := map[string]string{"Release": parityTestMoved, "release": releaseHead}
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			head := v
+			if ref, _ := body.Variables["tagRef"+i].(string); nwo == "actions/checkout" {
+				head = heads[strings.TrimPrefix(ref, "refs/tags/")]
+			}
+			data["a"+i] = map[string]any{"nameWithOwner": nwo, "databaseId": 1, "commit": map[string]any{"oid": v},
+				"tag": map[string]any{"oid": head}, "tagRef": map[string]any{"oid": head}}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "owner")
+			if !ok {
+				continue
+			}
+			nwo := v.(string) + "/" + body.Variables["name"+i].(string)
+			expr, _ := body.Variables["expr"+i].(string)
+			switch nwo {
+			case "octo/root":
+				data["a"+i] = testRepoResponse(nwo, rootSHA, root)
+			default:
+				data["a"+i] = testRepoResponse(nwo, heads[strings.TrimSuffix(expr, "^{commit}")], nodeActionYAML)
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
+		httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+releaseHead),
+		httpmock.StatusResponse(http.StatusServiceUnavailable))
+	for ref, head := range heads {
+		reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/`+ref+`$`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/"+ref, head)))
+	}
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/root@v1
+      - uses: actions/checkout@Release
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'actions/checkout@Release':\n    ref: 'Release'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"  'actions/checkout@release':\n    ref: 'release'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@release'\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'actions/checkout@Release'\n    - 'octo/root@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
+	assert.Contains(t, stderr, "could not check release history")
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
 // reposDown fails every request about the given owner/repos except the
 // parity query, which reports the pins themselves.
 type reposDown struct {

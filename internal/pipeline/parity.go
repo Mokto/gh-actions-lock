@@ -96,10 +96,14 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		}
 		// Planning writes a recorded entry back verbatim unless one of
 		// these findings prunes it.
-		pruned := map[string]bool{}
+		effects := map[string]checks.PruneEffect{}
 		for _, f := range report.Workflows[ri].Findings {
 			if checks.PrunesDependency(f, mode.acceptMoved, mode.relock) {
-				pruned[checks.PruneKey(f.Dependency.NWO, f.Dependency.Ref, f.Dependency.SHA)] = true
+				k := checks.PruneKey(f.Dependency.NWO, f.Dependency.Ref, f.Dependency.SHA)
+				// A dropped use leaves the key behind: it wins.
+				if e := checks.PruneEffectOf(f, mode.acceptMoved, mode.relock); effects[k] != checks.Dropped {
+					effects[k] = e
+				}
 			}
 		}
 		closure := store.Closure(workflowfile.KeyFromPath(pw.Path), live)
@@ -111,7 +115,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 			k := lp.Pin.String()
 			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref,
-				pruned: pruned[checks.PruneKey(lp.Pin.NWO, lp.Pin.Ref, lockedSHA(lp.Action.Commit))],
+				away:   plannedAway(lp, edges[k], effects[checks.PruneKey(lp.Pin.NWO, lp.Pin.Ref, lockedSHA(lp.Action.Commit))]),
 				heldBy: heldBy(lp, edges[k]),
 			})
 		}
@@ -172,7 +176,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if !ok && mode.verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
 			}
-			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, pruned: o.pruned, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil}) {
+			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil}) {
 				continue
 			}
 			wr := &report.Workflows[o.report]
@@ -197,8 +201,9 @@ type parityOwner struct {
 	lp     lockfile.LockedPin
 	ref    parserlock.ActionRef
 	fresh  bool
-	// pruned marks a recorded entry planning re-resolves.
-	pruned bool
+	// away marks a recorded entry planning replaces or removes: see
+	// plannedAway.
+	away bool
 	// heldBy is the composite that keeps this entry as recorded when
 	// --accept-moved re-resolves the workflow's use: see heldBy.
 	heldBy string
