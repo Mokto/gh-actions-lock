@@ -31,13 +31,13 @@ type DirectTracker struct {
 func NewDirectTracker(refs []parserlock.ActionRef, deps []dep.Dependency) DirectTracker {
 	want := make(map[string]bool, len(refs))
 	for _, ref := range refs {
-		want[directKey(ref.NWO(), ref.Ref)] = true
+		want[directKey(ref.NWO(), ref.Ref.String())] = true
 	}
 	direct := make([]bool, len(deps))
 	for i, d := range deps {
 		direct[i] = want[directKey(d.NWO, d.Ref)]
 		for _, ref := range d.OriginalRefs {
-			direct[i] = direct[i] || want[directKey(ref.NWO(), ref.Ref)]
+			direct[i] = direct[i] || want[directKey(ref.NWO(), ref.Ref.String())]
 		}
 	}
 	return DirectTracker{direct: direct}

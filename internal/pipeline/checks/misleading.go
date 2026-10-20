@@ -18,25 +18,25 @@ import (
 func checkMisleadingSha(ctx context.Context, pw ParsedWorkflow, r CheckResolver) []Finding {
 	var out []Finding
 	for _, ref := range pw.Refs {
-		if !parserlock.IsFullSha(ref.Ref) {
+		if ref.Ref.Kind() != parserlock.RefKindCommit {
 			continue
 		}
-		sha, ok := r.ResolveRef(ref.Owner, ref.Repo, ref.Ref)
+		sha, ok := r.ResolveRef(ref.Owner, ref.Repo, ref.Ref.String())
 		if !ok || sha == "" {
 			continue
 		}
-		if strings.EqualFold(sha, ref.Ref) {
+		if strings.EqualFold(sha, ref.Ref.String()) {
 			continue
 		}
-		if peeled, ok := r.PeelTagObject(ctx, ref.Owner, ref.Repo, ref.Ref); ok && strings.EqualFold(peeled, sha) {
+		if peeled, ok := r.PeelTagObject(ctx, ref.Owner, ref.Repo, ref.Ref.String()); ok && strings.EqualFold(peeled, sha) {
 			continue
 		}
 		// Ref string is SHA-shaped, resolver returned a different commit,
 		// and PeelTagObject ruled out the legitimate tag-object shape.
 		f := newRefFinding(pw, ref, MisleadingSHA, SeverityError, ConfidenceHigh)
 		f.ObservedSHA = sha
-		f.Dependency = synthDep(ref, ref.Ref)
-		f.Detail = fmt.Sprintf("ref %s resolves to %s — the ref string looks like a SHA but isn't this commit", parserlock.ShortSHA(ref.Ref), parserlock.ShortSHA(sha))
+		f.Dependency = synthDep(ref, ref.Ref.String())
+		f.Detail = fmt.Sprintf("ref %s resolves to %s — the ref string looks like a SHA but isn't this commit", parserlock.ShortSHA(ref.Ref.String()), parserlock.ShortSHA(sha))
 		f.Remediation = "investigate — the ref may be a tag named after a SHA, not the SHA itself"
 		out = append(out, f)
 	}
@@ -62,7 +62,7 @@ func checkRefMovedAndForgery(ctx context.Context, pw ParsedWorkflow, depIndex ma
 
 	// Check direct refs from the workflow file.
 	for _, ref := range pw.Refs {
-		if parserlock.IsFullSha(ref.Ref) {
+		if ref.Ref.Kind() == parserlock.RefKindCommit {
 			continue
 		}
 		pin, ok := depIndex[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)]
@@ -84,7 +84,7 @@ func checkRefMovedAndForgery(ctx context.Context, pw ParsedWorkflow, depIndex ma
 		if !ok {
 			continue
 		}
-		if parserlock.IsFullSha(parsed.Ref) {
+		if parsed.Ref.Kind() == parserlock.RefKindCommit {
 			continue
 		}
 		ref := parserlock.ActionRef{
@@ -106,7 +106,7 @@ func checkOneRefMoved(ctx context.Context, pw ParsedWorkflow, ref parserlock.Act
 	if pin.Commit == "" {
 		return Finding{}, false
 	}
-	sha, ok := r.ResolveRef(ref.Owner, ref.Repo, ref.Ref)
+	sha, ok := r.ResolveRef(ref.Owner, ref.Repo, ref.Ref.String())
 	if !ok || sha == "" {
 		return Finding{}, false
 	}
@@ -122,7 +122,7 @@ func checkOneRefMoved(ctx context.Context, pw ParsedWorkflow, ref parserlock.Act
 		f.Category = UnreachablePin
 		f.Severity = SeverityError
 		f.Confidence = ConfidenceHigh
-		f.Detail = NotInHistoryDetail(pin.SHA(), ref.Owner+"/"+ref.Repo, ref.Ref, sha)
+		f.Detail = NotInHistoryDetail(pin.SHA(), ref.Owner+"/"+ref.Repo, ref.Ref.String(), sha)
 		f.Remediation = AcceptMovedRemediation
 	case resolve.AncestryUnknown:
 		f.Category = AncestryUnknown

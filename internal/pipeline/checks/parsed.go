@@ -65,7 +65,7 @@ func (pw ParsedWorkflow) PartitionRefs() (recorded, unrecorded []parserlock.Acti
 		}
 	}
 	for _, r := range pw.Refs {
-		if haveDep[strings.ToLower(r.Owner+"/"+r.Repo)+"@"+r.Ref] {
+		if haveDep[strings.ToLower(r.Owner+"/"+r.Repo)+"@"+r.Ref.String()] {
 			recorded = append(recorded, r)
 		} else {
 			unrecorded = append(unrecorded, r)
@@ -86,7 +86,7 @@ func (pw ParsedWorkflow) IsFullyRecorded() bool {
 func (pw ParsedWorkflow) RecordedDeps(recorded []parserlock.ActionRef) []dep.Dependency {
 	refKeys := make(map[string]bool, len(recorded))
 	for _, r := range recorded {
-		refKeys[strings.ToLower(r.Owner+"/"+r.Repo)+"@"+r.Ref] = true
+		refKeys[strings.ToLower(r.Owner+"/"+r.Repo)+"@"+r.Ref.String()] = true
 	}
 	var out []dep.Dependency
 	for _, d := range pw.ExistingDeps {

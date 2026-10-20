@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,14 +33,12 @@ func TestValidEntryRef(t *testing.T) {
 		{"qualified tag", entryRefSHA, "refs/tags/v6.1.0", false},
 		{"qualified branch", entryRefSHA, "refs/heads/main", false},
 		{"pull request ref", entryRefSHA, "refs/pull/1/head", false},
-		{"qualified ref on a matching key", "refs/heads/main", "refs/heads/main", false},
 		// Revision syntax would be evaluated, not looked up literally.
 		{"parent of a branch", entryRefSHA, "main~1", false},
 		{"parent of a tag", entryRefSHA, "v1^", false},
 		{"reflog entry", entryRefSHA, "v1@{1}", false},
 		{"range", entryRefSHA, "a..b", false},
 		{"path in a ref", entryRefSHA, "refs:x", false},
-		{"revision syntax on a matching key", "main~1", "main~1", false},
 		{"describe name", entryRefSHA, "v6.1.0-1-g373d742f768e", false},
 		{"describe name on a matching key", "v1-g1234", "v1-g1234", false},
 		{"three hex digits is a plain name", entryRefSHA, "v1-gabc", true},
@@ -47,8 +46,9 @@ func TestValidEntryRef(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pin := parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: tt.key}
-			assert.Equal(t, tt.want, ValidEntryRef(pin, tt.ref))
+			pin := parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: testref.Pin(tt.key)}
+			_, err := validEntryRef(pin, tt.ref)
+			assert.Equal(t, tt.want, err == nil, "err = %v", err)
 		})
 	}
 }

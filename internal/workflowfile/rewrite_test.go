@@ -3,6 +3,7 @@ package workflowfile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -234,4 +235,28 @@ func TestRewriteActionRefs_SubPathActions(t *testing.T) {
 	assert.Contains(t, out, "actions/cache/save@v5.0.5")
 	assert.Contains(t, out, "actions/cache@v5.0.5")
 	assert.Contains(t, out, "actions/checkout@v3")
+}
+
+// Rewrites are keyed by parsed refs, whose SHAs are lowercase; an uppercase
+// SHA in the source must still be rewritten in place.
+func TestRewriteActionRefs_UppercaseSHA(t *testing.T) {
+	const sha = "8e8c483db84b4bee98b60c0593521ed34d9990e8"
+	upper := strings.ToUpper(sha)
+	f, err := Parse("wf.yml", []byte("on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"+upper+"\n      - uses: actions/cache/save@"+upper+"\n"))
+	require.NoError(t, err)
+	replacements := map[string]string{
+		"actions/checkout@" + sha: "actions/checkout@v4.2.1",
+		"actions/cache@" + sha:    "actions/cache@v5.0.5",
+	}
+
+	out, changed, err := f.RewriteActionRefs(replacements)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, changed)
+	assert.Contains(t, string(out), "uses: actions/checkout@v4.2.1\n")
+	assert.Contains(t, string(out), "uses: actions/cache/save@v5.0.5\n")
+
+	matches, err := f.ValidateRequiredActionRefRewrites(map[string]string{"actions/checkout@" + sha: "actions/checkout@v4.2.1"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"actions/checkout@" + sha: 1}, matches)
 }

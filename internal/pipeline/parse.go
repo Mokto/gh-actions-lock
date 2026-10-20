@@ -124,7 +124,7 @@ func mergeActionRefs(groups ...[]parserlock.ActionRef) []parserlock.ActionRef {
 	var refs []parserlock.ActionRef
 	for _, group := range groups {
 		for _, ref := range group {
-			key := ref.FullName() + "@" + ref.Ref
+			key := ref.FullName() + "@" + ref.Ref.String()
 			if seen[key] {
 				continue
 			}
@@ -171,11 +171,11 @@ func collectResolvable(parsed []checks.ParsedWorkflow, excludeKeys map[string]bo
 	var refs []parserlock.ActionRef
 	for _, pw := range parsed {
 		for _, ref := range pw.Refs {
-			nwoRef := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref
+			nwoRef := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref.String()
 			if excludeKeys[nwoRef] {
 				continue
 			}
-			key := ghapi.ForActionRef(ref.Owner, ref.Repo, ref.Path, ref.Ref)
+			key := ghapi.ForActionRef(ref.Owner, ref.Repo, ref.Path, ref.Ref.String())
 			if seenRef[key] {
 				continue
 			}

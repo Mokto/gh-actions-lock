@@ -90,7 +90,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		recorded, _ := parsed[i].PartitionRefs()
 		seedDeps = append(seedDeps, parsed[i].RecordedDeps(recorded)...)
 		for _, rr := range recorded {
-			recordedKeys[strings.ToLower(rr.Owner+"/"+rr.Repo)+"@"+rr.Ref] = true
+			recordedKeys[strings.ToLower(rr.Owner+"/"+rr.Repo)+"@"+rr.Ref.String()] = true
 		}
 	}
 	if r != nil && len(seedDeps) > 0 {
@@ -159,13 +159,13 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		if opts.Relock {
 			keep = func(f *checks.Finding, p parserlock.Pin) bool {
 				c := f.Category
-				if opts.AcceptMoved && c == checks.UnreachablePin && parserlock.IsFullSha(p.Ref) && !f.RefMissing {
+				if opts.AcceptMoved && c == checks.UnreachablePin && p.Ref.Kind() == parserlock.RefKindCommit && !f.RefMissing {
 					f.Severity = checks.SeverityWarning
 					f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
 					return true
 				}
 				return c == checks.RepoRenamed || c == checks.RepoReplaced || c == checks.RepoUnavailable ||
-					c == checks.UnreachablePin && (!opts.AcceptMoved || parserlock.IsFullSha(p.Ref) || f.RefMissing)
+					c == checks.UnreachablePin && (!opts.AcceptMoved || p.Ref.Kind() == parserlock.RefKindCommit || f.RefMissing)
 			}
 		}
 		endParity := prof.Phase("  parity check")

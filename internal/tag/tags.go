@@ -303,8 +303,3 @@ func (tl *Lister) GetRepoInfo(ctx context.Context, owner, repo string) (*RepoInf
 	}
 	return res.(*RepoInfo), nil
 }
-
-// BranchHeadSHA returns the latest commit SHA on the given branch.
-func (tl *Lister) BranchHeadSHA(ctx context.Context, owner, repo, branch string) (string, error) {
-	return tl.client.CommitSHA(ctx, owner, repo, branch)
-}

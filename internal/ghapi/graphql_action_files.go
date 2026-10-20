@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/profile"
 )
 
@@ -17,7 +18,9 @@ type ActionFileRequest struct {
 	Owner string
 	Repo  string
 	Path  string // sub-action path within the repo, may be empty
-	Ref   string // tag, branch, or SHA
+	// Ref is looked up only as an exact commit or as refs/tags/<name> and
+	// refs/heads/<name>, never as raw rev-parse text.
+	Ref parserlock.PinRef
 }
 
 // NWO returns "Owner/Repo".
@@ -35,7 +38,7 @@ type ActionFileResult struct {
 	Repo        string
 	OriginalNWO string
 	Path        string
-	Ref         string
+	Ref         parserlock.PinRef
 	CommitOID   string
 	ActionYML   string
 	Err         error
@@ -223,9 +226,10 @@ func buildActionFileQuery(refs []ActionFileRequest) (string, map[string]any, map
 		vars[nameVar] = ref.Repo
 		// Peel through annotated tags with `^{commit}` so the
 		// `... on Commit` fragment matches for annotated tag refs.
-		expr := ref.Ref
-		if !fullCommitRef(ref.Ref) {
-			expr = "refs/tags/" + ref.Ref
+		name, isName := ref.Ref.Name()
+		expr := ref.Ref.String()
+		if isName {
+			expr = name.TagRef()
 		}
 		vars[exprVar] = expr + "^{commit}"
 		vars[ymlVar] = ymlPath
@@ -240,9 +244,9 @@ func buildActionFileQuery(refs []ActionFileRequest) (string, map[string]any, map
 		fmt.Fprintf(&body, " %s: repository(owner: $%s, name: $%s) {", alias, ownerVar, nameVar)
 		body.WriteString(" nameWithOwner")
 		objects := []struct{ alias, variable string }{{"object", exprVar}}
-		if !fullCommitRef(ref.Ref) {
+		if isName {
 			branchVar := fmt.Sprintf("branch%d", i)
-			vars[branchVar] = "refs/heads/" + ref.Ref + "^{commit}"
+			vars[branchVar] = name.BranchRef() + "^{commit}"
 			fmt.Fprintf(&decl, ", $%s: String!", branchVar)
 			objects = append(objects, struct{ alias, variable string }{"branch", branchVar})
 		}
@@ -301,7 +305,7 @@ func parseActionFileResponse(data map[string]json.RawMessage, refs []ActionFileR
 					// Reusable workflows can have neither.
 					if item.Type == "NOT_FOUND" && len(item.Path) >= 2 &&
 						(item.Path[1] == "object" || item.Path[1] == "branch") &&
-						(len(item.Path) == 2 && !fullCommitRef(ref.Ref) || len(item.Path) == 3 && (item.Path[2] == "file" || item.Path[2] == "fileYaml")) {
+						(len(item.Path) == 2 && ref.Ref.Kind() == parserlock.RefKindName || len(item.Path) == 3 && (item.Path[2] == "file" || item.Path[2] == "fileYaml")) {
 						continue
 					}
 					results[idx].Err = fmt.Errorf("%s", item.Message)
@@ -322,9 +326,9 @@ func parseActionFileResponse(data map[string]json.RawMessage, refs []ActionFileR
 			results[idx].Err = err
 			continue
 		}
-		if !fullCommitRef(ref.Ref) {
+		if ref.Ref.Kind() == parserlock.RefKindName {
 			if repo.Object != nil && repo.Branch != nil && !strings.EqualFold(repo.Object.OID, repo.Branch.OID) {
-				results[idx].Err = &AmbiguousRefError{Owner: ref.Owner, Repo: ref.Repo, Ref: ref.Ref}
+				results[idx].Err = &AmbiguousRefError{Owner: ref.Owner, Repo: ref.Repo, Ref: ref.Ref.String()}
 				continue
 			}
 			if repo.Object == nil {
@@ -333,20 +337,20 @@ func parseActionFileResponse(data map[string]json.RawMessage, refs []ActionFileR
 		}
 
 		if repo.Object == nil || repo.Object.OID == "" {
-			n := len(ref.Ref)
+			text := ref.Ref.String()
 			var err error
 			switch {
-			case isHexString(ref.Ref) && (n == 40 || n == 64):
+			case ref.Ref.Kind() == parserlock.RefKindCommit:
 				// Full SHA that doesn't resolve — commit is unreachable/orphaned
 				err = fmt.Errorf("commit %s does not exist or is not reachable in %s/%s",
-					ref.Ref[:12], ref.Owner, ref.Repo)
-			case isHexString(ref.Ref):
+					text[:12], ref.Owner, ref.Repo)
+			case isHexString(text):
 				// Short hex — ambiguous, might be a truncated SHA
-				err = fmt.Errorf("version %q does not resolve — if this is a commit, use the full 40-character SHA", ref.Ref)
+				err = fmt.Errorf("version %q does not resolve — if this is a commit, use the full 40-character SHA", text)
 			default:
-				err = fmt.Errorf("version %q does not exist", ref.Ref)
+				err = fmt.Errorf("version %q does not exist", text)
 			}
-			results[idx].Err = &RefNotFoundError{Owner: ref.Owner, Repo: ref.Repo, Ref: ref.Ref, Err: err}
+			results[idx].Err = &RefNotFoundError{Owner: ref.Owner, Repo: ref.Repo, Ref: text, Err: err}
 			continue
 		}
 

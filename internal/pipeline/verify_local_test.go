@@ -9,6 +9,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +46,7 @@ func TestVerifyLocalCoverage_AllPinned(t *testing.T) {
 		{
 			Path: ".github/workflows/ci.yml",
 			Refs: []parserlock.ActionRef{
-				{Owner: "actions", Repo: "checkout", Ref: "v4"},
+				{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
 			},
 			ExistingDeps: []dep.Dependency{
 				{NWO: "actions/checkout", Ref: "v4", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -100,7 +101,7 @@ func TestVerifyLocalCoverage_InvalidSelfRepositoryRefWithPinnedRemote(t *testing
 		{
 			Path: ".github/workflows/ci.yml",
 			Refs: []parserlock.ActionRef{
-				{Owner: "actions", Repo: "checkout", Ref: "v4"},
+				{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
 			},
 			SelfRepositoryRefErrs: []string{"$/actions/foo@v1"},
 			ExistingDeps: []dep.Dependency{
@@ -140,8 +141,8 @@ func TestVerifyLocalCoverage_MissingPin(t *testing.T) {
 		{
 			Path: ".github/workflows/ci.yml",
 			Refs: []parserlock.ActionRef{
-				{Owner: "actions", Repo: "checkout", Ref: "v4"},
-				{Owner: "actions", Repo: "setup-go", Ref: "v5"},
+				{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
+				{Owner: "actions", Repo: "setup-go", Ref: testref.Pin("v5")},
 			},
 			ExistingDeps: []dep.Dependency{
 				{NWO: "actions/checkout", Ref: "v4", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -239,7 +240,7 @@ func TestVerifyLocalCoverage_LocalPathsMatchVerify(t *testing.T) {
 		t.Run(tc.path, func(t *testing.T) {
 			pw := checks.ParsedWorkflow{
 				Path:       tc.path,
-				Refs:       []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: "v4"}},
+				Refs:       []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")}},
 				LocalPaths: []string{"./my-action"},
 			}
 			report := VerifyLocalCoverage([]checks.ParsedWorkflow{pw}, store)
@@ -283,7 +284,7 @@ workflows:
 			store := writeTestLockfile(t, t.TempDir(), lock+tc.extraPins)
 			parsed := []checks.ParsedWorkflow{{
 				Path: ".github/workflows/ci.yml",
-				Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}},
+				Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: testref.Pin(sha)}},
 			}}
 
 			report := VerifyLocalCoverage(parsed, store)

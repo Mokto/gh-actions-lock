@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 )
 
 // anonProbeCache caches per-owner results of unauthenticated access probes.
@@ -334,7 +335,7 @@ func (c *Client) resolveAnonymous(ctx context.Context, ref ActionFileRequest) Ac
 	if err != nil {
 		var missing *RefNotFoundError
 		if errors.As(err, &missing) {
-			missing.Owner, missing.Repo, missing.Ref = ref.Owner, ref.Repo, ref.Ref
+			missing.Owner, missing.Repo, missing.Ref = ref.Owner, ref.Repo, ref.Ref.String()
 		}
 		result.Err = fmt.Errorf("anonymous fallback: %w", err)
 		return result
@@ -370,10 +371,11 @@ func (c *Client) resolveAnonymous(ctx context.Context, ref ActionFileRequest) Ac
 	return result
 }
 
-func (c *Client) anonResolveRef(ctx context.Context, owner, repo, ref string) (string, error) {
+func (c *Client) anonResolveRef(ctx context.Context, owner, repo string, pinRef parserlock.PinRef) (string, error) {
+	ref := pinRef.String()
 	names := []string{ref}
-	if !fullCommitRef(ref) {
-		names = []string{"refs/tags/" + ref, "refs/heads/" + ref}
+	if name, ok := pinRef.Name(); ok {
+		names = []string{name.TagRef(), name.BranchRef()}
 	}
 	var target string
 	for _, name := range names {

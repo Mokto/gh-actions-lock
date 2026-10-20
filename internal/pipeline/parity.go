@@ -61,7 +61,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		}
 		// Pin.String folds only owner/repo. Include the target so a fresh
 		// pin cannot reuse the recorded ref's check.
-		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + o.lp.Action.Ref
+		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + o.lp.Action.Ref.String()
 		i, seen := pinIdx[key]
 		if !seen {
 			i = len(pins)
@@ -84,14 +84,14 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		recorded, _ := pw.PartitionRefs()
 		direct := make(map[string]parserlock.ActionRef, len(recorded))
 		for _, r := range recorded {
-			direct[strings.ToLower(r.Owner+"/"+r.Repo)+"@"+r.Ref] = r
+			direct[strings.ToLower(r.Owner+"/"+r.Repo)+"@"+r.Ref.String()] = r
 		}
 		live := func(p parserlock.Pin) bool {
-			_, ok := direct[strings.ToLower(p.Owner+"/"+p.Repo)+"@"+p.Ref]
+			_, ok := direct[strings.ToLower(p.Owner+"/"+p.Repo)+"@"+p.Ref.String()]
 			return ok
 		}
 		for _, lp := range store.Closure(workflowfile.KeyFromPath(pw.Path), live) {
-			ref := direct[strings.ToLower(lp.Pin.Owner+"/"+lp.Pin.Repo)+"@"+lp.Pin.Ref]
+			ref := direct[strings.ToLower(lp.Pin.Owner+"/"+lp.Pin.Repo)+"@"+lp.Pin.Ref.String()]
 			if lp.Parent != "" {
 				ref = parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref}
 			}
@@ -118,7 +118,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	tagMoved := make([]bool, len(states))
 	for i := range states {
 		st, pc := &states[i], pins[i]
-		if pc.Head == "" || st.Err != nil || st.AmbiguousRef || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
+		if pc.Head.IsZero() || st.Err != nil || st.AmbiguousRef || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
 			continue
 		}
 		switch ancestry, detail, cause := r.CheckAncestryCause(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); ancestry {
@@ -131,7 +131,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 			st.Err = &ghapi.BriefError{Msg: brief, Err: fmt.Errorf("checking %s history: %s", pc.Head, detail)}
 		default:
-			sv, ok := parserlock.ParseSemVer(pc.Head)
+			sv, ok := parserlock.ParseSemVer(pc.Head.String())
 			tagMoved[i] = ok && sv.IsFull()
 		}
 	}
@@ -139,7 +139,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		for i, st := range states {
 			if st.Err != nil {
 				msg := fmt.Sprintf("could not verify locked %s/%s@%s (commit %s): verification inconclusive",
-					pins[i].Owner, pins[i].Repo, cmp.Or(pins[i].Head, pins[i].SHA), parserlock.ShortSHA(pins[i].SHA))
+					pins[i].Owner, pins[i].Repo, cmp.Or(pins[i].Head.String(), pins[i].SHA), parserlock.ShortSHA(pins[i].SHA))
 				return &ghapi.BriefError{Msg: msg + ": " + briefCause(st.Err), Err: fmt.Errorf("%s: %s", msg, verbose(st.Err))}
 			}
 		}
@@ -150,7 +150,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if o.fresh {
 				f.FreshRef = true
 			} else {
-				f.RecordedRef = o.lp.Action.Ref
+				f.RecordedRef = o.lp.Action.Ref.String()
 			}
 			if !ok && verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, pins[i], st), true
@@ -195,7 +195,7 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 		}
 		keys := []string{d.Key()}
 		for _, ref := range d.OriginalRefs {
-			keys = append(keys, ref.NWO()+"@"+ref.Ref)
+			keys = append(keys, ref.NWO()+"@"+ref.Ref.String())
 		}
 		for _, k := range keys {
 			byKey[foldKey(k)] = append(byKey[foldKey(k)], d)
@@ -216,18 +216,18 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 			seen[id] = true
 			owner, repo := d.OwnerRepo()
 			o := parityOwner{pw: pw, fresh: true, ref: ref, lp: lockfile.LockedPin{
-				Pin:    parserlock.Pin{NWO: d.NWO, Owner: owner, Repo: repo, Ref: d.Ref},
+				Pin:    parserlock.Pin{NWO: d.NWO, Owner: owner, Repo: repo, Ref: freshPinRef(d.Ref)},
 				Action: parserlock.Action{Ref: freshEntryRef(d), Commit: d.SHA},
 				Parent: parent,
 			}}
 			out = append(out, o)
 			for _, c := range children[foldKey(d.Key())] {
 				co, cr := c.OwnerRepo()
-				walk(c, parserlock.ActionRef{Owner: co, Repo: cr, Path: c.Path, Ref: c.Ref}, d.Key())
+				walk(c, parserlock.ActionRef{Owner: co, Repo: cr, Path: c.Path, Ref: freshPinRef(c.Ref)}, d.Key())
 			}
 		}
 		for _, ref := range pw.Refs {
-			key := foldKey(ref.Owner + "/" + ref.Repo + "@" + ref.Ref)
+			key := foldKey(ref.Owner + "/" + ref.Repo + "@" + ref.Ref.String())
 			if recordedKeys[key] {
 				continue
 			}
@@ -265,7 +265,7 @@ func movedTagFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, pc ghap
 	return checks.Finding{
 		WorkflowPath: pw.Path,
 		ActionRef:    &ref,
-		Dependency:   &dep.Dependency{NWO: nwo, Path: ref.Path, Ref: ref.Ref, SHA: pc.SHA},
+		Dependency:   &dep.Dependency{NWO: nwo, Path: ref.Path, Ref: ref.Ref.String(), SHA: pc.SHA},
 		Category:     checks.RefMoved,
 		Severity:     checks.SeverityWarning,
 		Confidence:   checks.ConfidenceHigh,
@@ -279,11 +279,17 @@ func movedTagFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, pc ghap
 // freshEntryRef is the ref a fresh pin is checked against. A full-SHA key
 // has none yet: planning picks its tag or branch by reverse lookup, which
 // only accepts a tag at the commit or a branch containing it.
-func freshEntryRef(d dep.Dependency) string {
-	if parserlock.IsFullSha(d.Ref) {
-		return ""
-	}
-	return d.Ref
+func freshEntryRef(d dep.Dependency) parserlock.RefName {
+	n, _ := parserlock.ParseRefName(d.Ref)
+	return n
+}
+
+// freshPinRef types a resolved dependency's ref. Resolution starts from
+// parsed `uses:` refs, so an invalid one yields the zero PinRef only if the
+// resolver itself is broken.
+func freshPinRef(ref string) parserlock.PinRef {
+	r, _ := parserlock.ParsePinRef(ref)
+	return r
 }
 
 func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfile.LockedPin, pc ghapi.PinCheck, st ghapi.PinState) (checks.Finding, bool) {
@@ -291,13 +297,13 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 	f := checks.Finding{
 		WorkflowPath: pw.Path,
 		ActionRef:    &ref,
-		Dependency:   &dep.Dependency{NWO: nwo, Path: ref.Path, Ref: lp.Pin.Ref, SHA: pc.SHA},
+		Dependency:   &dep.Dependency{NWO: nwo, Path: ref.Path, Ref: lp.Pin.Ref.String(), SHA: pc.SHA},
 		Severity:     checks.SeverityError,
 		Confidence:   checks.ConfidenceHigh,
 	}
 	if lp.Parent != "" {
 		if parent, ok := parserlock.ParsePin(lp.Parent); ok {
-			f.ParentNWO = parent.NWO + "@" + parent.Ref
+			f.ParentNWO = parent.NWO + "@" + parent.Ref.String()
 		}
 	}
 	via := ""
@@ -308,16 +314,16 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 	switch {
 	case st.AmbiguousRef:
 		f.Category = checks.UnreachablePin
-		f.Detail = (&ghapi.AmbiguousRefError{Owner: pc.Owner, Repo: pc.Repo, Ref: pc.Head}).Error() + via
+		f.Detail = (&ghapi.AmbiguousRefError{Owner: pc.Owner, Repo: pc.Repo, Ref: pc.Head.String()}).Error() + via
 		f.Remediation = ghapi.RefCollisionRemediation
 		f.RefMissing = true
 	case st.Err != nil:
 		f.Category = checks.ReachabilityUnknown
 		f.Confidence = checks.ConfidenceLow
 		f.Detail = fmt.Sprintf("could not verify locked %s@%s (commit %s)%s: verification inconclusive: %s",
-			nwo, lp.Pin.Ref, short, via, verbose(st.Err))
+			nwo, lp.Pin.Ref.String(), short, via, verbose(st.Err))
 		f.TermDetail = fmt.Sprintf("could not verify locked %s@%s (commit %s)%s: verification inconclusive: %s",
-			nwo, lp.Pin.Ref, short, via, briefCause(st.Err))
+			nwo, lp.Pin.Ref.String(), short, via, briefCause(st.Err))
 		f.Remediation = "retry when the API is available; nothing is written until verification succeeds"
 	case st.RepoMissing:
 		f.Category = checks.RepoUnavailable
@@ -337,15 +343,15 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		}
 	case !st.CommitFound:
 		f.Category = checks.UnreachablePin
-		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, cmp.Or(pc.Head, ref.Ref), st.HeadOID) + via
+		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, cmp.Or(pc.Head.String(), ref.Ref.String()), st.HeadOID) + via
 		f.Remediation = checks.AcceptMovedRemediation
-	case pc.Head != "" && st.HeadOID == "":
+	case !pc.Head.IsZero() && st.HeadOID == "":
 		f.Category = checks.UnreachablePin
 		f.Detail = fmt.Sprintf("ref %s is not a tag or branch of %s; the Actions backend will reject this pin%s", pc.Head, nwo, via)
 		f.RefGone = true
 		// A full-SHA `uses:` names no ref to repoint; the lock entry is wrong.
 		f.Remediation = checks.AcceptMovedRemediation
-		if !parserlock.IsFullSha(lp.Pin.Ref) {
+		if lp.Pin.Ref.Kind() != parserlock.RefKindCommit {
 			f.Remediation = "point `uses:` at a tag or branch that exists, then run `gh actions-lock`"
 			f.RefMissing = true
 		}
@@ -357,7 +363,7 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		if ref.Path != "" {
 			uses += "/" + ref.Path
 		}
-		f.Remediation = fmt.Sprintf("run `gh actions-lock` to rewrite it as `uses: %s@%s`", uses, ref.Ref)
+		f.Remediation = fmt.Sprintf("run `gh actions-lock` to rewrite it as `uses: %s@%s`", uses, ref.Ref.String())
 		if f.ParentNWO != "" {
 			f.Remediation = fmt.Sprintf("upgrade %s to a version that uses %s", f.ParentNWO, st.NameWithOwner)
 		}

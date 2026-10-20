@@ -7,6 +7,7 @@ import (
 
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/testref"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
@@ -33,7 +34,7 @@ func TestNarrowDirectDeps_PreservesRefWhenExactTagIsFromAnotherFamily(t *testing
 
 	deps := []dep.Dependency{{NWO: "dawidd6/action-send-mail", Ref: "v18", SHA: sha}}
 	direct := lockfile.NewDirectTracker(
-		[]parserlock.ActionRef{{Owner: "dawidd6", Repo: "action-send-mail", Ref: "v18"}},
+		[]parserlock.ActionRef{{Owner: "dawidd6", Repo: "action-send-mail", Ref: testref.Pin("v18")}},
 		deps,
 	)
 	rewrites := make(map[string]string)
@@ -88,8 +89,8 @@ func TestNarrowDirectDeps_SameNWOSiblingRefsNormalizeIndependently(t *testing.T)
 				{NWO: "actions/checkout", Ref: bareSHA, SHA: bareSHA},
 			}
 			refs := []parserlock.ActionRef{
-				{Owner: "actions", Repo: "checkout", Ref: "v4"},
-				{Owner: "actions", Repo: "checkout", Ref: bareSHA},
+				{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
+				{Owner: "actions", Repo: "checkout", Ref: testref.Pin(bareSHA)},
 			}
 			direct := lockfile.NewDirectTracker(refs, deps)
 			rewrites := make(map[string]string)
@@ -156,21 +157,21 @@ func TestPlanWorkflow_PartialResolutionFailure(t *testing.T) {
 		Path: ".github/workflows/test.yml",
 		Findings: []checks.Finding{
 			{
-				ActionRef:  &parserlock.ActionRef{Owner: "good", Repo: "action", Ref: "v1"},
+				ActionRef:  &parserlock.ActionRef{Owner: "good", Repo: "action", Ref: testref.Pin("v1")},
 				Category:   "unpinned",
 				Severity:   checks.SeverityWarning,
 				Confidence: checks.ConfidenceHigh,
 			},
 			{
-				ActionRef:  &parserlock.ActionRef{Owner: "bad", Repo: "private", Ref: "main"},
+				ActionRef:  &parserlock.ActionRef{Owner: "bad", Repo: "private", Ref: testref.Pin("main")},
 				Category:   "unpinned",
 				Severity:   checks.SeverityWarning,
 				Confidence: checks.ConfidenceHigh,
 			},
 		},
 		ActionRefs: []parserlock.ActionRef{
-			{Owner: "good", Repo: "action", Ref: "v1"},
-			{Owner: "bad", Repo: "private", Ref: "main"},
+			{Owner: "good", Repo: "action", Ref: testref.Pin("v1")},
+			{Owner: "bad", Repo: "private", Ref: testref.Pin("main")},
 		},
 	}
 
@@ -208,21 +209,21 @@ func TestPlanWorkflow_AllResolutionsFail(t *testing.T) {
 		Path: ".github/workflows/test.yml",
 		Findings: []checks.Finding{
 			{
-				ActionRef:  &parserlock.ActionRef{Owner: "bad", Repo: "one", Ref: "v1"},
+				ActionRef:  &parserlock.ActionRef{Owner: "bad", Repo: "one", Ref: testref.Pin("v1")},
 				Category:   "unpinned",
 				Severity:   checks.SeverityWarning,
 				Confidence: checks.ConfidenceHigh,
 			},
 			{
-				ActionRef:  &parserlock.ActionRef{Owner: "bad", Repo: "two", Ref: "main"},
+				ActionRef:  &parserlock.ActionRef{Owner: "bad", Repo: "two", Ref: testref.Pin("main")},
 				Category:   "unpinned",
 				Severity:   checks.SeverityWarning,
 				Confidence: checks.ConfidenceHigh,
 			},
 		},
 		ActionRefs: []parserlock.ActionRef{
-			{Owner: "bad", Repo: "one", Ref: "v1"},
-			{Owner: "bad", Repo: "two", Ref: "main"},
+			{Owner: "bad", Repo: "one", Ref: testref.Pin("v1")},
+			{Owner: "bad", Repo: "two", Ref: testref.Pin("main")},
 		},
 	}
 
@@ -292,14 +293,14 @@ func TestPlanWorkflow_TransitiveDepUsesDiscoveredRef(t *testing.T) {
 		Path: ".github/workflows/test.yml",
 		Findings: []checks.Finding{
 			{
-				ActionRef:  &parserlock.ActionRef{Owner: "comp", Repo: "action", Ref: "v1.0.0"},
+				ActionRef:  &parserlock.ActionRef{Owner: "comp", Repo: "action", Ref: testref.Pin("v1.0.0")},
 				Category:   "unpinned",
 				Severity:   checks.SeverityWarning,
 				Confidence: checks.ConfidenceHigh,
 			},
 		},
 		ActionRefs: []parserlock.ActionRef{
-			{Owner: "comp", Repo: "action", Ref: "v1.0.0"},
+			{Owner: "comp", Repo: "action", Ref: testref.Pin("v1.0.0")},
 		},
 	}
 
@@ -389,7 +390,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		report.ActionRefs = []parserlock.ActionRef{{
 			Owner: "actions",
 			Repo:  "checkout",
-			Ref:   sha,
+			Ref:   testref.Pin(sha),
 		}}
 		opts := PlanOptions{
 			Tagger:           tagger,
@@ -416,7 +417,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		report.ActionRefs = []parserlock.ActionRef{{
 			Owner: "actions",
 			Repo:  "checkout",
-			Ref:   sha,
+			Ref:   testref.Pin(sha),
 		}}
 
 		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger}, func(string) {})
@@ -441,7 +442,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		report.ActionRefs = []parserlock.ActionRef{{
 			Owner: "actions",
 			Repo:  "checkout",
-			Ref:   sha,
+			Ref:   testref.Pin(sha),
 		}}
 
 		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger, Resolver: resolver}, func(string) {})
@@ -463,7 +464,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		report.ActionRefs = []parserlock.ActionRef{{
 			Owner: "Actions",
 			Repo:  "Checkout",
-			Ref:   sha,
+			Ref:   testref.Pin(sha),
 		}}
 
 		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger}, func(string) {})
@@ -495,7 +496,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		report.ActionRefs = []parserlock.ActionRef{{
 			Owner: "actions",
 			Repo:  "checkout",
-			Ref:   sha,
+			Ref:   testref.Pin(sha),
 		}}
 
 		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger, Store: store}, func(string) {})
@@ -563,7 +564,7 @@ func TestPlanPreservesDifferentHistoricalSHAsOnSameBranch(t *testing.T) {
 				resolver.SeedFromLockfile([]dep.Dependency{d})
 				wr := checks.WorkflowReport{
 					Path:       ".github/workflows/" + sha + ".yml",
-					ActionRefs: []parserlock.ActionRef{{Owner: "owner", Repo: "action", Ref: sha}},
+					ActionRefs: []parserlock.ActionRef{{Owner: "owner", Repo: "action", Ref: testref.Pin(sha)}},
 				}
 				if i < tt.locked {
 					wr.Inventory = []checks.InventoryEntry{{Dep: d, File: wr.Path, Direct: true}}
@@ -655,7 +656,7 @@ func TestPlanNormalizationRespectsLockedTarget(t *testing.T) {
 				},
 				{
 					Path:       ".github/workflows/new.yml",
-					ActionRefs: []parserlock.ActionRef{{Owner: owner, Repo: repo, Ref: headSHA}},
+					ActionRefs: []parserlock.ActionRef{{Owner: owner, Repo: repo, Ref: testref.Pin(headSHA)}},
 					Findings:   []checks.Finding{{Category: checks.NotPinned, Severity: checks.SeverityError}},
 				},
 			}}
@@ -712,7 +713,7 @@ func TestNarrowVerifiedEntries_SHARepairRequiresTagAtCommit(t *testing.T) {
 					File:   ".github/workflows/ci.yml",
 					Direct: true,
 				}},
-				ActionRefs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}},
+				ActionRefs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: testref.Pin(sha)}},
 			}
 
 			result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tag.NewListerForTest(t, reg)}, func(string) {})
@@ -741,7 +742,7 @@ func TestPlanRepairsOnlyTheSHAItsRecordedTagPeelsTo(t *testing.T) {
 		return checks.WorkflowReport{
 			Path: path,
 			ActionRefs: []parserlock.ActionRef{{
-				Owner: "actions", Repo: "checkout", Ref: sha,
+				Owner: "actions", Repo: "checkout", Ref: testref.Pin(sha),
 			}},
 			Inventory: []checks.InventoryEntry{{
 				Dep:    dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v4.2.1"},
@@ -776,7 +777,7 @@ func TestPlanRejectsRepairConflictingWithSymbolicEntry(t *testing.T) {
 	repair := checks.WorkflowReport{
 		Path: ".github/workflows/repair.yml",
 		ActionRefs: []parserlock.ActionRef{{
-			Owner: "actions", Repo: "checkout", Ref: repairedSHA,
+			Owner: "actions", Repo: "checkout", Ref: testref.Pin(repairedSHA),
 		}},
 		Inventory: []checks.InventoryEntry{{
 			Dep:    dep.Dependency{NWO: "actions/checkout", Ref: repairedSHA, SHA: repairedSHA, Tag: "v4.2.1"},
@@ -862,7 +863,7 @@ func TestPlanWorkflow_SelfRepositoryDependencyIsNotRewrittenOnFastPath(t *testin
 			Confidence: checks.ConfidenceHigh,
 		}},
 		ActionRefs: []parserlock.ActionRef{
-			{Owner: "actions", Repo: "checkout", Ref: "v4"},
+			{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
 		},
 		RewriteRefs: []parserlock.ActionRef{},
 		Inventory: []checks.InventoryEntry{{
@@ -892,10 +893,10 @@ func TestPlanWorkflow_InvalidSelfRepositoryRefDoesNotMutateWorkflow(t *testing.T
 			Confidence: checks.ConfidenceHigh,
 		}},
 		ActionRefs: []parserlock.ActionRef{
-			{Owner: "actions", Repo: "checkout", Ref: "v4"},
+			{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
 		},
 		RewriteRefs: []parserlock.ActionRef{
-			{Owner: "actions", Repo: "checkout", Ref: "v4"},
+			{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
 		},
 	}
 
@@ -956,13 +957,13 @@ func TestNoNarrow_BareSHA(t *testing.T) {
 		wr := checks.WorkflowReport{
 			Path: ".github/workflows/ci.yml",
 			Findings: []checks.Finding{{
-				ActionRef:  &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: sha},
+				ActionRef:  &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: testref.Pin(sha)},
 				Category:   "unpinned",
 				Severity:   checks.SeverityWarning,
 				Confidence: checks.ConfidenceHigh,
 			}},
 			ActionRefs: []parserlock.ActionRef{
-				{Owner: "actions", Repo: "checkout", Ref: sha},
+				{Owner: "actions", Repo: "checkout", Ref: testref.Pin(sha)},
 			},
 		}
 
@@ -1125,14 +1126,14 @@ func TestPlanWorkflow_CrossRefTransitiveClosure(t *testing.T) {
 		Path: ".github/workflows/happy-path.yml",
 		Findings: []checks.Finding{
 			{
-				ActionRef:  &parserlock.ActionRef{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: "updated"},
+				ActionRef:  &parserlock.ActionRef{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: testref.Pin("updated")},
 				Category:   "unpinned",
 				Severity:   checks.SeverityWarning,
 				Confidence: checks.ConfidenceHigh,
 			},
 		},
 		ActionRefs: []parserlock.ActionRef{
-			{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: "updated"},
+			{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: testref.Pin("updated")},
 		},
 	}
 

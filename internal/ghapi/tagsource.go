@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 )
 
 // RepoTag is a tag name paired with the commit SHA it resolves to, as
@@ -98,29 +99,94 @@ func (c *Client) RepoMetadata(ctx context.Context, owner, repo string) (RepoMeta
 	}, nil
 }
 
-// CommitSHA resolves a ref (branch, tag, or SHA) to its commit SHA via the
-// repos/commits endpoint.
-func (c *Client) CommitSHA(ctx context.Context, owner, repo, ref string) (string, error) {
+// ResolvePinRef returns the commit ref names. A name is looked up only as
+// refs/tags/<name> then refs/heads/<name>; when both exist at different
+// commits it returns *AmbiguousRefError, and when neither exists
+// *RefNotFoundError.
+func (c *Client) ResolvePinRef(ctx context.Context, owner, repo string, ref parserlock.PinRef) (string, error) {
 	c, err := c.ForRepo(ctx, owner, repo)
 	if err != nil {
 		return "", err
 	}
+	if commit, ok := ref.Commit(); ok {
+		sha, found, err := c.commitSHA(ctx, owner, repo, commit.String())
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			return "", &RefNotFoundError{Owner: owner, Repo: repo, Ref: commit.String(),
+				Err: fmt.Errorf("commit %s does not exist in %s/%s", commit, owner, repo)}
+		}
+		return sha, nil
+	}
+	name, ok := ref.Name()
+	if !ok {
+		return "", fmt.Errorf("resolving %s/%s: empty ref", owner, repo)
+	}
+	var target string
+	for _, qualified := range []string{name.TagRef(), name.BranchRef()} {
+		sha, found, err := c.commitSHA(ctx, owner, repo, qualified)
+		if err != nil {
+			return "", err
+		}
+		switch {
+		case !found:
+		case target != "" && !strings.EqualFold(target, sha):
+			return "", &AmbiguousRefError{Owner: owner, Repo: repo, Ref: name.String()}
+		default:
+			target = sha
+		}
+	}
+	if target == "" {
+		return "", &RefNotFoundError{Owner: owner, Repo: repo, Ref: name.String(),
+			Err: fmt.Errorf("ref %q is not a tag or branch in %s/%s", name, owner, repo)}
+	}
+	return target, nil
+}
+
+// ResolveBranch returns the commit at refs/heads/<name>.
+func (c *Client) ResolveBranch(ctx context.Context, owner, repo string, name parserlock.RefName) (string, error) {
+	c, err := c.ForRepo(ctx, owner, repo)
+	if err != nil {
+		return "", err
+	}
+	sha, found, err := c.commitSHA(ctx, owner, repo, name.BranchRef())
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", &RefNotFoundError{Owner: owner, Repo: repo, Ref: name.String(),
+			Err: fmt.Errorf("branch %q does not exist in %s/%s", name, owner, repo)}
+	}
+	return sha, nil
+}
+
+// commitSHA reads repos/commits for an exact commit or a fully qualified ref
+// name. found is false on 404 or 422.
+func (c *Client) commitSHA(ctx context.Context, owner, repo, rev string) (sha string, found bool, err error) {
 	path := fmt.Sprintf("repos/%s/%s/commits/%s",
-		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(ref))
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(rev))
 
 	var result struct {
 		SHA string `json:"sha"`
 	}
 	if err := c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &result); err != nil {
 		if IsSAMLEnforcement(err) && c.SSOFallbackEligible(ctx, owner) {
-			if anonErr := c.anonGet(ctx, path, &result); anonErr != nil {
-				return "", fmt.Errorf("anonymous fallback resolving %s/%s@%s: %w", owner, repo, ref, anonErr)
+			err = c.anonGet(ctx, path, &result)
+			if code, _ := StatusCode(err); code == http.StatusNotFound || code == http.StatusUnprocessableEntity {
+				return "", false, nil
 			}
-		} else {
-			return "", fmt.Errorf("resolving %s/%s@%s: %w", owner, repo, ref, c.ssoErr(owner, err))
+			if err != nil {
+				return "", false, fmt.Errorf("anonymous fallback resolving %s/%s@%s: %w", owner, repo, rev, err)
+			}
+			return result.SHA, true, nil
 		}
+		if code, _ := StatusCode(err); code == http.StatusNotFound || code == http.StatusUnprocessableEntity {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("resolving %s/%s@%s: %w", owner, repo, rev, c.ssoErr(owner, err))
 	}
-	return result.SHA, nil
+	return result.SHA, true, nil
 }
 
 // CommitDate returns the committer timestamp of an exact commit, not its push time.

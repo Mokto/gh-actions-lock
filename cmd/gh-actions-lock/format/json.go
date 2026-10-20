@@ -119,7 +119,7 @@ func findingFromReport(f checks.Finding) Finding {
 	if f.Dependency != nil {
 		jf.Dependency = f.Dependency.Key()
 	} else if f.ActionRef != nil {
-		jf.Dependency = f.ActionRef.FullName() + "@" + f.ActionRef.Ref
+		jf.Dependency = f.ActionRef.FullName() + "@" + f.ActionRef.Ref.String()
 	}
 	if f.ParentNWO != "" {
 		jf.RequiredBy = f.ParentNWO

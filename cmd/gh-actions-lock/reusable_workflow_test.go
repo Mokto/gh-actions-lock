@@ -58,6 +58,11 @@ func TestReusableWorkflowCoverage(t *testing.T) {
 					if ref == remoteSHA {
 						assert.Equal(t, "warning", p.Findings[0].Severity)
 						assert.Contains(t, p.Findings[0].Detail, "own lockfile and dependencies are not verified")
+					} else if ref == "" {
+						// An empty ref fails the workflow's parse, not the
+						// reusable-workflow check.
+						assert.Equal(t, "error", p.Findings[0].Severity)
+						assert.Contains(t, p.Findings[0].Detail, `invalid ref "": ref is empty`)
 					} else {
 						assert.Equal(t, "error", p.Findings[0].Severity)
 						assert.Contains(t, p.Findings[0].Remediation, "pin jobs.<id>.uses to a full SHA")

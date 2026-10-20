@@ -30,7 +30,7 @@ func CheckReusableWorkflows(pw ParsedWorkflow) []Finding {
 		f.ReusableWorkflow = true
 		f.Detail = fmt.Sprintf("external reusable workflow %s@%s is not enforced by the caller's lockfile", ref.FullName(), ref.Ref)
 		f.Remediation = "pin jobs.<id>.uses to a full SHA; caller lockfile entries do not pin reusable workflow calls"
-		if parserlock.IsFullSha(ref.Ref) {
+		if ref.Ref.Kind() == parserlock.RefKindCommit {
 			f.Severity = SeverityWarning
 			f.Detail = fmt.Sprintf("external reusable workflow %s@%s is SHA-pinned, but its own lockfile and dependencies are not verified", ref.FullName(), ref.Ref)
 			f.Remediation = "verify the callee repository separately at that commit"
@@ -47,7 +47,7 @@ func checkRecordedClosure(pw ParsedWorkflow, file parserlock.File) []Finding {
 	}
 	for _, d := range pw.RecordedDeps(pw.Refs) {
 		owner, repo := d.OwnerRepo()
-		direct[parserlock.IndexKey(owner, repo, d.Ref)] = true
+		direct[lockfile.RefIndexKey(owner, repo, d.Ref)] = true
 	}
 	_, missing := lockfile.InspectClosure(file, workflowfile.KeyFromPath(pw.Path), func(pin parserlock.Pin) bool {
 		return direct[pin.IndexKey()]
@@ -65,10 +65,10 @@ func checkRecordedClosure(pw ParsedWorkflow, file parserlock.File) []Finding {
 			Remediation:        "restore the missing entry from version control, or run `gh actions-lock --relock` to resolve the graph again",
 		}
 		if pin, ok := parserlock.ParsePin(m.Key); ok {
-			f.Dependency = &dep.Dependency{NWO: pin.NWO, Ref: pin.Ref}
+			f.Dependency = &dep.Dependency{NWO: pin.NWO, Ref: pin.Ref.String()}
 		}
 		if parent, ok := parserlock.ParsePin(m.Parent); ok {
-			f.ParentNWO = parent.NWO + "@" + parent.Ref
+			f.ParentNWO = parent.NWO + "@" + parent.Ref.String()
 			f.Detail += fmt.Sprintf(" (used by %s)", f.ParentNWO)
 		}
 		out = append(out, f)
@@ -116,8 +116,8 @@ func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]
 		if _, ok := depIndex[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)]; ok {
 			continue
 		}
-		if parserlock.IsFullSha(ref.Ref) {
-			if lockedSHA[nwoLower(ref.Owner, ref.Repo)+"@"+strings.ToLower(ref.Ref)] {
+		if ref.Ref.Kind() == parserlock.RefKindCommit {
+			if lockedSHA[nwoLower(ref.Owner, ref.Repo)+"@"+strings.ToLower(ref.Ref.String())] {
 				continue
 			}
 		} else if knownAction[nwoLower(ref.Owner, ref.Repo)] {
@@ -139,13 +139,13 @@ func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]
 func checkShaAsRef(pw ParsedWorkflow, depIndex map[string]lockedPin) []Finding {
 	var out []Finding
 	for _, ref := range pw.Refs {
-		if !parserlock.IsFullSha(ref.Ref) {
+		if ref.Ref.Kind() != parserlock.RefKindCommit {
 			continue
 		}
 		f := newRefFinding(pw, ref, ShaAsRef, SeverityWarning, ConfidenceHigh)
 		f.Detail = "pinned to a bare SHA without a symbolic ref — weakens supply-chain traceability"
 		f.Remediation = fmt.Sprintf("pin to a tag instead: https://github.com/%s/releases", nwoLower(ref.Owner, ref.Repo))
-		lockedSha := ref.Ref
+		lockedSha := ref.Ref.String()
 		if locked, ok := depIndex[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)]; ok {
 			lockedSha = locked.SHA()
 		}
@@ -170,7 +170,7 @@ func checkRefChanged(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 	}
 	var out []Finding
 	for _, ref := range pw.Refs {
-		if parserlock.IsFullSha(ref.Ref) {
+		if ref.Ref.Kind() == parserlock.RefKindCommit {
 			continue
 		}
 		key := nwoLower(ref.Owner, ref.Repo)
@@ -213,7 +213,7 @@ func checkStale(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 	for _, ref := range pw.Refs {
 		used[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)] = true
 		nwo := strings.ToLower(ref.Owner + "/" + ref.Repo)
-		usedBySHA[nwo+"@"+strings.ToLower(ref.Ref)] = true
+		usedBySHA[nwo+"@"+strings.ToLower(ref.Ref.String())] = true
 	}
 	var out []Finding
 	for _, p := range depPins {
@@ -235,7 +235,7 @@ func checkStale(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 			Remediation:  "run `gh actions-lock` to prune the unused entry",
 			Dependency: &dep.Dependency{
 				NWO: strings.ToLower(p.NWO),
-				Ref: p.Ref,
+				Ref: p.Ref.String(),
 				SHA: p.SHA(),
 			},
 		}

@@ -11,6 +11,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -259,7 +260,7 @@ func TestCompleteness_RelockReplacesObsoleteEdges(t *testing.T) {
 	parent.Uses = append(parent.Uses, "acme/obsolete@v1")
 	file.Dependencies["acme/parent@v1.0.0"] = parent
 	obsolete := file.Dependencies["acme/leaf@v3"]
-	obsolete.Ref = "v1"
+	obsolete.Ref = testref.Name("v1")
 	file.Dependencies["acme/obsolete@v1"] = obsolete
 	writeGraph(t, file)
 	_, stderr, err := runCommandWithHTTP(t, &graphTransport{}, "--relock", "--no-narrow", path)

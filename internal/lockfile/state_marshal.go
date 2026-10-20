@@ -63,8 +63,8 @@ func marshalDeterministic(file parserlock.File, homeHost string) ([]byte, error)
 				}
 				addQuotedField(entry, "hostname", a.Hostname)
 			}
-			if a.Ref != "" {
-				addQuotedField(entry, "ref", a.Ref)
+			if !a.Ref.IsZero() {
+				addQuotedField(entry, "ref", a.Ref.String())
 			}
 			if a.Commit != "" {
 				addQuotedField(entry, "commit", a.Commit)

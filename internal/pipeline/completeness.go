@@ -25,12 +25,14 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 		}
 		recorded, _ := pw.PartitionRefs()
 		for i, ref := range recorded {
-			if !parserlock.IsFullSha(ref.Ref) {
+			if ref.Ref.Kind() != parserlock.RefKindCommit {
 				continue
 			}
 			for _, d := range pw.ExistingDeps {
-				if strings.EqualFold(d.NWO, ref.NWO()) && strings.EqualFold(d.SHA, ref.Ref) {
-					recorded[i].Ref = d.Ref
+				if strings.EqualFold(d.NWO, ref.NWO()) && strings.EqualFold(d.SHA, ref.Ref.String()) {
+					if r, err := parserlock.ParsePinRef(d.Ref); err == nil {
+						recorded[i].Ref = r
+					}
 					break
 				}
 			}
@@ -65,7 +67,7 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 				if found {
 					continue
 				}
-				ref := parserlock.ParseActionRef(child)
+				ref, _ := parserlock.ParseActionRef(child)
 				f := checks.Finding{
 					WorkflowPath:       pw.Path,
 					Category:           checks.NotPinned,
@@ -78,7 +80,7 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 					Remediation:        "restore the graph from version control, or run `gh actions-lock --relock`",
 				}
 				if ref != nil {
-					f.Dependency = &dep.Dependency{NWO: ref.NWO(), Ref: ref.Ref}
+					f.Dependency = &dep.Dependency{NWO: ref.NWO(), Ref: ref.Ref.String()}
 				}
 				wr.Findings = append(dropValid(wr.Findings), f)
 				wr.SkipCommit = true

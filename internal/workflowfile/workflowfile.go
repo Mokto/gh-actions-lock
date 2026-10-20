@@ -52,16 +52,43 @@ func Parse(path string, content []byte) (*File, error) {
 	}
 
 	var invalid []string
+	var refErrs []error
 	walkUses(&f.root, func(value string, _ bool) {
 		if isUsesExpression(value) {
 			invalid = append(invalid, strings.TrimSpace(value))
+			return
+		}
+		if err := UsesRefError(value); err != nil {
+			refErrs = append(refErrs, err)
 		}
 	})
 	if len(invalid) > 0 {
 		return nil, usesExpressionErr(invalid)
 	}
+	if len(refErrs) > 0 {
+		return nil, errors.Join(refErrs...)
+	}
 
 	return f, nil
+}
+
+// UsesRefError reports a remote `uses:` value whose text after `@` is neither
+// a full commit SHA nor a valid tag or branch name. Such a reference can't be
+// resolved by exact name, so it fails closed rather than being skipped. The
+// error wraps the library's *RefError.
+func UsesRefError(value string) error {
+	value = strings.TrimSpace(value)
+	if IsSelfRepositoryAction(value) || strings.HasPrefix(value, "./") {
+		return nil
+	}
+	_, err := parserlock.ParseActionRef(value)
+	if err == nil {
+		_, err = parserlock.ParseReusableWorkflowRef(value)
+	}
+	if err != nil {
+		return fmt.Errorf("`uses: %s`: %w", value, err)
+	}
+	return nil
 }
 
 // isUsesExpression reports whether a `uses:` value contains an expression.
@@ -161,7 +188,7 @@ func (f *File) ExtractActionRefs() RefScan {
 			return
 		}
 		if !stepLevel {
-			if ref := parserlock.ParseReusableWorkflowRef(value); ref != nil {
+			if ref, _ := parserlock.ParseReusableWorkflowRef(value); ref != nil {
 				scan.ReusableWorkflowRefs = append(scan.ReusableWorkflowRefs, parserlock.ActionRef{
 					Owner: ref.Owner, Repo: ref.Repo, Path: ref.Path, Ref: ref.Ref,
 				})
@@ -173,9 +200,10 @@ func (f *File) ExtractActionRefs() RefScan {
 		if appendDockerWarning(&scan.Warnings, seenDocker, value) {
 			return
 		}
-		actionRef := parserlock.ParseActionRef(value)
+		// Parse already rejected invalid refs.
+		actionRef, _ := parserlock.ParseActionRef(value)
 		if actionRef != nil {
-			dedupKey := actionRef.FullName() + "@" + actionRef.Ref
+			dedupKey := actionRef.FullName() + "@" + actionRef.Ref.String()
 			if !seen[dedupKey] {
 				seen[dedupKey] = true
 				scan.Refs = append(scan.Refs, *actionRef)
@@ -371,11 +399,15 @@ func scanSelfRepositoryActions(actionRefs []string, read func(relPath string) ([
 				}
 			case appendDockerWarning(&scan.Warnings, seenDocker, use):
 			default:
-				actionRef := parserlock.ParseActionRef(use)
+				actionRef, err := parserlock.ParseActionRef(use)
+				if err != nil {
+					scan.Errors = append(scan.Errors, fmt.Sprintf("self repository action %s: %v", current.ref, err))
+					continue
+				}
 				if actionRef == nil {
 					continue
 				}
-				key := actionRef.FullName() + "@" + actionRef.Ref
+				key := actionRef.FullName() + "@" + actionRef.Ref.String()
 				if !seenRefs[key] {
 					seenRefs[key] = true
 					scan.Refs = append(scan.Refs, *actionRef)

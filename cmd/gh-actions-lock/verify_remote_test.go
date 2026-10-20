@@ -162,7 +162,10 @@ func TestVerifyRemote_ExplicitRefSkipsDefaultBranchLookup(t *testing.T) {
 	_, _, err := runCommandWithHTTP(t, spy, "--verify", "-R", "octo/api", "--ref", "release/1")
 
 	require.NoError(t, err)
-	assert.Contains(t, asked, "/repos/octo/api/commits/release/1")
+	// Only exact tag and branch names: never rev-parse of the raw text.
+	assert.Contains(t, asked, "/repos/octo/api/commits/refs/tags/release/1")
+	assert.Contains(t, asked, "/repos/octo/api/commits/refs/heads/release/1")
+	assert.NotContains(t, asked, "/repos/octo/api/commits/release/1")
 }
 
 func TestVerifyRemote_RenamedTarget(t *testing.T) {
@@ -501,3 +504,30 @@ func TestShortSHA(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestVerifyRemote_RevisionSyntaxRefRejected(t *testing.T) {
+	for _, ref := range []string{"main~1", "refs/heads/main", "v1..v2"} {
+		t.Run(ref, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			rr := newRemoteRepo(map[string]string{
+				".github/workflows/ci.yml":       remoteWorkflow,
+				".github/workflows/actions.lock": remoteLock("actions/checkout@v6"),
+			}, reg)
+			chdirEmpty(t)
+			var asked []string
+			spy := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				asked = append(asked, req.URL.Path)
+				return rr.RoundTrip(req)
+			})
+
+			_, _, err := runCommandWithHTTP(t, spy, "--verify", "-R", "octo/api", "--ref", ref)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid ref")
+			assert.Contains(t, err.Error(), "use a full commit SHA, tag or branch name")
+			for _, p := range asked {
+				assert.NotContains(t, p, "/commits/", "an invalid ref must not be looked up")
+			}
+		})
+	}
+}

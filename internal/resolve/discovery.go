@@ -83,7 +83,7 @@ func (r *Resolver) LatestRef(ctx context.Context, owner, repo string) (string, e
 }
 
 func cacheKey(ref parserlock.ActionRef) ghapi.ActionRef {
-	return ghapi.ForActionRef(ref.Owner, ref.Repo, ref.Path, ref.Ref)
+	return ghapi.ForActionRef(ref.Owner, ref.Repo, ref.Path, ref.Ref.String())
 }
 
 // batchActionFileSize caps how many action refs are folded into a single
@@ -109,7 +109,7 @@ type UnlockedRefError struct {
 }
 
 func (e *UnlockedRefError) Error() string {
-	return fmt.Sprintf("no locked commit for %s@%s", e.Ref.FullName(), e.Ref.Ref)
+	return fmt.Sprintf("no locked commit for %s@%s", e.Ref.FullName(), e.Ref.Ref.String())
 }
 
 // ResolveLockedRecursive discovers dependencies using only recorded commits.
@@ -197,7 +197,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 			if !seen[key] {
 				seen[key] = true
 				if locked != nil && request.fetchRef == "" {
-					request.fetchRef = locked[ghapi.ForNWORef(request.ref.Owner, request.ref.Repo, request.ref.Ref)]
+					request.fetchRef = locked[ghapi.ForNWORef(request.ref.Owner, request.ref.Repo, request.ref.Ref.String())]
 					if request.fetchRef == "" {
 						resolveErr = errors.Join(resolveErr, &UnlockedRefError{Ref: request.ref})
 						continue
@@ -310,17 +310,28 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 					// Retain the logical ref for lockfile identity while fetching
 					// the sibling action file from the immutable parent commit.
 					owner, repo := deps[i].OwnerRepo()
+					parentRef, err := parserlock.ParsePinRef(deps[i].Ref)
+					if err != nil {
+						resolveErr = errors.Join(resolveErr, fmt.Errorf("composite action %s: %w", parentKey, err))
+						continue
+					}
 					request = resolutionRequest{
 						ref: parserlock.ActionRef{
 							Owner: owner,
 							Repo:  repo,
 							Path:  strings.TrimPrefix(use, selfRepositoryPrefix),
-							Ref:   deps[i].Ref,
+							Ref:   parentRef,
 						},
 						fetchRef: deps[i].SHA,
 					}
 				} else {
-					actionRef := parserlock.ParseActionRef(use)
+					actionRef, err := parserlock.ParseActionRef(use)
+					if err != nil {
+						// An invalid ref can't be looked up by exact name;
+						// skipping it would drop a dependency from the graph.
+						resolveErr = errors.Join(resolveErr, fmt.Errorf("composite action %s uses %q: %w", parentKey, use, err))
+						continue
+					}
 					if actionRef == nil {
 						continue
 					}
@@ -330,7 +341,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 				if actionRef.Owner == "" {
 					continue
 				}
-				childKey := actionRef.NWO() + "@" + actionRef.Ref
+				childKey := actionRef.NWO() + "@" + actionRef.Ref.String()
 				// Same-tarball edge: a composite whose `uses:` names another
 				// subpath in its own repo+ref. At runner-download granularity
 				// this is not a new transitive dependency (same tarball, same
@@ -342,7 +353,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 				// → other-repo). The path-aware seen{} set keys on FullName@Ref
 				// and so prevents re-resolving an exact self repository reference, making
 				// this enqueue loop-safe.
-				if strings.EqualFold(actionRef.NWO(), deps[i].NWO) && actionRef.Ref == deps[i].Ref {
+				if strings.EqualFold(actionRef.NWO(), deps[i].NWO) && actionRef.Ref.String() == deps[i].Ref {
 					nextPending = append(nextPending, request)
 					continue
 				}
@@ -393,7 +404,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 			key = ghapi.ForActionRef(request.ref.Owner, request.ref.Repo, request.ref.Path, request.fetchRef)
 		}
 		if entry, ok := cache.Get(key); ok {
-			entry.dep.Ref = request.ref.Ref
+			entry.dep.Ref = request.ref.Ref.String()
 			results[i] = resolveResult{dep: entry.dep, yml: entry.actionYML, ok: true}
 		} else {
 			uncachedIdx = append(uncachedIdx, i)
@@ -449,9 +460,13 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 		}
 		for j, idx := range span {
 			request := refs[idx]
-			fetchRef := request.fetchRef
-			if fetchRef == "" {
-				fetchRef = request.ref.Ref
+			fetchRef := request.ref.Ref
+			if request.fetchRef != "" {
+				commit, err := parserlock.ParseCommitID(request.fetchRef)
+				if err != nil {
+					return nil, nil, fmt.Errorf("%s@%s: locked commit: %w", request.ref.NWO(), request.ref.Ref, err)
+				}
+				fetchRef = parserlock.CommitPinRef(commit)
 			}
 			b.idxs[j] = idx
 			b.reqs[j] = ghapi.ActionFileRequest{
@@ -472,7 +487,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 		batches,
 		func(b actionBatch) string {
 			head := refs[b.idxs[0]].ref
-			label := "resolving " + head.NWO() + "@" + head.Ref
+			label := "resolving " + head.NWO() + "@" + head.Ref.String()
 			if len(b.idxs) > 1 {
 				label = fmt.Sprintf("%s (+%d more)", label, len(b.idxs)-1)
 			}
@@ -488,7 +503,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 						Hostname: res[j].Hostname,
 						NWO:      res[j].Owner + "/" + res[j].Repo,
 						Path:     res[j].Path,
-						Ref:      ref.Ref,
+						Ref:      ref.Ref.String(),
 						SHA:      res[j].CommitOID,
 					}
 					if res[j].OriginalNWO != "" {

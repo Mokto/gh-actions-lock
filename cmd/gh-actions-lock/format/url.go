@@ -21,7 +21,7 @@ func DepReleaseURL(hostname, dep string, isTagObject TagObjectCheck) string {
 	if hostname == "" {
 		hostname = "github.com"
 	}
-	ar := parserlock.ParseActionRef(dep)
+	ar, _ := parserlock.ParseActionRef(dep)
 	if ar == nil {
 		// ParseActionRef rejects refless inputs; fall back to splitting
 		// the bare NWO so links to dep keys without a ref still render.
@@ -31,7 +31,7 @@ func DepReleaseURL(hostname, dep string, isTagObject TagObjectCheck) string {
 		return ""
 	}
 	base := "https://" + hostname + "/" + ar.Owner + "/" + ar.Repo
-	ref := ar.Ref
+	ref := ar.Ref.String()
 	if isHexSHA(ref) {
 		if isTagObject != nil && isTagObject(ar.Owner, ar.Repo, ref) {
 			return base + "/tree/" + ref

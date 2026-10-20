@@ -11,6 +11,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/github/gh-actions-lock/internal/tag"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +89,7 @@ func TestPlanWorkflow_Relock_BumpsMovedTransitive(t *testing.T) {
 	wr := checks.WorkflowReport{
 		Path: ".github/workflows/test.yml",
 		ActionRefs: []parserlock.ActionRef{
-			{Owner: "comp", Repo: "action", Ref: "v1.0.0"},
+			{Owner: "comp", Repo: "action", Ref: testref.Pin("v1.0.0")},
 		},
 		Inventory: []checks.InventoryEntry{
 			{Dep: dep.Dependency{NWO: "comp/action", Ref: "v1.0.0", SHA: compSHA}, Direct: true},
@@ -139,8 +140,8 @@ func TestPlanWorkflow_Relock_LeavesUnreachablePinUntouched(t *testing.T) {
 	wr := checks.WorkflowReport{
 		Path: ".github/workflows/test.yml",
 		ActionRefs: []parserlock.ActionRef{
-			{Owner: "octo", Repo: "app", Ref: "main"},
-			{Owner: "octo", Repo: "bad", Ref: "v1"},
+			{Owner: "octo", Repo: "app", Ref: testref.Pin("main")},
+			{Owner: "octo", Repo: "bad", Ref: testref.Pin("v1")},
 		},
 		Inventory: []checks.InventoryEntry{
 			{Dep: dep.Dependency{NWO: "octo/app", Ref: "main", SHA: movedSHA}, Direct: true},

@@ -12,14 +12,15 @@ import (
 	"testing"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestBuildActionFileQuery(t *testing.T) {
 	refs := []ActionFileRequest{
-		{Owner: "actions", Repo: "checkout", Ref: "v6"},
-		{Owner: "actions", Repo: "cache", Path: "save", Ref: "v4"},
+		{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v6")},
+		{Owner: "actions", Repo: "cache", Path: "save", Ref: testref.Pin("v4")},
 	}
 
 	query, vars, aliases := buildActionFileQuery(refs)
@@ -52,8 +53,8 @@ func TestBuildActionFileQuery(t *testing.T) {
 
 func TestParseActionFileResponse(t *testing.T) {
 	refs := []ActionFileRequest{
-		{Owner: "actions", Repo: "checkout", Ref: "v6"},
-		{Owner: "actions", Repo: "cache", Path: "save", Ref: "v4"},
+		{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v6")},
+		{Owner: "actions", Repo: "cache", Path: "save", Ref: testref.Pin("v4")},
 	}
 	aliases := map[string]int{"a0": 0, "a1": 1}
 
@@ -139,7 +140,7 @@ func TestParseActionFileResponse_FileErrors(t *testing.T) {
 			}
 			results := parseActionFileResponse(
 				map[string]json.RawMessage{"a0": raw},
-				[]ActionFileRequest{{Owner: "o", Repo: "r", Ref: sha}},
+				[]ActionFileRequest{{Owner: "o", Repo: "r", Ref: testref.Pin(sha)}},
 				map[string]int{"a0": 0},
 				&api.GraphQLError{Errors: tt.errors}, "github.com")
 			require.Len(t, results, 1)
@@ -160,7 +161,7 @@ func TestParseActionFileResponse_FileErrors(t *testing.T) {
 }
 func TestParseActionFileResponse_AnnotatedTagPeeled(t *testing.T) {
 	refs := []ActionFileRequest{
-		{Owner: "nodeselector", Repo: "actions-test-fixtures", Ref: "annotated-v1"},
+		{Owner: "nodeselector", Repo: "actions-test-fixtures", Ref: testref.Pin("annotated-v1")},
 	}
 	aliases := map[string]int{"a0": 0}
 	data := map[string]json.RawMessage{
@@ -174,7 +175,7 @@ func TestParseActionFileResponse_AnnotatedTagPeeled(t *testing.T) {
 	if results[0].Err != nil {
 		t.Fatalf("unexpected error: %v", results[0].Err)
 	}
-	if results[0].Ref != "annotated-v1" {
+	if results[0].Ref.String() != "annotated-v1" {
 		t.Fatalf("expected Ref preserved as %q, got %q", "annotated-v1", results[0].Ref)
 	}
 	if results[0].CommitOID != "ea53476fdc172d8552df5af9658a45a367e4f41d" {
@@ -184,9 +185,9 @@ func TestParseActionFileResponse_AnnotatedTagPeeled(t *testing.T) {
 
 func TestParseActionFileResponse_Errors(t *testing.T) {
 	refs := []ActionFileRequest{
-		{Owner: "actions", Repo: "checkout", Ref: "v6"},
-		{Owner: "actions", Repo: "setup-go", Ref: "v6"},
-		{Owner: "actions", Repo: "cache", Ref: "v4"},
+		{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v6")},
+		{Owner: "actions", Repo: "setup-go", Ref: testref.Pin("v6")},
+		{Owner: "actions", Repo: "cache", Ref: testref.Pin("v4")},
 	}
 	aliases := map[string]int{"a0": 0, "a1": 1, "a2": 2}
 	data := map[string]json.RawMessage{
@@ -208,8 +209,8 @@ func TestParseActionFileResponse_Errors(t *testing.T) {
 
 func TestParseActionFileResponse_SAMLSSO(t *testing.T) {
 	refs := []ActionFileRequest{
-		{Owner: "actions", Repo: "checkout", Ref: "v6"},
-		{Owner: "unknownorg", Repo: "missing", Ref: "v1"},
+		{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v6")},
+		{Owner: "unknownorg", Repo: "missing", Ref: testref.Pin("v1")},
 	}
 	aliases := map[string]int{"a0": 0, "a1": 1}
 	data := map[string]json.RawMessage{
@@ -400,9 +401,9 @@ func TestResolveActionFiles_AdaptiveSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := []ActionFileRequest{
-		{Owner: "actions", Repo: "checkout", Ref: "v6"},
-		{Owner: "actions", Repo: "setup-go", Ref: "v6"},
-		{Owner: "actions", Repo: "cache", Ref: "v3"},
+		{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v6")},
+		{Owner: "actions", Repo: "setup-go", Ref: testref.Pin("v6")},
+		{Owner: "actions", Repo: "cache", Ref: testref.Pin("v3")},
 	}
 
 	results := c.ResolveActionFiles(context.Background(), refs)
@@ -448,7 +449,7 @@ func TestResolveActionFiles_SingleRefBatchErrorSurfaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	results := c.ResolveActionFiles(context.Background(),
-		[]ActionFileRequest{{Owner: "actions", Repo: "checkout", Ref: "v6"}})
+		[]ActionFileRequest{{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v6")}})
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -467,7 +468,7 @@ func TestParseActionFileResponse_NoPathSamlSurfacesSSO(t *testing.T) {
 	// A SAML block with no alias path, on a single-ref batch (the state after
 	// ResolveActionFiles has split down): the missing alias must surface the
 	// actionable SSO message for that owner, not "not found in response".
-	refs := []ActionFileRequest{{Owner: "secureorg", Repo: "private-action", Ref: "v1"}}
+	refs := []ActionFileRequest{{Owner: "secureorg", Repo: "private-action", Ref: testref.Pin("v1")}}
 	aliases := map[string]int{"a0": 0}
 	gqlErr := &api.GraphQLError{Errors: []api.GraphQLErrorItem{
 		{Message: "Resource protected by organization SAML enforcement",

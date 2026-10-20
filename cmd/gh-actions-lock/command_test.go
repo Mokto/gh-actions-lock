@@ -333,7 +333,7 @@ func writeTempLockfile(t *testing.T, repoDir, wfName string, pinStrings []string
 		if !ok {
 			t.Fatalf("writeTempLockfile: invalid pin %q", key)
 		}
-		ref = cmp.Or(ref, pin.Ref)
+		ref = cmp.Or(ref, pin.Ref.String())
 		if commit == "" {
 			// Generate deterministic fake commit from pin key.
 			commit = "sha1-" + strings.Repeat(string("abcdef0123456789"[len(key)%16]), 40)

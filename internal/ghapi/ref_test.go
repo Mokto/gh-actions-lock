@@ -8,6 +8,7 @@ import (
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +44,7 @@ func TestResolveActionRefSelection(t *testing.T) {
 					}
 					c := newTestClient(t, reg)
 					c.anonHTTP = &http.Client{Transport: reg}
-					got, err = c.anonResolveRef(context.Background(), "o", "r", "v1")
+					got, err = c.anonResolveRef(context.Background(), "o", "r", testref.Pin("v1"))
 				} else {
 					repo := map[string]any{"nameWithOwner": "o/r"}
 					for field, sha := range map[string]string{"object": tt.tag, "branch": tt.branch} {
@@ -54,7 +55,7 @@ func TestResolveActionRefSelection(t *testing.T) {
 					raw, marshalErr := json.Marshal(repo)
 					require.NoError(t, marshalErr)
 					results := parseActionFileResponse(map[string]json.RawMessage{"a0": raw},
-						[]ActionFileRequest{{Owner: "o", Repo: "r", Ref: "v1"}},
+						[]ActionFileRequest{{Owner: "o", Repo: "r", Ref: testref.Pin("v1")}},
 						map[string]int{"a0": 0}, nil, "github.com")
 					got, err = results[0].CommitOID, results[0].Err
 				}
@@ -77,8 +78,8 @@ func TestResolveActionRefSelection(t *testing.T) {
 
 func TestActionQueryPeelsBothNamespacesButNotFullSHAs(t *testing.T) {
 	query, vars, _ := buildActionFileQuery([]ActionFileRequest{
-		{Owner: "o", Repo: "r", Ref: "v1"},
-		{Owner: "o", Repo: "r", Ref: paritySHA},
+		{Owner: "o", Repo: "r", Ref: testref.Pin("v1")},
+		{Owner: "o", Repo: "r", Ref: testref.Pin(paritySHA)},
 	})
 	assert.Equal(t, "refs/tags/v1^{commit}", vars["expr0"], "annotated and lightweight tags must resolve to commits")
 	assert.Equal(t, "refs/heads/v1^{commit}", vars["branch0"])
@@ -92,7 +93,7 @@ func TestMissingTagDoesNotHideBranchOrDenial(t *testing.T) {
 	for _, kind := range []string{"NOT_FOUND", "FORBIDDEN"} {
 		t.Run(kind, func(t *testing.T) {
 			results := parseActionFileResponse(map[string]json.RawMessage{"a0": raw},
-				[]ActionFileRequest{{Owner: "o", Repo: "r", Ref: "main"}},
+				[]ActionFileRequest{{Owner: "o", Repo: "r", Ref: testref.Pin("main")}},
 				map[string]int{"a0": 0},
 				&api.GraphQLError{Errors: []api.GraphQLErrorItem{{Type: kind, Path: []any{"a0", "object"}, Message: "lookup denied"}}},
 				"github.com")

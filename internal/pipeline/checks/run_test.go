@@ -8,6 +8,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/resolve"
+	"github.com/github/gh-actions-lock/internal/testref"
 )
 
 // Typed map keys for the test stub: a small struct per lookup tuple so
@@ -85,7 +86,8 @@ func checkNewLockfile(workflows map[string][]string, deps ...map[string]parserlo
 				keys = append(keys, key)
 				if commit != "" {
 					// Extract ref from key (after @)
-					ref := key[strings.LastIndex(key, "@")+1:]
+					// A SHA key records no name, so its entry ref stays zero.
+					ref, _ := parserlock.ParseRefName(key[strings.LastIndex(key, "@")+1:])
 					d[key] = parserlock.Action{Ref: ref, Commit: commit}
 				}
 			}
@@ -112,7 +114,7 @@ func checkParsedWF(path string, uses ...parserlock.ActionRef) ParsedWorkflow {
 }
 
 func checkRef(owner, repo, ref string) parserlock.ActionRef {
-	return parserlock.ActionRef{Owner: owner, Repo: repo, Ref: ref}
+	return parserlock.ActionRef{Owner: owner, Repo: repo, Ref: testref.Pin(ref)}
 }
 
 func findingCategories(fs []Finding) []string {

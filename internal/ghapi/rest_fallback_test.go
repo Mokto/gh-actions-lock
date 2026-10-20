@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/github/gh-actions-lock/internal/testref"
 )
 
 func TestSSOFallbackEligible(t *testing.T) {
@@ -106,7 +108,7 @@ func TestResolveActionFiles_SSOFallbackForActionsOrg(t *testing.T) {
 	c.anonBaseURL = srv.URL
 
 	refs := []ActionFileRequest{
-		{Owner: "actions", Repo: "checkout", Ref: "v4"},
+		{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
 	}
 
 	results := c.ResolveActionFiles(context.Background(), refs)
@@ -156,7 +158,7 @@ func TestResolveActionFiles_SSONoFallbackForNonActionsOrg(t *testing.T) {
 	c.anonBaseURL = srv.URL
 
 	refs := []ActionFileRequest{
-		{Owner: "mycompany", Repo: "private-action", Ref: "v1"},
+		{Owner: "mycompany", Repo: "private-action", Ref: testref.Pin("v1")},
 	}
 
 	results := c.ResolveActionFiles(context.Background(), refs)
@@ -201,8 +203,8 @@ func TestResolveActionFiles_RESTOnlyUsesPrivateRepo(t *testing.T) {
 	c.anonBaseURL = srv.URL
 
 	results := c.ResolveActionFiles(context.Background(), []ActionFileRequest{
-		{Owner: "actions", Repo: "checkout", Ref: "v4"},
-		{Owner: "actions", Repo: "setup-go", Path: "cache", Ref: "v5"},
+		{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
+		{Owner: "actions", Repo: "setup-go", Path: "cache", Ref: testref.Pin("v5")},
 	})
 	for _, result := range results {
 		nwo := result.Owner + "/" + result.Repo
@@ -251,7 +253,7 @@ func TestResolveActionFiles_BadCredentialsFallbackFailsClosed(t *testing.T) {
 			c.anonBaseURL = srv.URL
 
 			results := c.ResolveActionFiles(context.Background(), []ActionFileRequest{
-				{Owner: "example", Repo: "action", Ref: "v1"},
+				{Owner: "example", Repo: "action", Ref: testref.Pin("v1")},
 			})
 			if results[0].Err == nil {
 				t.Fatal("expected resolution error")
@@ -454,7 +456,7 @@ func TestSSOFallback_RateLimitedGuidance(t *testing.T) {
 			c.anonBaseURL = srv.URL
 			c.anonHTTP = srv.Client()
 
-			_, err = c.CommitSHA(context.Background(), "acme", "widget", "v1")
+			_, err = c.ResolvePinRef(context.Background(), "acme", "widget", testref.Pin("v1"))
 			var rl *SSORateLimitedError
 			if !errors.As(err, &rl) {
 				t.Fatalf("err = %v, want SSORateLimitedError", err)

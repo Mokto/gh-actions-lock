@@ -11,6 +11,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pinpool"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -49,7 +50,7 @@ func TestResolveLockedRecursiveCachesContentWithoutLosingLogicalRefs(t *testing.
 		d := dep.Dependency{NWO: "old/action", Ref: ref, SHA: sha}
 		r.SeedFromLockfile([]dep.Dependency{d})
 		deps, parents, err := r.ResolveLockedRecursive(context.Background(),
-			[]parserlock.ActionRef{{Owner: "old", Repo: "action", Path: "root", Ref: ref}},
+			[]parserlock.ActionRef{{Owner: "old", Repo: "action", Path: "root", Ref: testref.Pin(ref)}},
 			[]dep.Dependency{d})
 		require.NoError(t, err)
 		require.Len(t, deps, 1, "same-tarball paths collapse into one dependency")
@@ -76,11 +77,11 @@ func TestResolveLockedRecursiveMissingChildDoesNotResolveLiveRef(t *testing.T) {
 	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
 	require.NoError(t, err)
 	_, parents, err := r.ResolveLockedRecursive(context.Background(),
-		[]parserlock.ActionRef{{Owner: "o", Repo: "root", Ref: "v1"}},
+		[]parserlock.ActionRef{{Owner: "o", Repo: "root", Ref: testref.Pin("v1")}},
 		[]dep.Dependency{{NWO: "o/root", Ref: "v1", SHA: sha}})
 	var missing *UnlockedRefError
 	require.ErrorAs(t, err, &missing)
-	assert.Equal(t, "Main", missing.Ref.Ref)
+	assert.Equal(t, "Main", missing.Ref.Ref.String())
 	assert.Equal(t, []string{"o/root@v1"}, parents["o/child@Main"])
 	assert.Len(t, reg.Requests, 1)
 }
@@ -99,7 +100,7 @@ func TestResolveRecursiveRejectsMalformedManifest(t *testing.T) {
 			}))
 			r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
 			require.NoError(t, err)
-			refs := []parserlock.ActionRef{{Owner: "o", Repo: "root", Ref: "v1"}}
+			refs := []parserlock.ActionRef{{Owner: "o", Repo: "root", Ref: testref.Pin("v1")}}
 			if locked {
 				_, _, err = r.ResolveLockedRecursive(context.Background(), refs,
 					[]dep.Dependency{{NWO: "o/root", Ref: "v1", SHA: sha}})
@@ -133,7 +134,7 @@ func TestResolveLockedRecursiveMissingManifest(t *testing.T) {
 			r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
 			require.NoError(t, err)
 			_, parents, err := r.ResolveLockedRecursive(context.Background(),
-				[]parserlock.ActionRef{{Owner: "o", Repo: "root", Path: tt.path, Ref: "v1"}},
+				[]parserlock.ActionRef{{Owner: "o", Repo: "root", Path: tt.path, Ref: testref.Pin("v1")}},
 				[]dep.Dependency{{NWO: "o/root", Ref: "v1", SHA: sha}})
 			if tt.wantErr {
 				require.ErrorContains(t, err, "manifest is missing")
@@ -164,7 +165,7 @@ func TestResolveRecursiveMixedCaseSiblingDoesNotCreateSelfEdge(t *testing.T) {
 				},
 			}
 			r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, entries)
-			refs := []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "Main"}}
+			refs := []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: testref.Pin("Main")}}
 			var deps []dep.Dependency
 			var parents dep.ParentMap
 			var err error
@@ -190,9 +191,9 @@ func TestResolveLockedRecursiveDoesNotFoldRefCasing(t *testing.T) {
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	r := &Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}
 	_, _, err := r.ResolveLockedRecursive(context.Background(),
-		[]parserlock.ActionRef{{Owner: "O", Repo: "Action", Ref: "Main"}},
+		[]parserlock.ActionRef{{Owner: "O", Repo: "Action", Ref: testref.Pin("Main")}},
 		[]dep.Dependency{{NWO: "o/action", Ref: "main", SHA: sha}})
 	var missing *UnlockedRefError
 	require.ErrorAs(t, err, &missing)
-	assert.Equal(t, "Main", missing.Ref.Ref)
+	assert.Equal(t, "Main", missing.Ref.Ref.String())
 }

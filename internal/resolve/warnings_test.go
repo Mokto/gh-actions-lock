@@ -7,6 +7,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +39,7 @@ func TestResolveWithWarnings(t *testing.T) {
 			}
 			for range 2 {
 				deps, parents, warnings, err := r.ResolveWithWarnings(context.Background(),
-					[]parserlock.ActionRef{{Owner: "o", Repo: "parent", Ref: "v1"}}, entries)
+					[]parserlock.ActionRef{{Owner: "o", Repo: "parent", Ref: testref.Pin("v1")}}, entries)
 				require.NoError(t, err)
 				assert.Len(t, deps, 2)
 				assert.Equal(t, []string{"o/parent@v1"}, parents["o/child@v1"])
@@ -61,7 +62,7 @@ func TestResolveWithWarningsSkipsImmutableImagesAndDockerfiles(t *testing.T) {
 				},
 			})
 			_, _, warnings, err := r.ResolveWithWarnings(context.Background(),
-				[]parserlock.ActionRef{{Owner: "o", Repo: "r", Ref: "v1"}}, nil)
+				[]parserlock.ActionRef{{Owner: "o", Repo: "r", Ref: testref.Pin("v1")}}, nil)
 			require.NoError(t, err)
 			assert.Empty(t, warnings)
 		})

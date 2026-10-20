@@ -168,7 +168,7 @@ func (r *Resolver) SeedFromLockfile(deps []dep.Dependency) {
 // reason to advance. orig is the ref as written, which the rewrite must
 // match exactly. Unseeded refs are left to live resolution.
 func (r *Resolver) Redirect(owner, repo string, orig parserlock.ActionRef, canonical string) {
-	for _, key := range []ghapi.ActionRef{ghapi.ForActionRef(owner, repo, "", orig.Ref), ghapi.ForActionRef(owner, repo, orig.Path, orig.Ref)} {
+	for _, key := range []ghapi.ActionRef{ghapi.ForActionRef(owner, repo, "", orig.Ref.String()), ghapi.ForActionRef(owner, repo, orig.Path, orig.Ref.String())} {
 		e, ok := r.cache.Get(key)
 		if !ok {
 			continue

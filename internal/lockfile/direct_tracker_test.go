@@ -6,6 +6,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,7 +37,7 @@ func TestNewDirectTracker_Matching(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			refs := []parserlock.ActionRef{{Owner: tt.useOwner, Repo: tt.useRepo, Ref: tt.useRef}}
+			refs := []parserlock.ActionRef{{Owner: tt.useOwner, Repo: tt.useRepo, Ref: testref.Pin(tt.useRef)}}
 			deps := []dep.Dependency{{NWO: tt.depNWO, Ref: tt.depRef}}
 
 			tracker := NewDirectTracker(refs, deps)
@@ -47,7 +48,7 @@ func TestNewDirectTracker_Matching(t *testing.T) {
 }
 
 func TestDirectTracker_KeysUseDepSpelling(t *testing.T) {
-	refs := []parserlock.ActionRef{{Owner: "Actions", Repo: "Checkout", Ref: "v4"}}
+	refs := []parserlock.ActionRef{{Owner: "Actions", Repo: "Checkout", Ref: testref.Pin("v4")}}
 	deps := []dep.Dependency{
 		{NWO: "actions/checkout", Ref: "v4"},
 		{NWO: "actions/cache", Ref: "v4"},

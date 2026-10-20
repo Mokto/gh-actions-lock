@@ -15,6 +15,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/github/gh-actions-lock/internal/tag"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -151,7 +152,7 @@ func TestPlanNormalizationRetainsSharedTargets(t *testing.T) {
 			locked := dep.Dependency{Hostname: "github.com", NWO: "owner/action", Ref: "main", SHA: oldSHA}
 			changed := checks.WorkflowReport{
 				Path:       ".github/workflows/changed.yml",
-				ActionRefs: []parserlock.ActionRef{{Owner: "owner", Repo: "action", Ref: headSHA}},
+				ActionRefs: []parserlock.ActionRef{{Owner: "owner", Repo: "action", Ref: testref.Pin(headSHA)}},
 				Inventory:  []checks.InventoryEntry{{Dep: locked, Direct: true}},
 				Findings: []checks.Finding{
 					{Category: checks.Stale, Dependency: &locked},

@@ -3,6 +3,7 @@ package workflowfile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -21,9 +22,9 @@ func TestLoadAndExtractActionRefs(t *testing.T) {
 	assert.Empty(t, warnings)
 
 	assert.Equal(t, "actions/checkout", refs[0].NWO())
-	assert.Equal(t, "v4", refs[0].Ref)
+	assert.Equal(t, "v4", refs[0].Ref.String())
 	assert.Equal(t, "actions/setup-go", refs[1].NWO())
-	assert.Equal(t, "v5", refs[1].Ref)
+	assert.Equal(t, "v5", refs[1].Ref.String())
 }
 
 func TestExtractActionRefsMixed(t *testing.T) {
@@ -265,7 +266,7 @@ func TestScanSelfRepositoryActions_RejectsSymlinkEscape(t *testing.T) {
 func actionRefStrings(refs []parserlock.ActionRef) []string {
 	values := make([]string, len(refs))
 	for i, ref := range refs {
-		values[i] = ref.FullName() + "@" + ref.Ref
+		values[i] = ref.FullName() + "@" + ref.Ref.String()
 	}
 	return values
 }
@@ -370,7 +371,7 @@ jobs:
 	require.NoError(t, err)
 	var keys []string
 	for _, r := range f.ExtractActionRefs().Refs {
-		keys = append(keys, r.FullName()+"@"+r.Ref)
+		keys = append(keys, r.FullName()+"@"+r.Ref.String())
 	}
 	assert.ElementsMatch(t, []string{"a/one@v1", "a/two@v1", "a/three@v1", "a/four@v1"}, keys)
 }
@@ -399,7 +400,7 @@ jobs:
 
 	var keys []string
 	for _, r := range scan.Refs {
-		keys = append(keys, r.FullName()+"@"+r.Ref)
+		keys = append(keys, r.FullName()+"@"+r.Ref.String())
 	}
 	assert.ElementsMatch(t, []string{"a/dup@v1", "a/dup/sub@v1"}, keys, "remote refs are deduplicated across parallel and plain steps")
 	assert.Equal(t, []string{"./local/action"}, scan.LocalPaths)
@@ -562,4 +563,81 @@ func TestScanSelfRepositoryActions_EnvRootBoundsEscape(t *testing.T) {
 	require.Len(t, scan.Errors, 1)
 	assert.Contains(t, scan.Errors[0], "outside repo root")
 	assert.Empty(t, scan.Refs)
+}
+
+func TestParseRejectsInvalidUsesRef(t *testing.T) {
+	tests := []struct {
+		name string
+		uses string
+		want error
+	}{
+		{name: "empty step ref", uses: "actions/checkout@", want: parserlock.ErrRefEmpty},
+		{name: "qualified branch", uses: "actions/checkout@refs/heads/main", want: parserlock.ErrRefQualified},
+		{name: "revision syntax", uses: "actions/checkout@main~1", want: parserlock.ErrRefInvalidName},
+		{name: "range syntax", uses: "actions/checkout@v1..v2", want: parserlock.ErrRefInvalidName},
+		{name: "leading dash", uses: "actions/checkout@-v1", want: parserlock.ErrRefInvalidName},
+		{name: "reflog syntax", uses: "actions/checkout@main@{1}", want: parserlock.ErrRefInvalidName},
+		{name: "job-level reusable workflow", uses: "o/r/.github/workflows/x.yml@refs/tags/v1", want: parserlock.ErrRefQualified},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := "    steps:\n      - uses: "
+			if strings.Contains(tt.uses, ".github/workflows/") {
+				key = "    uses: "
+			}
+			content := "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n" + key + "'" + tt.uses + "'\n"
+
+			_, err := Parse("wf.yml", []byte(content))
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.want)
+			var refErr *parserlock.RefError
+			assert.ErrorAs(t, err, &refErr)
+			assert.Contains(t, err.Error(), tt.uses)
+		})
+	}
+}
+
+func TestExtractActionRefs_TypedRefs(t *testing.T) {
+	const upper = "8E8C483DB84B4BEE98B60C0593521ED34D9990E8"
+	f, err := Parse("wf.yml", []byte(`on: push
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@`+upper+`
+`))
+	require.NoError(t, err)
+
+	refs := f.ExtractActionRefs().Refs
+
+	require.Len(t, refs, 2)
+	name, ok := refs[0].Ref.Name()
+	require.True(t, ok)
+	assert.Equal(t, "refs/tags/v4", name.TagRef())
+	commit, ok := refs[1].Ref.Commit()
+	require.True(t, ok)
+	assert.Equal(t, strings.ToLower(upper), commit.String())
+}
+
+func TestScanSelfRepositoryActions_InvalidRefFailsClosed(t *testing.T) {
+	repoRoot := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755))
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "ci.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(workflowPath), 0o755))
+	require.NoError(t, os.WriteFile(workflowPath, []byte("name: ci\n"), 0o644))
+	actionPath := filepath.Join(repoRoot, "actions", "root", "action.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(actionPath), 0o755))
+	require.NoError(t, os.WriteFile(actionPath, []byte(`runs:
+  using: composite
+  steps:
+    - uses: vendor/tool@main~1
+`), 0o644))
+
+	scan := ScanSelfRepositoryActions(workflowPath, []string{"$/actions/root"})
+
+	assert.Empty(t, scan.Refs)
+	require.Len(t, scan.Errors, 1)
+	assert.Contains(t, scan.Errors[0], `invalid ref "main~1"`)
 }

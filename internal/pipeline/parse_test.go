@@ -85,7 +85,7 @@ jobs:
 	pw := parsed[0]
 	require.Len(t, pw.Refs, 1)
 	assert.Equal(t, "actions/checkout", pw.Refs[0].NWO())
-	assert.Equal(t, "v4", pw.Refs[0].Ref)
+	assert.Equal(t, "v4", pw.Refs[0].Ref.String())
 	assert.NotEmpty(t, pw.RewriteRefs, "refs inside a self repository action are rewritable in their action file")
 	assert.Equal(t, []string{actionPath}, pw.SelfActionFiles)
 	assert.ElementsMatch(t, []string{"$/actions/root", "$/.github/workflows/reusable.yml"}, pw.SelfRepositoryRefs)

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,10 +42,10 @@ func TestCheckPins_GraphQLParsesEachState(t *testing.T) {
 	}`, func(q string, v map[string]any) { gotQuery, gotVars = q, v }))
 
 	states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{
-		{Owner: "actions", Repo: "checkout", SHA: paritySHA, Head: "v4.2.1"},
+		{Owner: "actions", Repo: "checkout", SHA: paritySHA, Head: testref.Name("v4.2.1")},
 		{Owner: "krzema12", Repo: "github-actions-typing", SHA: paritySHA},
 		{Owner: "octo", Repo: "gone", SHA: paritySHA},
-		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: "v1.0.0"},
+		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: testref.Name("v1.0.0")},
 		{Owner: "octo", Repo: "deleted", SHA: paritySHA},
 	})
 	require.Len(t, states, 5)
@@ -134,8 +135,8 @@ func TestCheckPins_RESTOnly(t *testing.T) {
 	c.anonHTTP = &http.Client{Transport: reg}
 	states := c.CheckPins(context.Background(), []PinCheck{
 		{Owner: "krzema12", Repo: "github-actions-typing", SHA: paritySHA},
-		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: "v1.0.0"},
-		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: "v2.0.0"},
+		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: testref.Name("v1.0.0")},
+		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: testref.Name("v2.0.0")},
 		{Owner: "octo", Repo: "retag", SHA: parityMoved},
 		{Owner: "octo", Repo: "deleted", SHA: paritySHA},
 	})
@@ -159,12 +160,9 @@ func TestPinCheckRefs(t *testing.T) {
 		want []string
 	}{
 		{name: "no ref", pc: PinCheck{}},
-		{name: "head tries tag then branch", pc: PinCheck{Head: "main"}, want: []string{"refs/tags/main", "refs/heads/main"}},
-		{name: "a full ref name is never used as-is", pc: PinCheck{Head: "refs/tags/v1"}, want: []string{"refs/tags/refs/tags/v1", "refs/heads/refs/tags/v1"}},
-		{name: "a pull request ref is not a tag or branch", pc: PinCheck{Head: "pull/1/head"}, want: []string{"refs/tags/pull/1/head", "refs/heads/pull/1/head"}},
-		{name: "revision syntax is never looked up", pc: PinCheck{Head: "main~1"}},
-		{name: "reflog syntax is never looked up", pc: PinCheck{Head: "v1@{1}"}},
-		{name: "a describe name is never looked up", pc: PinCheck{Head: "v6.1.0-1-g373d742f768e"}},
+		{name: "head tries tag then branch", pc: PinCheck{Head: testref.Name("main")}, want: []string{"refs/tags/main", "refs/heads/main"}},
+		{name: "a pull request ref is not a tag or branch", pc: PinCheck{Head: testref.Name("pull/1/head")}, want: []string{"refs/tags/pull/1/head", "refs/heads/pull/1/head"}},
+		{name: "a describe name is never looked up", pc: PinCheck{Head: testref.Name("v6.1.0-1-g373d742f768e")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -187,8 +185,8 @@ func TestCheckPins_RefLookup(t *testing.T) {
 			func(q string, v map[string]any) { gotQuery, gotVars = q, v }))
 
 		states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{
-			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1"},
-			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1.0.0"},
+			{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("v1")},
+			{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("v1.0.0")},
 		})
 		require.NoError(t, states[0].Err)
 		require.NoError(t, states[1].Err)
@@ -218,8 +216,8 @@ func TestCheckPins_RefLookup(t *testing.T) {
 		c := newTestClient(t, reg)
 		c.anonHTTP = &http.Client{Transport: reg}
 		states := c.CheckPins(context.Background(), []PinCheck{
-			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "main"},
-			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "pull/1/head"},
+			{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("main")},
+			{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("pull/1/head")},
 		})
 		require.NoError(t, states[0].Err)
 		require.NoError(t, states[1].Err)
@@ -241,7 +239,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 				"tag": {"oid": "`+paritySHA+`"}, "head": {"oid": "`+paritySHA+`"}, "tagRef": null, "headRef": null}}}`,
 			func(q string, v map[string]any) { gotQuery, gotVars = q, v }))
 
-		states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v9"}})
+		states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("v9")}})
 		require.NoError(t, states[0].Err)
 		assert.Contains(t, gotQuery, "tagRef: ref(qualifiedName: $tagRef0)")
 		assert.Contains(t, gotQuery, "headRef: ref(qualifiedName: $headRef0)")
@@ -258,7 +256,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 			"a0": {"nameWithOwner": "o/r", "commit": {"oid": "`+paritySHA+`"}}}}`,
 			func(_ string, v map[string]any) { gotVars = v }))
 
-		states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v6.1.0-1-g373d742f768e"}})
+		states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("v6.1.0-1-g373d742f768e")}})
 		require.NoError(t, states[0].Err)
 		assert.NotContains(t, gotVars, "tag0")
 		assert.NotContains(t, gotVars, "tagRef0")
@@ -275,7 +273,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 
 		c := newTestClient(t, reg)
 		c.anonHTTP = &http.Client{Transport: reg}
-		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1.0.0"}})
+		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("v1.0.0")}})
 		require.NoError(t, states[0].Err)
 		assert.Equal(t, paritySHA, states[0].HeadOID)
 		assert.True(t, states[0].CommitFound, "a ref at the commit proves it exists")
@@ -294,7 +292,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 
 		c := newTestClient(t, reg)
 		c.anonHTTP = &http.Client{Transport: reg}
-		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v9"}})
+		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("v9")}})
 		require.NoError(t, states[0].Err)
 		assert.Empty(t, states[0].HeadOID)
 		for _, req := range reg.Requests {
@@ -311,7 +309,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 
 		c := newTestClient(t, reg)
 		c.anonHTTP = &http.Client{Transport: reg}
-		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v6.1.0-1-g373d742f768e"}})
+		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("v6.1.0-1-g373d742f768e")}})
 		require.NoError(t, states[0].Err)
 		assert.Empty(t, states[0].HeadOID)
 	})
@@ -329,7 +327,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 
 		c := newTestClient(t, reg)
 		c.anonHTTP = &http.Client{Transport: reg}
-		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1.0.0"}})
+		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("v1.0.0")}})
 		require.NoError(t, states[0].Err)
 		assert.Equal(t, paritySHA, states[0].HeadOID, "the tag object peels to its commit")
 		assert.True(t, states[0].CommitFound)
@@ -344,7 +342,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 
 		c := newTestClient(t, reg)
 		c.anonHTTP = &http.Client{Transport: reg}
-		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "main"}})
+		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("main")}})
 		require.Error(t, states[0].Err)
 		assert.Empty(t, states[0].HeadOID)
 	})

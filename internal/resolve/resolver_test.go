@@ -12,6 +12,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pinpool"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/github/gh-actions-lock/internal/workflowfile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,8 +75,8 @@ func TestResolveAllRecursiveWithCacheAndCompositeExpansion(t *testing.T) {
 	})
 
 	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "actions", Repo: "checkout", Ref: "v6"},
-		{Owner: "owner", Repo: "composite", Ref: "v1"},
+		{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v6")},
+		{Owner: "owner", Repo: "composite", Ref: testref.Pin("v1")},
 	})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive returned error: %v", err)
@@ -157,8 +158,8 @@ func TestResolveAllRecursiveMultipleParents(t *testing.T) {
 	})
 
 	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "owner", Repo: "compositeA", Ref: "v1"},
-		{Owner: "owner", Repo: "compositeB", Ref: "v1"},
+		{Owner: "owner", Repo: "compositeA", Ref: testref.Pin("v1")},
+		{Owner: "owner", Repo: "compositeB", Ref: testref.Pin("v1")},
 	})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive returned error: %v", err)
@@ -205,7 +206,7 @@ func TestResolveAllRecursiveRespectsMaxDepth(t *testing.T) {
 		},
 	})
 
-	_, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "composite", Ref: "v1"}})
+	_, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "composite", Ref: testref.Pin("v1")}})
 	if err == nil || !strings.Contains(err.Error(), "exceeded max depth 1") {
 		t.Fatalf("expected recursion depth error, got %v", err)
 	}
@@ -232,7 +233,7 @@ func TestResolveAllRecursiveDeepNestedComposites(t *testing.T) {
 		},
 	})
 
-	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "a", Ref: "v1"}})
+	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "a", Ref: testref.Pin("v1")}})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive returned error: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestResolveAllRecursiveSkipsSelfReference(t *testing.T) {
 		},
 	})
 
-	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "repo", Ref: "main"}})
+	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "repo", Ref: testref.Pin("main")}})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive returned error: %v", err)
 	}
@@ -310,7 +311,7 @@ func TestResolveAllRecursiveSiblingSubpathTransitive(t *testing.T) {
 	})
 
 	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: "main"},
+		{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: testref.Pin("main")},
 	})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive returned error: %v", err)
@@ -374,7 +375,7 @@ func TestResolveAllRecursiveSelfRepositoryNestedInComposite(t *testing.T) {
 	})
 
 	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: "main"},
+		{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: testref.Pin("main")},
 	})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive returned error: %v", err)
@@ -428,7 +429,7 @@ func TestResolveAllRecursiveSelfRepositoryNestedFetchesParentSHA(t *testing.T) {
 	require.NoError(t, err)
 
 	deps, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "org", Repo: "fixtures", Path: "parent", Ref: "main"},
+		{Owner: "org", Repo: "fixtures", Path: "parent", Ref: testref.Pin("main")},
 	})
 	require.NoError(t, err)
 	require.Len(t, deps, 1)
@@ -449,7 +450,7 @@ func TestResolveAllRecursiveRejectsNestedSelfRepositoryRefWithVersion(t *testing
 			})
 
 			deps, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-				{Owner: "org", Repo: "fixtures", Path: "parent", Ref: "main"},
+				{Owner: "org", Repo: "fixtures", Path: "parent", Ref: testref.Pin("main")},
 			})
 
 			require.Error(t, err)
@@ -547,7 +548,7 @@ func TestResolveAllRecursiveSelfRepositoryDeepMultiLevel(t *testing.T) {
 	})
 
 	deps, parentMap, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "org", Repo: "app", Path: "l0", Ref: "main"},
+		{Owner: "org", Repo: "app", Path: "l0", Ref: testref.Pin("main")},
 	})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive returned error: %v", err)
@@ -650,7 +651,7 @@ func TestResolveAllRecursiveCrossRefTransitive(t *testing.T) {
 	})
 
 	deps, pm, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: "updated"},
+		{Owner: "org", Repo: "fixtures", Path: "nested-composite", Ref: testref.Pin("updated")},
 	})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive error: %v", err)
@@ -702,7 +703,7 @@ func TestResolveAllRecursiveTerminatesOnCycle(t *testing.T) {
 		},
 	})
 
-	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "a", Ref: "v1"}})
+	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "a", Ref: testref.Pin("v1")}})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive returned error: %v", err)
 	}
@@ -739,7 +740,7 @@ func TestResolveCompositeLocalPathIsAllowedWithoutTraversal(t *testing.T) {
 	})
 
 	deps, _, warnings, err := r.ResolveWithWarnings(context.Background(), []parserlock.ActionRef{
-		{Owner: "owner", Repo: "composite", Ref: "v1"},
+		{Owner: "owner", Repo: "composite", Ref: testref.Pin("v1")},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -777,7 +778,7 @@ func TestResolveNestedLocalPathIsAllowedWithoutTraversal(t *testing.T) {
 	})
 
 	_, _, warnings, err := r.ResolveWithWarnings(context.Background(), []parserlock.ActionRef{
-		{Owner: "owner", Repo: "app", Path: "l0", Ref: "main"},
+		{Owner: "owner", Repo: "app", Path: "l0", Ref: testref.Pin("main")},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -872,7 +873,7 @@ func TestResolveAllRecursiveWithHTTPTransport(t *testing.T) {
 		t.Fatalf("New returned error: %v", err)
 	}
 
-	deps, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "composite", Ref: "v1"}})
+	deps, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "composite", Ref: testref.Pin("v1")}})
 	if err != nil {
 		t.Fatalf("ResolveAllRecursive returned error: %v", err)
 	}
@@ -917,8 +918,8 @@ func TestResolveAllRecursivePartialFailure(t *testing.T) {
 	}
 
 	deps, _, resolveErr := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "good", Repo: "action", Ref: "v1"},
-		{Owner: "bad", Repo: "private", Ref: "main"},
+		{Owner: "good", Repo: "action", Ref: testref.Pin("v1")},
+		{Owner: "bad", Repo: "private", Ref: testref.Pin("main")},
 	})
 
 	// Must return an error (bad/private failed).
@@ -972,8 +973,8 @@ func TestResolveAllRecursivePartialFailureCachedGood(t *testing.T) {
 	})
 
 	deps, _, resolveErr := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "good", Repo: "action", Ref: "v1"},
-		{Owner: "bad", Repo: "private", Ref: "main"},
+		{Owner: "good", Repo: "action", Ref: testref.Pin("v1")},
+		{Owner: "bad", Repo: "private", Ref: testref.Pin("main")},
 	})
 
 	if resolveErr == nil {
@@ -1321,8 +1322,8 @@ func TestResolveAllRecursivePartialFailureBFSContinues(t *testing.T) {
 	}
 
 	deps, pm, resolveErr := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "my", Repo: "composite", Ref: "v1"},
-		{Owner: "sso", Repo: "blocked", Ref: "v4"},
+		{Owner: "my", Repo: "composite", Ref: testref.Pin("v1")},
+		{Owner: "sso", Repo: "blocked", Ref: testref.Pin("v4")},
 	})
 
 	// Must return an error (sso/blocked failed).
@@ -1353,5 +1354,31 @@ func TestResolveAllRecursivePartialFailureBFSContinues(t *testing.T) {
 	}
 	if parents[0] != "my/composite@v1" {
 		t.Fatalf("expected parent my/composite@v1, got %q", parents[0])
+	}
+}
+
+// An invalid ref inside a fetched composite can't be looked up by exact
+// name; dropping it would silently truncate the dependency graph.
+func TestResolveAllRecursiveRejectsInvalidCompositeRef(t *testing.T) {
+	for _, use := range []string{"vendor/tool@main~1", "vendor/tool@refs/heads/main", "vendor/tool@"} {
+		t.Run(use, func(t *testing.T) {
+			r := seedCache(&Resolver{
+				MaxRecursionDepth: DefaultMaxRecursionDepth,
+			}, map[ghapi.ActionRef]resolvedEntry{
+				ghapi.ForActionRef("org", "fixtures", "parent", "main"): {
+					dep:       dep.Dependency{NWO: "org/fixtures", Path: "parent", Ref: "main", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+					actionYML: "runs:\n  using: composite\n  steps:\n    - uses: '" + use + "'\n",
+				},
+			})
+
+			_, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
+				{Owner: "org", Repo: "fixtures", Path: "parent", Ref: testref.Pin("main")},
+			})
+
+			require.Error(t, err)
+			var refErr *parserlock.RefError
+			assert.ErrorAs(t, err, &refErr)
+			assert.Contains(t, err.Error(), use)
+		})
 	}
 }

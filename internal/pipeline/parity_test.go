@@ -9,6 +9,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +20,7 @@ func TestParityFinding(t *testing.T) {
 		other = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	)
 	pin := func(ref string) ghapi.PinCheck {
-		return ghapi.PinCheck{Owner: "krzema12", Repo: "github-actions-typing", SHA: sha, Head: ref}
+		return ghapi.PinCheck{Owner: "krzema12", Repo: "github-actions-typing", SHA: sha, Head: testref.Name(ref)}
 	}
 	intact := ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", OwnerID: 1, RepoID: 2, CommitFound: true, HeadOID: sha}
 
@@ -90,11 +91,11 @@ func TestParityFinding(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			lp := lockfile.LockedPin{
-				Pin:    parserlock.Pin{NWO: "krzema12/github-actions-typing", Owner: "krzema12", Repo: "github-actions-typing", Ref: tt.ref},
-				Action: parserlock.Action{Ref: tt.ref, Commit: "sha1-" + sha, OwnerID: 1, RepoID: 2},
+				Pin:    parserlock.Pin{NWO: "krzema12/github-actions-typing", Owner: "krzema12", Repo: "github-actions-typing", Ref: testref.Pin(tt.ref)},
+				Action: parserlock.Action{Ref: testref.Name(tt.ref), Commit: "sha1-" + sha, OwnerID: 1, RepoID: 2},
 				Parent: tt.parent,
 			}
-			ref := parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: tt.ref}
+			ref := parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: testref.Pin(tt.ref)}
 			f, ok := parityFinding(checks.ParsedWorkflow{Path: ".github/workflows/ci.yml"}, ref, lp, pin(tt.ref), tt.state)
 			if tt.want == "" {
 				assert.False(t, ok, "unexpected finding: %+v", f)
@@ -130,10 +131,10 @@ func TestFreshClosure_EntryRef(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pw := checks.ParsedWorkflow{Path: ".github/workflows/ci.yml", Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: tt.d.Ref}}}
+			pw := checks.ParsedWorkflow{Path: ".github/workflows/ci.yml", Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: testref.Pin(tt.d.Ref)}}}
 			got := freshClosure([]dep.Dependency{tt.d}, nil)(pw, nil)
 			require.Len(t, got, 1)
-			assert.Equal(t, tt.want, got[0].lp.Action.Ref)
+			assert.Equal(t, tt.want, got[0].lp.Action.Ref.String())
 		})
 	}
 }
@@ -168,11 +169,11 @@ func TestParityFinding_FullSHAKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			lp := lockfile.LockedPin{
-				Pin:    parserlock.Pin{NWO: "actions/checkout", Owner: "actions", Repo: "checkout", Ref: sha},
-				Action: parserlock.Action{Ref: tt.head, Commit: "sha1-" + sha, OwnerID: 1, RepoID: 2},
+				Pin:    parserlock.Pin{NWO: "actions/checkout", Owner: "actions", Repo: "checkout", Ref: testref.Pin(sha)},
+				Action: parserlock.Action{Ref: testref.Name(tt.head), Commit: "sha1-" + sha, OwnerID: 1, RepoID: 2},
 			}
-			ref := parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: sha}
-			pc := ghapi.PinCheck{Owner: "actions", Repo: "checkout", SHA: sha, Head: tt.head}
+			ref := parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: testref.Pin(sha)}
+			pc := ghapi.PinCheck{Owner: "actions", Repo: "checkout", SHA: sha, Head: testref.Name(tt.head)}
 			f, ok := parityFinding(checks.ParsedWorkflow{Path: ".github/workflows/ci.yml"}, ref, lp, pc, tt.state)
 			if tt.want == "" {
 				assert.False(t, ok, "unexpected finding: %+v", f)

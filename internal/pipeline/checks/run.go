@@ -98,7 +98,7 @@ func synthDep(ref parserlock.ActionRef, sha string) *dep.Dependency {
 	return &dep.Dependency{
 		NWO:  ref.Owner + "/" + ref.Repo,
 		Path: ref.Path,
-		Ref:  ref.Ref,
+		Ref:  ref.Ref.String(),
 		SHA:  sha,
 	}
 }

@@ -820,7 +820,7 @@ func replaceOffHistoryFindings(report *checks.Report, unresolved []pin.Entry) []
 				}
 				kept := wr.Findings[:0]
 				for _, f := range wr.Findings {
-					if f.Category == checks.NotPinned && f.ActionRef != nil && strings.EqualFold(f.ActionRef.Owner+"/"+f.ActionRef.Repo, e.NWO) && f.ActionRef.Ref == e.Ref {
+					if f.Category == checks.NotPinned && f.ActionRef != nil && strings.EqualFold(f.ActionRef.Owner+"/"+f.ActionRef.Repo, e.NWO) && f.ActionRef.Ref.String() == e.Ref {
 						continue
 					}
 					kept = append(kept, f)

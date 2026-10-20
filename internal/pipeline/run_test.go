@@ -6,11 +6,12 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 )
 
 func ref(owner, repo, path, ref string) parserlock.ActionRef {
-	return parserlock.ActionRef{Owner: owner, Repo: repo, Path: path, Ref: ref}
+	return parserlock.ActionRef{Owner: owner, Repo: repo, Path: path, Ref: testref.Pin(ref)}
 }
 
 func mkDep(nwo, ref, sha string) dep.Dependency {

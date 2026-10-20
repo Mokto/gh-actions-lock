@@ -188,7 +188,7 @@ func (f *Finding) DepKey() string {
 		return f.Dependency.Key()
 	}
 	if f.ActionRef != nil {
-		return f.ActionRef.FullName() + "@" + f.ActionRef.Ref
+		return f.ActionRef.FullName() + "@" + f.ActionRef.Ref.String()
 	}
 	return ""
 }

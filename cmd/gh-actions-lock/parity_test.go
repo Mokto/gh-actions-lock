@@ -1541,6 +1541,11 @@ func TestParity_NonBranchRefRefused(t *testing.T) {
 		for _, locked := range []bool{false, true} {
 			for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}} {
 				name := ref + "/" + mode + "/" + map[bool]string{false: "first run", true: "locked"}[locked]
+				if locked && strings.HasPrefix(ref, "refs/") {
+					// No lockfile key can hold a qualified name; the parser
+					// rejects it (see TestLoadState_InvalidEntryRefIsCorrupt).
+					continue
+				}
 				t.Run(name, func(t *testing.T) {
 					reg := &httpmock.Registry{}
 					// The parity stub goes first: the resolve stub matches any query for the repo.
@@ -1584,11 +1589,14 @@ jobs:
 					require.NoError(t, err)
 
 					cmdArgs := append([]string{"--no-narrow", "--no-interactive"}, args...)
-					if locked && strings.HasPrefix(ref, "refs/") {
-						_, _, err := runCommandWithHTTP(t, reg, append(cmdArgs, path)...)
-						require.Error(t, err)
-						assert.NotErrorIs(t, err, errSilent, "an unreadable lockfile exits 2")
-						assert.Contains(t, err.Error(), "actions/checkout@"+ref)
+					if strings.HasPrefix(ref, "refs/") {
+						// A qualified name is not a valid `uses:` ref: the
+						// workflow fails to load before any lookup.
+						p, err := runParity(t, reg, append(cmdArgs, path)...)
+						require.ErrorIs(t, err, errSilent)
+						require.Len(t, p.Findings, 1, "%+v", p.Findings)
+						assert.Equal(t, "error", p.Findings[0].Severity)
+						assert.Contains(t, p.Findings[0].Detail, `invalid ref "`+ref+`"`)
 					} else {
 						p, err := runParity(t, reg, append(cmdArgs, path)...)
 						require.ErrorIs(t, err, errSilent)
@@ -1623,7 +1631,15 @@ jobs:
 // builds a lookup expression from it, so nothing is locked, even when a tag
 // by that name exists.
 func TestParity_RevisionSyntaxRefRefused(t *testing.T) {
-	for _, ref := range []string{"main~1", "v6.1.0-1-g373d742f768e"} {
+	t.Run("main~1 fails the workflow load", func(t *testing.T) {
+		path := writeTempWorkflow(t, "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@main~1\n")
+		p, err := runParity(t, &httpmock.Registry{}, "--no-narrow", "--no-interactive", path)
+		require.ErrorIs(t, err, errSilent)
+		require.Len(t, p.Findings, 1)
+		assert.Contains(t, p.Findings[0].Detail, `invalid ref "main~1"`)
+	})
+	// A describe name is a valid ref name, so only parity can refuse it.
+	for _, ref := range []string{"v6.1.0-1-g373d742f768e"} {
 		t.Run(ref, func(t *testing.T) { testRefusedRefName(t, ref) })
 		t.Run(ref+"/dependabot proxy", func(t *testing.T) {
 			t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")

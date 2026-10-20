@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/profile"
 )
 
@@ -24,7 +25,7 @@ type PinCheck struct {
 	// only as an existing refs/tags/<name>, then refs/heads/<name>, of
 	// exactly that name, as the Actions backend resolver does: rev-parse
 	// rules would also accept a pull request head (pull/1/head).
-	Head string
+	Head parserlock.RefName
 }
 
 // PinState is the host's view of a PinCheck. Err marks an inconclusive check.
@@ -292,7 +293,7 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 		return PinState{Err: err}
 	}
 	s := PinState{NameWithOwner: meta.FullName, OwnerID: meta.OwnerID, RepoID: meta.RepoID}
-	if p.Head != "" {
+	if !p.Head.IsZero() {
 		if s.HeadOID, err = c.restRef(ctx, p); err != nil {
 			var ambiguous *AmbiguousRefError
 			if errors.As(err, &ambiguous) {
@@ -326,7 +327,7 @@ func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
 		}
 		if found {
 			if target != "" && !strings.EqualFold(target, sha) {
-				return "", &AmbiguousRefError{Owner: p.Owner, Repo: p.Repo, Ref: p.Head}
+				return "", &AmbiguousRefError{Owner: p.Owner, Repo: p.Repo, Ref: p.Head.String()}
 			}
 			target = sha
 		}
@@ -335,14 +336,13 @@ func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
 }
 
 // refs lists the full names p's Head is looked up as, in order: a tag, then
-// a branch. A refs/ name is prefixed too, so it never resolves, and a name
-// the Actions backend doesn't accept is never looked up.
+// a branch. A name the Actions backend doesn't accept is never looked up.
 // This is the order the Actions backend resolver looks up a lock entry ref.
 func (p PinCheck) refs() []string {
-	if !AcceptedRefName(p.Head) {
+	if p.Head.IsZero() || !AcceptedRefName(p.Head.String()) {
 		return nil
 	}
-	return []string{"refs/tags/" + p.Head, "refs/heads/" + p.Head}
+	return []string{p.Head.TagRef(), p.Head.BranchRef()}
 }
 
 // restRefCommit returns the commit the exact ref qualified peels to.

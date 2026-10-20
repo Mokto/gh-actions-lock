@@ -3,6 +3,7 @@
 package lockfile
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,34 +28,32 @@ func depToPin(d dep.Dependency) (parserlock.Pin, error) {
 	if d.SHA == "" {
 		return parserlock.Pin{}, fmt.Errorf("missing SHA for %s@%s", d.NWO, d.Ref)
 	}
+	ref, err := parserlock.ParsePinRef(d.Ref)
+	if err != nil {
+		return parserlock.Pin{}, fmt.Errorf("%s: %w", d.NWO, err)
+	}
 	return parserlock.Pin{
 		Owner: owner,
 		Repo:  repo,
-		Ref:   d.Ref,
+		Ref:   ref,
 	}, nil
 }
 
-// ValidEntryRef checks a non-empty short tag or branch name accepted by the
-// Actions backend, matching the key unless the key is a full SHA.
-func ValidEntryRef(pin parserlock.Pin, ref string) bool {
-	if ref == "" || isSHARef(ref) || strings.HasPrefix(ref, "refs/") || !ghapi.AcceptedRefName(ref) {
-		return false
+// validEntryRef returns the tag or branch an entry records for pin: a name
+// the Actions backend accepts, never a commit SHA or "refs/" name, and equal
+// to the key's ref unless the key is a commit.
+func validEntryRef(pin parserlock.Pin, ref string) (parserlock.RefName, error) {
+	if ref == "" {
+		return parserlock.RefName{}, errors.New("missing ref")
 	}
-	return parserlock.IsFullSha(pin.Ref) || ref == pin.Ref
-}
-
-func entryRefError(pin parserlock.Pin, ref string) error {
-	switch {
-	case ref == "":
-		return fmt.Errorf("missing ref")
-	case isSHARef(ref):
-		return fmt.Errorf("ref %q is a commit SHA, not the tag or branch it was taken from", ref)
-	case strings.HasPrefix(ref, "refs/"):
-		return fmt.Errorf("ref %q must be a short tag or branch name", ref)
-	case !ghapi.AcceptedRefName(ref):
-		return fmt.Errorf("ref %q is not a tag or branch name the Actions backend accepts", ref)
+	n, err := parserlock.ValidateEntryRef(pin.Ref, ref)
+	if err != nil {
+		return parserlock.RefName{}, err
 	}
-	return fmt.Errorf("ref %q does not match the key's ref %q", ref, pin.Ref)
+	if !ghapi.AcceptedRefName(ref) {
+		return parserlock.RefName{}, fmt.Errorf("ref %q is not a tag or branch name the Actions backend accepts", ref)
+	}
+	return n, nil
 }
 
 // pinToDep converts a parser Pin back into the internal dep.Dependency type.
@@ -64,6 +63,15 @@ func entryRefError(pin parserlock.Pin, ref string) error {
 func pinToDep(p parserlock.Pin) dep.Dependency {
 	return dep.Dependency{
 		NWO: p.NWO,
-		Ref: p.Ref,
+		Ref: p.Ref.String(),
 	}
+}
+
+// RefIndexKey is parserlock.IndexKey for a dependency's string ref. Text that
+// isn't a valid pin ref keeps its spelling, so it never matches a parsed pin.
+func RefIndexKey(owner, repo, ref string) string {
+	if r, err := parserlock.ParsePinRef(ref); err == nil {
+		return parserlock.IndexKey(owner, repo, r)
+	}
+	return strings.ToLower(owner+"/"+repo) + "@" + ref
 }

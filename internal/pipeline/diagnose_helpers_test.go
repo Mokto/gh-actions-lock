@@ -6,6 +6,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -47,7 +48,7 @@ func TestPrecheckWorkflow_NotPinnedRemediability(t *testing.T) {
 			name: "dependency inventory error",
 			workflow: checks.ParsedWorkflow{
 				Path:    "repairable.yml",
-				Refs:    []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: "v4"}},
+				Refs:    []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")}},
 				DepsErr: assert.AnError,
 			},
 			wantRemediable: true,

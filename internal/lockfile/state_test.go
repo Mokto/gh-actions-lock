@@ -12,6 +12,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/testref"
 )
 
 type fakeMetadataResolver struct{}
@@ -106,7 +107,7 @@ func TestState_PersistsRef(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected %s in reloaded lockfile, keys=%v", checkoutKey, actionKeys(store2.file.Dependencies))
 	}
-	if a.Ref != "v4.2.1" {
+	if a.Ref.String() != "v4.2.1" {
 		t.Errorf("expected Ref=v4.2.1, got %q", a.Ref)
 	}
 	branchOnlyKey := "internal/branch-only@main"
@@ -114,7 +115,7 @@ func TestState_PersistsRef(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected %s, keys=%v", branchOnlyKey, actionKeys(store2.file.Dependencies))
 	}
-	if b.Ref != "main" {
+	if b.Ref.String() != "main" {
 		t.Errorf("expected Ref=main, got %q", b.Ref)
 	}
 }
@@ -246,7 +247,7 @@ func TestState_SetPreservesRefForUnchangedPin(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected %s preserved, keys=%v", checkoutKey, actionKeys(store3.file.Dependencies))
 	}
-	if a.Ref != "v4" {
+	if a.Ref.String() != "v4" {
 		t.Errorf("expected preserved Ref=v4 for unchanged pin, got %q", a.Ref)
 	}
 }
@@ -1037,9 +1038,9 @@ func TestState_SetUnionsUsesAcrossRenames(t *testing.T) {
 		t.Fatalf("opening store: %v", err)
 	}
 	sha := "abc123abc123abc123abc123abc123abc123abc1"
-	store.file.Dependencies["old/a@v1"] = parserlock.Action{Ref: "v1", Commit: "sha1-" + sha, Uses: []string{"actions/cache@v4"}}
-	store.file.Dependencies["older/a@v1"] = parserlock.Action{Ref: "v1", Commit: "sha1-" + sha, Uses: []string{"actions/setup-go@v5"}}
-	store.file.Dependencies["stale/a@v1"] = parserlock.Action{Ref: "v1", Commit: "sha1-" + strings.Repeat("f", 40), Uses: []string{"evil/x@v1"}}
+	store.file.Dependencies["old/a@v1"] = parserlock.Action{Ref: testref.Name("v1"), Commit: "sha1-" + sha, Uses: []string{"actions/cache@v4"}}
+	store.file.Dependencies["older/a@v1"] = parserlock.Action{Ref: testref.Name("v1"), Commit: "sha1-" + sha, Uses: []string{"actions/setup-go@v5"}}
+	store.file.Dependencies["stale/a@v1"] = parserlock.Action{Ref: testref.Name("v1"), Commit: "sha1-" + strings.Repeat("f", 40), Uses: []string{"evil/x@v1"}}
 
 	d := dep.Dependency{NWO: "new/a", Ref: "v1", Tag: "v1", SHA: sha, HashAlgo: "sha1", RenamedFrom: []string{"old/a@v1", "older/a@v1", "stale/a@v1"}}
 	if err := store.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{d}, nil, nil); err != nil {

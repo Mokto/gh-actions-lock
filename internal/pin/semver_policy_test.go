@@ -11,6 +11,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/tag"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,7 +62,7 @@ func TestSemverNarrowingCurrentPolicy(t *testing.T) {
 					opts.RepoOwner = "actions"
 					opts.RepoName = "checkout"
 				}
-				ref := parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: tc.ref}
+				ref := parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: testref.Pin(tc.ref)}
 				deps := []dep.Dependency{{NWO: ref.NWO(), Ref: tc.ref, SHA: sha}}
 				rewrites := make(map[string]string)
 				if tc.recorded {

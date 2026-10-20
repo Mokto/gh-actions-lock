@@ -166,7 +166,7 @@ func TestVerifyRemote_UnknownContentFailsClosed(t *testing.T) {
 		path string
 	}{
 		{name: "metadata", path: "/repos/octo/api"},
-		{name: "snapshot", path: "/repos/octo/api/commits/main"},
+		{name: "snapshot", path: "/repos/octo/api/commits/refs/heads/main"},
 		{name: "inventory", path: "/repos/octo/api/contents/.github/workflows"},
 		{name: "workflow", path: "/repos/octo/api/contents/.github/workflows/ci.yml"},
 		{name: "lockfile", path: "/repos/octo/api/contents/.github/workflows/actions.lock"},

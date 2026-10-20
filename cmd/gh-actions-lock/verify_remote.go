@@ -63,15 +63,26 @@ func (v remoteVerifier) Verify(ctx context.Context, out io.Writer, console *ui.U
 		return err
 	}
 	ref := spec.Ref
+	var sha string
 	if ref == "" {
 		ref = meta.DefaultBranch
-		if ref == "" {
-			return fmt.Errorf("could not determine the default branch of %s/%s", spec.Owner, spec.Repo)
+		branch, err := parserlock.ParseRefName(ref)
+		if err != nil {
+			return fmt.Errorf("could not determine the default branch of %s/%s: %w", spec.Owner, spec.Repo, err)
 		}
-	}
-	sha, err := client.CommitSHA(ctx, spec.Owner, spec.Repo, ref)
-	if err != nil {
-		return err
+		if sha, err = client.ResolveBranch(ctx, spec.Owner, spec.Repo, branch); err != nil {
+			return err
+		}
+	} else {
+		// Only an exact commit, tag or branch: never revision syntax
+		// such as main~1 or an abbreviated SHA.
+		pinRef, err := parserlock.ParsePinRef(ref)
+		if err != nil {
+			return fmt.Errorf("%s/%s@%s: %w; use a full commit SHA, tag or branch name", spec.Owner, spec.Repo, ref, err)
+		}
+		if sha, err = client.ResolvePinRef(ctx, spec.Owner, spec.Repo, pinRef); err != nil {
+			return err
+		}
 	}
 	if !parserlock.IsFullSha(sha) {
 		return fmt.Errorf("resolving %s/%s@%s: API did not return a full commit SHA", spec.Owner, spec.Repo, ref)

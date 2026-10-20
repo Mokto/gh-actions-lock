@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/testref"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -62,7 +63,7 @@ func TestPresentResults_WarningsReachTerminal(t *testing.T) {
 				Category:     checks.ShaAsRef,
 				Severity:     checks.SeverityWarning,
 				Confidence:   checks.ConfidenceHigh,
-				ActionRef:    &parserlock.ActionRef{Owner: "octo", Repo: "action", Ref: "abc123"},
+				ActionRef:    &parserlock.ActionRef{Owner: "octo", Repo: "action", Ref: testref.Pin("abc123")},
 				Dependency: &dep.Dependency{
 					NWO: "octo/action",
 					Ref: "abc123",
@@ -198,7 +199,7 @@ func TestPresentResults_RemediateHints(t *testing.T) {
 				Category:     checks.ShaAsRef,
 				Severity:     checks.SeverityWarning,
 				Confidence:   checks.ConfidenceHigh,
-				ActionRef:    &parserlock.ActionRef{Owner: "octo", Repo: "action", Ref: "abc123"},
+				ActionRef:    &parserlock.ActionRef{Owner: "octo", Repo: "action", Ref: testref.Pin("abc123")},
 				Dependency: &dep.Dependency{
 					NWO: "octo/action",
 					Ref: "abc123",
@@ -409,7 +410,7 @@ func TestPresentResults_ExcludeKeepsOtherFindings(t *testing.T) {
 					Category:     checks.NotPinned,
 					Severity:     checks.SeverityError,
 					Confidence:   checks.ConfidenceHigh,
-					ActionRef:    &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: "v4"},
+					ActionRef:    &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
 					Dependency:   &dep.Dependency{NWO: "actions/checkout", Ref: "v4"},
 				}},
 			},
@@ -441,7 +442,7 @@ func TestPresentResults_ExcludedNotPinnedKeepsWorkflowLoadErrors(t *testing.T) {
 				Findings: []checks.Finding{{
 					Category:  checks.NotPinned,
 					Severity:  checks.SeverityError,
-					ActionRef: &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: "v4"},
+					ActionRef: &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
 				}},
 			},
 			{
@@ -591,7 +592,7 @@ func TestPresentReadOnlyFailures_FixableReported(t *testing.T) {
 				Category:     checks.NotPinned,
 				Severity:     checks.SeverityError,
 				Confidence:   checks.ConfidenceHigh,
-				ActionRef:    &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: "v4"},
+				ActionRef:    &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: testref.Pin("v4")},
 				Dependency:   &dep.Dependency{NWO: "actions/checkout", Ref: "v4"},
 				Detail:       "no lockfile entry",
 			}},

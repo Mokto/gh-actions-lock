@@ -239,7 +239,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 		// A resolved root is not pinnable when its transitive graph is incomplete.
 		for _, ref := range unrecordedRefs {
 			entries = append(entries, Entry{
-				NWO: ref.NWO(), Ref: ref.Ref, Resolution: Unresolved,
+				NWO: ref.NWO(), Ref: ref.Ref.String(), Resolution: Unresolved,
 				Reason: "resolution failed: " + resolveErr.Error(), Workflows: []string{wr.Path},
 			})
 		}
@@ -354,7 +354,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 func transferRewrites(deps []dep.Dependency, rootTracker lockfile.DirectTracker, sources []parserlock.ActionRef, rewrites map[string]string) map[string]string {
 	written := make(map[string]bool, len(sources))
 	for _, ref := range sources {
-		written[ref.FullName()+"@"+ref.Ref] = true
+		written[ref.FullName()+"@"+ref.Ref.String()] = true
 	}
 	var required map[string]string
 	for i, d := range deps {
@@ -362,7 +362,7 @@ func transferRewrites(deps []dep.Dependency, rootTracker lockfile.DirectTracker,
 			continue
 		}
 		for _, ref := range d.OriginalRefs {
-			oldUse := ref.FullName() + "@" + ref.Ref
+			oldUse := ref.FullName() + "@" + ref.Ref.String()
 			if !written[oldUse] {
 				continue
 			}
@@ -386,11 +386,11 @@ func rejectPartialSelfActionRewrites(opts PlanOptions, selfActionRefs []parserlo
 	}
 	selfKeys := actionRefKeys(selfActionRefs)
 	for oldUses := range rewrites {
-		ref := parserlock.ParseActionRef(oldUses)
+		ref, _ := parserlock.ParseActionRef(oldUses)
 		if ref == nil {
 			continue
 		}
-		key := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref
+		key := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref.String()
 		if selfKeys[key] {
 			return fmt.Errorf("cannot rewrite %s in a shared local action during a partial workflow scan; scan all workflows", key)
 		}
@@ -520,7 +520,7 @@ func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.D
 			Direct:     directKeys[depKey],
 		}
 		for _, orig := range dep.OriginalRefs {
-			entry.RenamedFrom = append(entry.RenamedFrom, orig.NWO()+"@"+orig.Ref)
+			entry.RenamedFrom = append(entry.RenamedFrom, orig.NWO()+"@"+orig.Ref.String())
 		}
 		out = append(out, entry)
 	}
@@ -553,7 +553,7 @@ func informationalEntry(f checks.Finding, path string) Entry {
 	hostname := ""
 	if f.ActionRef != nil {
 		nwo = f.ActionRef.Owner + "/" + f.ActionRef.Repo
-		ref = f.ActionRef.Ref
+		ref = f.ActionRef.Ref.String()
 	}
 	if f.Dependency != nil {
 		hostname = f.Dependency.Hostname
@@ -582,7 +582,7 @@ func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.A
 		shaSeen[nwo+":"+strings.ToLower(inv.Dep.SHA)] = true
 	}
 	for _, ref := range refs {
-		key := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref
+		key := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref.String()
 		if !byKey[key] {
 			unrecorded = append(unrecorded, ref)
 		}
@@ -698,7 +698,7 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 			}
 			oldRef := e.Ref
 			for _, ref := range rewriteRefs {
-				if strings.EqualFold(ref.Owner+"/"+ref.Repo, e.NWO) && ref.Ref == oldRef {
+				if strings.EqualFold(ref.Owner+"/"+ref.Repo, e.NWO) && ref.Ref.String() == oldRef {
 					rewrites[ref.FullName()+"@"+oldRef] = ref.FullName() + "@" + newRef
 				}
 			}
@@ -799,7 +799,7 @@ func hasConflictingLockTarget(opts PlanOptions, nwo, ref, sha string) bool {
 func actionRefKeys(refs []parserlock.ActionRef) map[string]bool {
 	keys := make(map[string]bool, len(refs))
 	for _, ref := range refs {
-		keys[strings.ToLower(ref.Owner+"/"+ref.Repo)+"@"+ref.Ref] = true
+		keys[strings.ToLower(ref.Owner+"/"+ref.Repo)+"@"+ref.Ref.String()] = true
 	}
 	return keys
 }

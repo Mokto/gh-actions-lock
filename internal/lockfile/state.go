@@ -108,7 +108,7 @@ func buildState(lockfilePath string, contents []byte, err error, meta MetadataRe
 			// dependency entry missing a required key) is surfaced, not
 			// swallowed. Treating it as empty here would silently discard
 			// the user's pins and overwrite them on the next save.
-			return nil, fmt.Errorf("%w: %s: %v", ErrCorruptLockfile, parserlock.Path, err)
+			return nil, fmt.Errorf("%w: %s: %w", ErrCorruptLockfile, parserlock.Path, err)
 		}
 	case errors.Is(err, os.ErrNotExist):
 		file = parserlock.File{Version: parserlock.Version}
@@ -143,8 +143,8 @@ func buildState(lockfilePath string, contents []byte, err error, meta MetadataRe
 			normalizedDependencies[pinKey] = action
 			continue
 		}
-		if !ValidEntryRef(pin, action.Ref) {
-			return nil, fmt.Errorf("%w: %s: %s: %w", ErrCorruptLockfile, parserlock.Path, pinKey, entryRefError(pin, action.Ref))
+		if _, err := validEntryRef(pin, action.Ref.String()); err != nil {
+			return nil, fmt.Errorf("%w: %s: %s: %w", ErrCorruptLockfile, parserlock.Path, pinKey, err)
 		}
 		canon := pin.String()
 		normalizedDependencies[canon] = action
@@ -347,7 +347,7 @@ func (s *State) Get(workflowKey string) ([]dep.Dependency, error) {
 		d := pinToDep(pin)
 		if action, found := s.file.Dependencies[raw]; found {
 			d.Hostname = s.hostOrHome(action.Hostname)
-			d.Tag, d.Branch = parserlock.SplitRef(action.Ref)
+			d.Tag, d.Branch = parserlock.SplitRef(action.Ref.String())
 			if idx := strings.Index(action.Commit, "-"); idx >= 0 {
 				d.HashAlgo = action.Commit[:idx]
 				d.SHA = action.Commit[idx+1:]
@@ -518,7 +518,7 @@ func (s *State) AllDeps() []dep.Dependency {
 		}
 		d := pinToDep(pin)
 		d.Hostname = s.hostOrHome(action.Hostname)
-		d.Tag, d.Branch = parserlock.SplitRef(action.Ref)
+		d.Tag, d.Branch = parserlock.SplitRef(action.Ref.String())
 		if idx := strings.Index(action.Commit, "-"); idx >= 0 {
 			d.HashAlgo = action.Commit[:idx]
 			d.SHA = action.Commit[idx+1:]
@@ -683,7 +683,7 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 		existing, ok := s.file.Dependencies[pinKey]
 		if ok {
 			if ref == "" {
-				ref = existing.Ref
+				ref = existing.Ref.String()
 			}
 			for _, u := range existing.Uses {
 				usesSet[u] = true
@@ -699,10 +699,10 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 		oldRef := d.OriginalRef
 		if !isSHARef(d.Ref) && isSHARef(oldRef) {
 			shaPin := pin
-			shaPin.Ref = oldRef
+			shaPin.Ref, _ = parserlock.ParsePinRef(oldRef)
 			if shaExisting, shaOK := s.file.Dependencies[shaPin.String()]; shaOK {
 				if !ok && ref == "" {
-					ref = shaExisting.Ref
+					ref = shaExisting.Ref.String()
 				}
 				for _, u := range shaExisting.Uses {
 					usesSet[u] = true
@@ -717,12 +717,13 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 			}
 			sort.Strings(uses)
 		}
-		if !ValidEntryRef(pin, ref) {
-			return fmt.Errorf("%s: %w", pinKey, entryRefError(pin, ref))
+		entryRef, err := validEntryRef(pin, ref)
+		if err != nil {
+			return fmt.Errorf("%s: %w", pinKey, err)
 		}
 		s.file.Dependencies[pinKey] = parserlock.Action{
 			Hostname: hostname,
-			Ref:      ref,
+			Ref:      entryRef,
 			Commit:   d.HashAlgoOrDetect() + "-" + d.SHA,
 			OwnerID:  ids[0],
 			RepoID:   ids[1],

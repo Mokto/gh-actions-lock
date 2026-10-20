@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,11 +39,11 @@ func (f *File) RewriteActionRefs(replacements map[string]string) ([]byte, int, e
 		}
 
 		oldValue := strings.TrimSpace(valueNode.Value)
-		newValue, ok := replacements[oldValue]
+		newValue, ok := replacements[rewriteKey(oldValue, replacements)]
 		if !ok {
 			// Sub-path actions: uses: owner/repo/path@ref should match
 			// a rewrite keyed on owner/repo@ref (NWO-level granularity).
-			newValue, ok = subpathRewriteLookup(oldValue, replacements)
+			newValue, ok = subpathRewriteLookup(canonicalUses(oldValue), replacements)
 		}
 		if !ok || newValue == "" || newValue == oldValue {
 			return
@@ -111,7 +112,7 @@ func (f *File) ValidateRequiredActionRefRewrites(replacements map[string]string)
 						target = valueNode.Alias
 					}
 					if target.Kind == yaml.ScalarNode {
-						oldValue := strings.TrimSpace(target.Value)
+						oldValue := rewriteKey(strings.TrimSpace(target.Value), replacements)
 						if _, ok := replacements[oldValue]; ok {
 							matches[oldValue]++
 							if anchored || valueNode.Kind == yaml.AliasNode || target.Anchor != "" {
@@ -140,6 +141,25 @@ func (f *File) ValidateRequiredActionRefRewrites(replacements map[string]string)
 		return nil, fmt.Errorf("required action rewrite matched %d `uses:` values but could update only %d", total, changed)
 	}
 	return matches, nil
+}
+
+// rewriteKey returns the replacements key for a `uses:` value: the value as
+// written when it is a key, else its canonical form. Rewrites are keyed by
+// parsed refs, whose commit SHAs are lowercase.
+func rewriteKey(value string, replacements map[string]string) string {
+	if _, ok := replacements[value]; ok {
+		return value
+	}
+	return canonicalUses(value)
+}
+
+// canonicalUses spells a remote `uses:` value with its canonical ref.
+func canonicalUses(value string) string {
+	ref, err := parserlock.ParseActionRef(value)
+	if err != nil || ref == nil {
+		return value
+	}
+	return ref.FullName() + "@" + ref.Ref.String()
 }
 
 // subpathRewriteLookup handles sub-path actions like actions/cache/restore@ref.

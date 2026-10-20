@@ -9,6 +9,7 @@ import (
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/testref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -103,7 +104,7 @@ func TestTenantHostMissingRefDoesNotFallBack(t *testing.T) {
 	}))
 	c, err := New("tenant.ghe.com", WithClientTransport(reg))
 	require.NoError(t, err)
-	results := c.ResolveActionFiles(context.Background(), []ActionFileRequest{{Owner: "o", Repo: "r", Ref: "missing"}})
+	results := c.ResolveActionFiles(context.Background(), []ActionFileRequest{{Owner: "o", Repo: "r", Ref: testref.Pin("missing")}})
 	require.Len(t, results, 1)
 	require.Error(t, results[0].Err)
 	for _, req := range reg.Requests {
@@ -145,7 +146,7 @@ func TestTenantHostContentErrorsAreNotLeafActions(t *testing.T) {
 			c, err := New("tenant.ghe.com", WithClientTransport(reg))
 			require.NoError(t, err)
 			require.NoError(t, c.PinHost("o", "r", "github.com"))
-			result := c.ResolveActionFiles(context.Background(), []ActionFileRequest{{Owner: "o", Repo: "r", Ref: "v1"}})
+			result := c.ResolveActionFiles(context.Background(), []ActionFileRequest{{Owner: "o", Repo: "r", Ref: testref.Pin("v1")}})
 			require.Len(t, result, 1)
 			var httpErr *api.HTTPError
 			require.ErrorAs(t, result[0].Err, &httpErr)
@@ -167,7 +168,7 @@ func TestTenantHostPartialGraphQLErrorDoesNotSucceed(t *testing.T) {
 	}))
 	c, err := New("tenant.ghe.com", WithClientTransport(reg))
 	require.NoError(t, err)
-	result := c.ResolveActionFiles(context.Background(), []ActionFileRequest{{Owner: "o", Repo: "r", Ref: "v1"}})
+	result := c.ResolveActionFiles(context.Background(), []ActionFileRequest{{Owner: "o", Repo: "r", Ref: testref.Pin("v1")}})
 	require.Len(t, result, 1)
 	require.ErrorContains(t, result[0].Err, "content access denied")
 	assert.Empty(t, result[0].CommitOID)
