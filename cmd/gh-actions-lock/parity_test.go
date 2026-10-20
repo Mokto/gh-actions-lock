@@ -3656,9 +3656,16 @@ func TestParity_UnwrittenRunReportsDeferredFindings(t *testing.T) {
 	for name, other := range map[string]string{
 		// No tag or branch contains the commit: planning can't lock it.
 		"planning fails": "actions/cache@" + orphan,
+		// The repository doesn't exist: diagnosis blocks the workflow.
+		"resolution fails": "actions/missing@v9",
 	} {
 		t.Run(name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
+			reg.RegisterReusable(httpmock.GraphQLForRepo("actions", "missing"), httpmock.JSONResponse(map[string]any{
+				"data":   map[string]any{"a0": nil},
+				"errors": []map[string]any{{"type": "NOT_FOUND", "path": []string{"a0"}, "message": "Could not resolve to a Repository with the name 'actions/missing'."}},
+			}))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/missing`), httpmock.StatusResponse(http.StatusNotFound))
 			stubGraph(t, reg,
 				map[string]string{"actions/checkout": parityTestMoved},
 				map[string]string{"actions/checkout": parityTestMoved, "actions/cache": orphan},
@@ -3697,6 +3704,11 @@ jobs:
 			require.NotEmpty(t, checkout, "%+v", p.Findings)
 			assert.Contains(t, checkout[0], "checking v4 history")
 			assert.Equal(t, lockBefore, readTempLockfilePins(t), "nothing is written")
+			blocked := false
+			for _, f := range p.Findings {
+				blocked = blocked || (strings.HasPrefix(f.Dependency, strings.Split(other, "@")[0]) && f.Severity == "error")
+			}
+			assert.True(t, blocked, "%s blocks: %+v", other, p.Findings)
 
 			_, stderr, err := runCommandWithHTTP(t, reg, "--relock", "--no-narrow", "--no-interactive", path, otherPath)
 			require.ErrorIs(t, err, errSilent)
