@@ -122,7 +122,10 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 				entry.Resolution != Pinned && entry.Resolution != Verified {
 				continue
 			}
-			key := dep.FoldedKey(entry.NWO, entry.Ref)
+			// Planned refs come from every workflow and manifest, so compare
+			// them by reference identity: two spellings of one full SHA on
+			// different hosts claim one reference for two repositories.
+			key := dep.RefKey(entry.NWO, entry.Ref)
 			target := entry.Hostname + "/" + entry.SHA
 			if previous, ok := targets[key]; ok && !strings.EqualFold(previous, target) {
 				planErr = fmt.Errorf("conflicting planned target %s resolves to both %s and %s", key, previous, target)

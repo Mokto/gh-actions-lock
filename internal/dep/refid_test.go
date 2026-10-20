@@ -68,7 +68,6 @@ var pendingKeyCalls = map[string]int{
 	"cmd/gh-actions-lock/format/json.go:pinsFromRecord:dep.FoldedKey":     1,
 	"cmd/gh-actions-lock/onboard_gate.go:gateNoOnboard:lockfile.IndexKey": 2,
 	"internal/pin/commit.go:retainUnresolvablePins:dep.FoldedKey":         3,
-	"internal/pin/plan.go:Plan:dep.FoldedKey":                             1,
 	"internal/pin/plan.go:actionRefKeys:dep.FoldedKey":                    1,
 	"internal/pin/plan.go:narrowVerifiedEntries:dep.FoldedKey":            1,
 	"internal/pin/plan.go:rejectPartialSelfActionRewrites:dep.FoldedKey":  1,

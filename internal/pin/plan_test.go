@@ -847,6 +847,43 @@ func TestPlanRejectsRepairConflictingWithSymbolicEntry(t *testing.T) {
 	require.ErrorContains(t, err, "conflicting planned target actions/checkout@v4.2.1")
 }
 
+// TestPlanRejectsSHASpellingsOnDifferentHosts: a full SHA names one commit
+// in any case, so two spellings planned on different hosts claim the same
+// reference for two repositories.
+func TestPlanRejectsSHASpellingsOnDifferentHosts(t *testing.T) {
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	report := func(path, ref, host string) checks.WorkflowReport {
+		return checks.WorkflowReport{
+			Path: path,
+			Inventory: []checks.InventoryEntry{{
+				Dep:    dep.Dependency{NWO: "o/a", Ref: ref, SHA: sha, Hostname: host},
+				File:   path,
+				Direct: true,
+			}},
+		}
+	}
+	for _, tt := range []struct {
+		name      string
+		otherHost string
+		wantErr   bool
+	}{
+		{name: "same host", otherHost: "github.com"},
+		{name: "different host", otherHost: "tenant.ghe.com", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Plan(context.Background(), &checks.Report{Workflows: []checks.WorkflowReport{
+				report(".github/workflows/a.yml", strings.ToUpper(sha), "github.com"),
+				report(".github/workflows/b.yml", sha, tt.otherHost),
+			}}, PlanOptions{NoNarrow: true, Pool: pinpool.New(2, nil)})
+			if !tt.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, "conflicting planned target")
+		})
+	}
+}
+
 func TestPlanExcludesLoadFailuresFromCommit(t *testing.T) {
 	const sha = "abc1230000000000000000000000000000000000"
 	blocked := checks.WorkflowReport{
