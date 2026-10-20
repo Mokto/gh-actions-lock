@@ -11,12 +11,14 @@ import (
 )
 
 // Audit holds each finding parity deferred (checks.Deferred) to the write
-// rec plans. It applies that write to a preview of store with the code
-// Commit and Save use, and a deferred finding holds only if its entry then
-// is gone, or records a commit this run verified, or, for a full-SHA key,
-// a new ref for the same commit. Otherwise the finding goes back on its
-// workflow, blocking it. Commit writes all or nothing, so one such finding
-// keeps the whole write off disk.
+// rec plans. It applies the write of every workflow still due to be
+// written to a preview of store, with the code Commit and Save use, and a
+// deferred finding holds only if its entry then is gone, or records a
+// commit this run verified, or, for a full-SHA key, a new ref for the same
+// commit. Otherwise the finding goes back on its workflow, which is then no
+// longer written, so Audit runs again without that workflow's write: a
+// finding that held only because of it goes back too. It stops once a pass
+// blocks no further workflow.
 func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *checks.Report, copts *CommitOptions) error {
 	deferred := false
 	for _, wr := range report.Workflows {
@@ -25,21 +27,43 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 	if !deferred {
 		return nil
 	}
-	preview := store.Preview()
-	if err := updateLockfile(ctx, rec, committedWorkflows(rec, store, copts), preview); err != nil {
-		return err
-	}
-	preview.GC()
+	byPath := make(map[string]*checks.WorkflowReport, len(report.Workflows))
 	for i := range report.Workflows {
-		wr := &report.Workflows[i]
-		for _, d := range wr.Deferred {
-			if written(preview, report.Verified, d) {
-				continue
+		byPath[report.Workflows[i].Path] = &report.Workflows[i]
+	}
+	held := make([][]bool, len(report.Workflows))
+	for i, wr := range report.Workflows {
+		held[i] = make([]bool, len(wr.Deferred))
+	}
+	for {
+		var writers []WorkflowPlan
+		for _, wp := range committedWorkflows(rec, store, copts) {
+			if wr, ok := byPath[wp.Path]; !ok || !wr.SkipCommit && !wr.BlockingResolverError {
+				writers = append(writers, wp)
 			}
-			reinstate(wr, d.Finding)
+		}
+		preview := store.Preview()
+		if err := updateLockfile(ctx, rec, writers, preview); err != nil {
+			return err
+		}
+		preview.GC()
+		blocked := false
+		for i := range report.Workflows {
+			wr := &report.Workflows[i]
+			for j, d := range wr.Deferred {
+				if held[i][j] || written(preview, report.Verified, d) {
+					continue
+				}
+				held[i][j] = true
+				was := wr.SkipCommit
+				reinstate(wr, d.Finding)
+				blocked = blocked || wr.SkipCommit && !was
+			}
+		}
+		if !blocked {
+			return nil
 		}
 	}
-	return nil
 }
 
 // written reports whether the previewed write replaces or removes d's entry.

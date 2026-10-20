@@ -2524,6 +2524,64 @@ func testChildWithNewDirectUse(t *testing.T, cross, blocked, narrow bool) {
 	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 }
 
+// TestParity_AuditRechecksWithoutBlockedWriters: workflow.yml's composite
+// child checkout@v4.2.1 left its tag's history; only other.yml's new direct
+// use rewrites it. But other.yml can't be written either: its own
+// composite's child cache@v1 left history too, and nothing rewrites that.
+// With other.yml's write gone, the checkout repair goes too, so both
+// workflows must report their error, and nothing is written.
+func TestParity_AuditRechecksWithoutBlockedWriters(t *testing.T) {
+	const (
+		rootSHA  = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		root2SHA = "dddddddddddddddddddddddddddddddddddddddd"
+		cacheOld = "1111111111111111111111111111111111111111"
+		cacheNew = "2222222222222222222222222222222222222222"
+	)
+	reg := &httpmock.Registry{}
+	stubGraph(t, reg,
+		map[string]string{"actions/checkout": parityTestMoved, "actions/cache": cacheNew},
+		map[string]string{"octo/root": rootSHA, "octo/root2": root2SHA, "actions/checkout": parityTestMoved, "actions/cache": cacheNew},
+		map[string]string{
+			"octo/root":  "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4.2.1\n",
+			"octo/root2": "name: r2\nruns:\n  using: composite\n  steps:\n    - uses: actions/cache@v1\n",
+		})
+	for _, nwo := range []string{"actions/checkout", "actions/cache"} {
+		reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`/compare/`),
+			httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+	}
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/root@v1\n")
+	other := filepath.ToSlash(filepath.Join(".github", "workflows", "other.yml"))
+	require.NoError(t, os.WriteFile(other, []byte("name: other\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+
+		"      - uses: actions/checkout@v4.2.1\n      - uses: octo/root2@v1\n"), 0o600))
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'actions/cache@v1':\n    ref: 'v1'\n    commit: 'sha1-" + cacheOld + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"  'actions/checkout@v4.2.1':\n    ref: 'v4.2.1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"  'octo/root2@v1':\n    ref: 'v1'\n    commit: 'sha1-" + root2SHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/cache@v1'\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@v4.2.1'\n" +
+		"workflows:\n  '.github/workflows/other.yml':\n    - 'octo/root2@v1'\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	p, err := runParity(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path, other)
+	require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
+	blocking := map[string]string{}
+	for _, f := range p.Findings {
+		if f.Category == "unreachable-pin" && f.Severity == "error" {
+			blocking[f.Workflow] = f.Dependency
+		}
+	}
+	assert.Equal(t, map[string]string{
+		".github/workflows/workflow.yml": "actions/checkout@v4.2.1",
+		".github/workflows/other.yml":    "actions/cache@v1",
+	}, blocking, "%+v", p.Findings)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
 // TestParity_AcceptMovedKeepsRedirectedSharedPinBlocking: the workflow and
 // a composite share octo/old@v4, whose recorded commit left v4's history,
 // and octo/old now redirects to octo/new. --accept-moved re-resolves the
