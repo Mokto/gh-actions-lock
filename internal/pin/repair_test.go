@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/stretchr/testify/assert"
@@ -25,7 +27,8 @@ func TestProveIdentity_NoClientFailsClosed(t *testing.T) {
 	store, err := lockfile.LoadState(dir, fakeMeta{})
 	require.NoError(t, err)
 
-	failed := proveIdentity(context.Background(), &resolve.Resolver{}, store.Preview(), []string{key})
+	recorded, _ := store.Entry(key)
+	failed := proveIdentity(context.Background(), &resolve.Resolver{}, map[string]parserlock.Action{key: recorded})
 	assert.Contains(t, failed, key)
-	assert.Empty(t, proveIdentity(context.Background(), &resolve.Resolver{}, store.Preview(), nil), "no candidates, nothing to prove")
+	assert.Empty(t, proveIdentity(context.Background(), &resolve.Resolver{}, nil), "no candidates, nothing to prove")
 }
