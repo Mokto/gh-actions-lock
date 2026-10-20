@@ -6,7 +6,6 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
-	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pinpool"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
@@ -131,7 +130,6 @@ func CollectUnrecordedResolvable(parsed []checks.ParsedWorkflow, recordedKeys ma
 }
 
 func collectResolvable(parsed []checks.ParsedWorkflow, excludeKeys map[string]bool) ([]parserlock.ActionRef, []dep.Dependency) {
-	seenRef := make(map[ghapi.ActionRef]bool)
 	var refs []parserlock.ActionRef
 	for _, pw := range parsed {
 		for _, ref := range pw.Refs {
@@ -139,14 +137,10 @@ func collectResolvable(parsed []checks.ParsedWorkflow, excludeKeys map[string]bo
 			if excludeKeys[nwoRef] {
 				continue
 			}
-			key := ghapi.ForActionRef(ref.Owner, ref.Repo, ref.Path, ref.Ref)
-			if seenRef[key] {
-				continue
-			}
-			seenRef[key] = true
 			refs = append(refs, ref)
 		}
 	}
+	refs = resolve.DedupRequests(refs)
 	seenDep := make(map[string]bool)
 	var deps []dep.Dependency
 	for _, pw := range parsed {

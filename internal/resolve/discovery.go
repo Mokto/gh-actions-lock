@@ -140,6 +140,43 @@ func (e *UnlockedRefError) Error() string {
 	return fmt.Sprintf("no locked commit for %s@%s", e.Ref.FullName(), e.Ref.Ref)
 }
 
+// RefCommits maps the refs one resolution returned to their commits, keyed
+// as the resolver's cache keys them: owner/repo folded, ref as requested.
+// Look a ref up by the spelling that requested it.
+type RefCommits struct {
+	refs map[ghapi.NWORef]string
+}
+
+// NewRefCommits indexes deps from one resolution.
+func NewRefCommits(deps []dep.Dependency) RefCommits {
+	c := RefCommits{refs: make(map[ghapi.NWORef]string, len(deps))}
+	for _, d := range deps {
+		owner, repo := d.OwnerRepo()
+		c.refs[ghapi.ForNWORef(owner, repo, d.Ref)] = d.SHA
+	}
+	return c
+}
+
+// Commit returns the commit resolved for owner/repo@ref, if any.
+func (c RefCommits) Commit(owner, repo, ref string) (string, bool) {
+	sha, ok := c.refs[ghapi.ForNWORef(owner, repo, ref)]
+	return sha, ok
+}
+
+// DedupRequests drops refs the resolver would fetch as the same request,
+// keeping the first.
+func DedupRequests(refs []parserlock.ActionRef) []parserlock.ActionRef {
+	seen := make(map[ghapi.ActionRef]bool, len(refs))
+	out := make([]parserlock.ActionRef, 0, len(refs))
+	for _, ref := range refs {
+		if key := cacheKey(ref); !seen[key] {
+			seen[key] = true
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
 // knownCommit returns the commit this run already holds for a sub-action's
 // owner/repo@ref, or "". Every path of one owner/repo@ref shares a lockfile
 // entry, so a sub-action is fetched at that commit: a sticky seed, which

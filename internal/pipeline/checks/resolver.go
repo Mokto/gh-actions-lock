@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/github/gh-actions-lock/internal/dep"
-	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/resolve"
 )
 
@@ -30,27 +29,18 @@ type CheckResolver interface {
 // on-demand and delegate to the resolver's own cache.
 type prewarmedResolver struct {
 	inner *resolve.Resolver
-	refs  map[ghapi.NWORef]string // (owner/repo, ref) -> sha
+	refs  resolve.RefCommits
 }
 
 // NewPrewarmedResolver primes the adapter with the live resolution of
 // refs. Pass live==nil when ResolveAllRecursive failed; checks that
 // need a ref will fail open.
 func NewPrewarmedResolver(r *resolve.Resolver, live []dep.Dependency) *prewarmedResolver {
-	a := &prewarmedResolver{
-		inner: r,
-		refs:  make(map[ghapi.NWORef]string, len(live)),
-	}
-	for _, d := range live {
-		owner, repo := d.OwnerRepo()
-		a.refs[ghapi.ForNWORef(owner, repo, d.Ref)] = d.SHA
-	}
-	return a
+	return &prewarmedResolver{inner: r, refs: resolve.NewRefCommits(live)}
 }
 
 func (a *prewarmedResolver) ResolveRef(owner, repo, ref string) (string, bool) {
-	sha, ok := a.refs[ghapi.ForNWORef(owner, repo, ref)]
-	return sha, ok
+	return a.refs.Commit(owner, repo, ref)
 }
 
 func (a *prewarmedResolver) PeelTagObject(ctx context.Context, owner, repo, sha string) (string, bool) {
