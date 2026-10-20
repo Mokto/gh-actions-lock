@@ -430,7 +430,7 @@ func rejectPartialSelfActionRewrites(opts PlanOptions, selfActionRefs []parserlo
 		if ref == nil {
 			continue
 		}
-		key := dep.FoldedKey(ref.Owner+"/"+ref.Repo, ref.Ref)
+		key := dep.RefKey(ref.Owner+"/"+ref.Repo, ref.Ref)
 		if selfKeys[key] {
 			return fmt.Errorf("cannot rewrite %s in a shared local action during a partial workflow scan; scan all workflows", key)
 		}
@@ -718,7 +718,7 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 		if !e.Direct {
 			continue
 		}
-		if !rewriteRefKeys[dep.FoldedKey(e.NWO, e.Ref)] {
+		if !rewriteRefKeys[dep.RefKey(e.NWO, e.Ref)] {
 			continue
 		}
 		if parserlock.IsFullSha(e.Ref) {
@@ -735,9 +735,11 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 				continue
 			}
 			oldRef := e.Ref
+			// The workflow may spell the SHA in another case: rewrite its
+			// own spelling.
 			for _, ref := range rewriteRefs {
-				if strings.EqualFold(ref.Owner+"/"+ref.Repo, e.NWO) && ref.Ref == oldRef {
-					rewrites[ref.FullName()+"@"+oldRef] = ref.FullName() + "@" + newRef
+				if dep.RefKey(ref.Owner+"/"+ref.Repo, ref.Ref) == dep.RefKey(e.NWO, oldRef) {
+					rewrites[ref.FullName()+"@"+ref.Ref] = ref.FullName() + "@" + newRef
 				}
 			}
 			e.Ref = newRef
@@ -847,10 +849,12 @@ func hasConflictingLockTarget(opts PlanOptions, nwo, ref, sha string) bool {
 	return ok && !strings.EqualFold(targetSHA, sha)
 }
 
+// actionRefKeys indexes workflow refs by reference identity: recorded
+// entries are matched against them, and those come from another source.
 func actionRefKeys(refs []parserlock.ActionRef) map[string]bool {
 	keys := make(map[string]bool, len(refs))
 	for _, ref := range refs {
-		keys[dep.FoldedKey(ref.Owner+"/"+ref.Repo, ref.Ref)] = true
+		keys[dep.RefKey(ref.Owner+"/"+ref.Repo, ref.Ref)] = true
 	}
 	return keys
 }

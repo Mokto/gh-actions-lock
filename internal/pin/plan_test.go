@@ -1267,3 +1267,50 @@ func TestPruneStaleInventoryKeepsRefCasing(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "Main", got[0].Dep.Ref)
 }
+
+// TestNarrowVerifiedEntries_SHARepairFromAnyCase: a workflow can spell a
+// full SHA in another case than its recorded key. It names the same commit,
+// so it is repaired the same way, and the rewrite replaces the workflow's own
+// spelling.
+func TestNarrowVerifiedEntries_SHARepairFromAnyCase(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	upper := strings.ToUpper(sha)
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", sha)))
+	report := checks.WorkflowReport{
+		Path: ".github/workflows/ci.yml",
+		Inventory: []checks.InventoryEntry{{
+			Dep:    dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v6.1.0"},
+			File:   ".github/workflows/ci.yml",
+			Direct: true,
+		}},
+		ActionRefs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: upper}},
+	}
+
+	opts := PlanOptions{Tagger: tag.NewListerForTest(t, reg), Resolver: tagResolver(t, "actions", "checkout", "v6.1.0", sha)}
+	result, err := planWorkflow(context.Background(), report, opts, func(string) {})
+	require.NoError(t, err)
+	require.Len(t, result.entries, 1)
+	assert.Equal(t, "v6.1.0", result.entries[0].Ref)
+	require.Len(t, result.wplans, 1)
+	assert.Equal(t, map[string]string{"actions/checkout@" + upper: "actions/checkout@v6.1.0"}, result.wplans[0].Rewrites)
+}
+
+// TestRejectPartialSelfActionRewrites_FullSHAInAnyCase: a rewrite of a full
+// SHA touches the commit a shared local action pins in any case, so a partial
+// scan refuses it either way round.
+func TestRejectPartialSelfActionRewrites_FullSHAInAnyCase(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	upper := strings.ToUpper(sha)
+	for _, tt := range []struct{ name, self, rewritten string }{
+		{name: "shared action spells it in uppercase", self: upper, rewritten: sha},
+		{name: "workflow spells it in uppercase", self: sha, rewritten: upper},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := rejectPartialSelfActionRewrites(PlanOptions{PartialScan: true},
+				[]parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: tt.self}},
+				map[string]string{"actions/checkout@" + tt.rewritten: "actions/checkout@v6.1.0"})
+			require.ErrorContains(t, err, "shared local action during a partial workflow scan")
+		})
+	}
+}
