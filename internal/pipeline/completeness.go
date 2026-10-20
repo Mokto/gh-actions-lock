@@ -10,6 +10,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/resolve"
@@ -37,6 +38,11 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 		_, parents, err := r.ResolveLockedRecursive(ctx, recorded, deps)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		// Behind the proxy a transient read is a retry, matching resolution
+		// and parity, not a finding.
+		if err != nil && ghapi.DependabotProxy() && ghapi.IsTransient(err) {
+			return fmt.Errorf("could not verify locked dependency manifests: %w", err)
 		}
 		wr := &report.Workflows[i]
 		// The recorded edges must include every edge discovered at the locked
