@@ -72,25 +72,6 @@ func TestIsSynthetic(t *testing.T) {
 	}
 }
 
-// orphanTestFiles predate the foo.go → foo_test.go rule and are being
-// merged into the test file of the source they exercise.
-var orphanTestFiles = map[string]bool{
-	"cmd/gh-actions-lock/atomic_test.go":            true,
-	"cmd/gh-actions-lock/check_json_golden_test.go": true,
-	"cmd/gh-actions-lock/command_test.go":           true,
-	"cmd/gh-actions-lock/freshtag_test.go":          true,
-	"cmd/gh-actions-lock/migrate_test.go":           true,
-	"cmd/gh-actions-lock/missing_ref_test.go":       true,
-	"cmd/gh-actions-lock/no_onboard_sha_test.go":    true,
-	"cmd/gh-actions-lock/parallel_steps_test.go":    true,
-	"cmd/gh-actions-lock/parity_test.go":            true,
-	"cmd/gh-actions-lock/proxima_test.go":           true,
-	"cmd/gh-actions-lock/prune_workflow_test.go":    true,
-	"cmd/gh-actions-lock/reporoot_test.go":          true,
-	"cmd/gh-actions-lock/resolve_cooldown_test.go":  true,
-	"cmd/gh-actions-lock/selfrepository_test.go":    true,
-}
-
 // TestEveryTestFileHasSource enforces that x_test.go sits beside x.go, so a
 // reader finds a function's tests in exactly one place.
 func TestEveryTestFileHasSource(t *testing.T) {
@@ -114,9 +95,7 @@ func TestEveryTestFileHasSource(t *testing.T) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if !orphanTestFiles[rel] {
-			orphans = append(orphans, rel)
-		}
+		orphans = append(orphans, rel)
 		return nil
 	})
 	require.NoError(t, err)
