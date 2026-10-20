@@ -42,11 +42,12 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 			return err
 		}
 		preview.GC()
+		verified := carryVerified(report.Verified, writers)
 		blocked := false
 		for i := range report.Workflows {
 			wr := &report.Workflows[i]
 			for j, d := range wr.Deferred {
-				if d.Restored || written(preview, report.Verified, d) {
+				if d.Restored || written(preview, verified, d) {
 					continue
 				}
 				adviseHolder(preview, &wr.Deferred[j])
@@ -59,6 +60,46 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 			return nil
 		}
 	}
+}
+
+// carryVerified extends verified through the writers' planned `uses:`
+// rewrites. Narrowing, reverse lookup and re-recording each rewrite a use
+// only to a ref they checked names the same commit, so a commit verified
+// under the old key is verified under the new one. A sibling ref merely at
+// the same commit gains nothing.
+func carryVerified(verified map[string]bool, writers []WorkflowPlan) map[string]bool {
+	out := make(map[string]bool, len(verified))
+	for k := range verified {
+		out[k] = true
+	}
+	for _, wp := range writers {
+		for oldUses, newUses := range wp.Rewrites {
+			oldKey, ok := usesKey(oldUses)
+			newKey, ok2 := usesKey(newUses)
+			if !ok || !ok2 || oldKey == newKey {
+				continue
+			}
+			for k := range verified {
+				if sha, ok := strings.CutPrefix(k, oldKey+":"); ok {
+					out[checks.VerifiedKey(newKey, sha)] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// usesKey is the on-disk key of a `uses:` value.
+func usesKey(uses string) (string, bool) {
+	ref := parserlock.ParseActionRef(uses)
+	if ref == nil {
+		return "", false
+	}
+	p, ok := parserlock.ParsePin(ref.Owner + "/" + ref.Repo + "@" + ref.Ref)
+	if !ok {
+		return "", false
+	}
+	return lockfile.EntryKey(p), true
 }
 
 // adviseHolder points an unreachable pin's advice at the entry that kept

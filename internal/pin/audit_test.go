@@ -42,3 +42,15 @@ func TestWritten(t *testing.T) {
 	}
 	assert.False(t, written(preview, nil, checks.Deferred{Key: "o/a@v1", Ref: "v1", Commit: a}), "a commit this run didn't verify proves nothing")
 }
+
+func TestCarryVerified(t *testing.T) {
+	const sha = "bbbb"
+	verified := map[string]bool{checks.VerifiedKey("o/child@v4", sha): true}
+	writers := []WorkflowPlan{{Rewrites: map[string]string{"o/child@v4": "o/child@v4.2.1"}}}
+
+	got := carryVerified(verified, writers)
+	assert.True(t, got[checks.VerifiedKey("o/child@v4.2.1", sha)], "a narrowed use carries its proof to the new key")
+	assert.True(t, got[checks.VerifiedKey("o/child@v4", sha)])
+	assert.False(t, got[checks.VerifiedKey("o/child@v4.2.0", sha)], "a sibling ref at the same commit gains nothing")
+	assert.False(t, verified[checks.VerifiedKey("o/child@v4.2.1", sha)], "the report's own evidence is left alone")
+}

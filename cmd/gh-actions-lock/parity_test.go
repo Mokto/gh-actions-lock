@@ -2695,6 +2695,56 @@ jobs:
 	}
 }
 
+// TestParity_AcceptMovedCarriesProofThroughNarrowing: the composite's
+// child o/child@v4.2.1 left its tag's history, and the composite moved to a
+// version that no longer uses it, though its recorded edge stays. The
+// workflow's new direct o/child@v4, checked at B, narrows to v4.2.1, the tag
+// at B, so the write rewrites the child's own key at a verified commit.
+func TestParity_AcceptMovedCarriesProofThroughNarrowing(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	const liveRoot = "ffffffffffffffffffffffffffffffffffffffff"
+	reg := &httpmock.Registry{}
+	stubGraph(t, reg,
+		map[string]string{"o/child": parityTestMoved, "octo/root": liveRoot},
+		map[string]string{"octo/root": liveRoot, "o/child": parityTestMoved},
+		nil)
+	reg.RegisterReusable(httpmock.REST("GET", `repos/o/child/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": rootSHA}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/o/child/tags`),
+		httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", parityTestMoved, "v4", parityTestMoved)))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/tags`),
+		httpmock.JSONResponse(httpmock.TagListResponse("v1.0.0", liveRoot, "v1", liveRoot)))
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/root@v1
+      - uses: o/child@v4
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'o/child@v4.2.1':\n    ref: 'v4.2.1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'o/child@v4.2.1'\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-interactive", path)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	require.NoError(t, err, "%s\n%s", stderr, after)
+	assert.Contains(t, string(after), "'o/child@v4.2.1':\n        ref: 'v4.2.1'\n        commit: 'sha1-"+parityTestMoved+"'")
+	assert.NotContains(t, string(after), parityTestSHA)
+	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
+	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
+}
+
 // TestParity_AuditRechecksWithoutBlockedWriters: workflow.yml's composite
 // child checkout@v4.2.1 left its tag's history; only other.yml's new direct
 // use rewrites it. But other.yml can't be written either: its own
