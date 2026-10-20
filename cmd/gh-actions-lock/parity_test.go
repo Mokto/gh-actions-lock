@@ -1637,6 +1637,31 @@ func TestParity_FullSHAKeyTitleMatchesCause(t *testing.T) {
 	}
 }
 
+// TestParity_FullSHAKeyMovedTagWarns: a full-SHA `uses:` already draws a
+// sha-as-ref warning for the same dependency; the moved recorded tag must
+// still show under --verify.
+func TestParity_FullSHAKeyMovedTagWarns(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": map[string]any{
+			"nameWithOwner": "actions/checkout",
+			"databaseId":    1,
+			"commit":        map[string]any{"oid": parityTestSHA},
+			"tag":           map[string]any{"oid": parityTestMoved},
+			"tagRef":        map[string]any{},
+		}},
+	}))
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
+		httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+	path := writeFullSHAWorkflow(t, "v6.1.0")
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
+	require.NoError(t, err, stderr)
+	assert.Contains(t, stderr, "tag v6.1.0 now points at bbbbbbbbbbbb; locked commit 9ddf35b71a48 is still in its history")
+	assert.Equal(t, 1, strings.Count(stderr, "pinned to a bare SHA"), "the sha-as-ref notice still shows once")
+}
+
 // writeFullSHAWorkflow writes a workflow using actions/checkout at
 // parityTestSHA, locked to that commit with the given recorded ref.
 func writeFullSHAWorkflow(t *testing.T, ref string) string {

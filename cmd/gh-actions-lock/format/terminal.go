@@ -357,6 +357,9 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 				if key == "" {
 					key = f.WorkflowPath
 				}
+				// One dependency can draw warnings of different kinds (a
+				// full-SHA `uses:` and its moved recorded tag); keep each.
+				key += "\x00" + string(f.Category)
 				if wg, ok := warnMap[key]; ok {
 					wg.count++
 					wg.workflows = append(wg.workflows, f.WorkflowPath)
