@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/stretchr/testify/assert"
@@ -103,6 +104,59 @@ func TestLocalActionDoesNotHideUnpinnedRemoteAction(t *testing.T) {
 	assert.Contains(t, stdout, `"category": "local-action"`)
 	assert.Contains(t, stdout, `"category": "not-pinned"`)
 	assert.Contains(t, stdout, "owner/action@v1")
+}
+
+func TestOpaqueLocalActionDoesNotHideSelfRepositoryRemotePins(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		args []string
+	}{
+		{name: "initial lock"},
+		{name: "compatibility flag", args: []string{"--no-migrate-local-actions"}},
+		{name: "relock", args: []string{"--relock"}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			wf := writeTempWorkflow(t, "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: $/.github/actions/outer\n")
+			require.NoError(t, os.Mkdir(".git", 0o755))
+			require.NoError(t, os.MkdirAll(".github/actions/outer", 0o755))
+			require.NoError(t, os.MkdirAll(".github/actions/opaque", 0o755))
+			require.NoError(t, os.WriteFile(".github/actions/outer/action.yml", []byte("runs:\n  using: composite\n  steps:\n    - uses: actions/setup-go@v5.0.0\n    - uses: ./.github/actions/opaque\n"), 0o600))
+			require.NoError(t, os.WriteFile(".github/actions/opaque/action.yml", []byte("runs: ["), 0o600))
+			before := snapshotWorkflows(t)
+			reg := &httpmock.Registry{}
+			registerSetupGo(reg)
+
+			_, stderr, err := runCommandWithHTTP(t, reg, append(mode.args, wf)...)
+			require.NoError(t, err, stderr)
+			assert.Contains(t, stderr, "never followed or locked")
+			file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+			require.NoError(t, err)
+			assert.Equal(t, []string{"actions/setup-go@v5.0.0"}, file.Workflows[wf])
+			require.Len(t, file.Dependencies, 1)
+			assert.Equal(t, "sha1-"+parityTestMoved, file.Dependencies["actions/setup-go@v5.0.0"].Commit)
+			after := snapshotWorkflows(t)
+			delete(after, parserlock.Path)
+			assert.Equal(t, before, after)
+
+			reg = &httpmock.Registry{}
+			registerParity(reg)
+			registerSetupGo(reg)
+			beforeVerify := snapshotWorkflows(t)
+			stdout, _, err := runCommandWithHTTP(t, reg, "--verify", "--json=valid,findings", wf)
+			require.NoError(t, err, stdout)
+			var payload struct {
+				Valid    bool             `json:"valid"`
+				Findings []format.Finding `json:"findings"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
+			assert.True(t, payload.Valid)
+			require.Len(t, payload.Findings, 1)
+			assert.Equal(t, "local-action", payload.Findings[0].Category)
+			assert.Equal(t, "info", payload.Findings[0].Severity)
+			assert.Contains(t, payload.Findings[0].Detail, "./.github/actions/opaque")
+			assert.Equal(t, beforeVerify, snapshotWorkflows(t))
+		})
+	}
 }
 
 func TestRemoteCompositeLocalActionsRemainVisibleAcrossOnlineModes(t *testing.T) {
