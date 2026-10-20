@@ -372,3 +372,38 @@ func TestTagExists(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckPins_UnpeelableTagShadowsBranch: a tag that exists but doesn't
+// peel to a commit still wins over a same-named branch, as in the Actions
+// backend; the ref resolves to no commit rather than the branch's.
+func TestCheckPins_UnpeelableTagShadowsBranch(t *testing.T) {
+	t.Run("graphql", func(t *testing.T) {
+		reg := &httpmock.Registry{}
+		defer reg.Verify(t)
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.GraphQLQuery(`{"data": {
+			"a0": {"nameWithOwner": "o/r", "commit": {"oid": "`+paritySHA+`"},
+				"tag": null, "tagRef": {}, "head": {"oid": "`+paritySHA+`"}, "headRef": {}}}}`, func(string, map[string]any) {}))
+		states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1"}})
+		require.NoError(t, states[0].Err)
+		assert.Empty(t, states[0].HeadOID)
+	})
+	t.Run("rest", func(t *testing.T) {
+		t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+		reg := &httpmock.Registry{}
+		defer reg.Verify(t)
+		reg.Register(httpmock.REST("GET", `^/repos/o/r$`), httpmock.JSONResponse(map[string]any{"full_name": "o/r"}))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/tags/v1$`), httpmock.JSONResponse(map[string]any{
+			"ref": "refs/tags/v1", "object": map[string]any{"sha": parityMoved, "type": "tag"},
+		}))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/commits/refs/tags/v1$`), httpmock.StatusResponse(http.StatusUnprocessableEntity))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/commits/`+paritySHA+`$`), httpmock.JSONResponse(map[string]any{"sha": paritySHA}))
+		c := newTestClient(t, reg)
+		c.anonHTTP = &http.Client{Transport: reg}
+		states := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1"}})
+		require.NoError(t, states[0].Err)
+		assert.Empty(t, states[0].HeadOID)
+		for _, req := range reg.Requests {
+			assert.NotContains(t, req.URL.Path, "/git/ref/heads/", "an existing tag shadows the branch")
+		}
+	})
+}

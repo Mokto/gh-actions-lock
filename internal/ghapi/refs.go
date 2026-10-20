@@ -67,8 +67,9 @@ func (c *Client) LookupRefName(ctx context.Context, owner, repo, name string) (R
 		if err != nil {
 			return RefTarget{}, err
 		}
-		// Kept as before this type: a tag counts only once it peels.
-		if exists && commit != "" {
+		// An existing tag wins even if it doesn't peel to a commit: the
+		// backend never falls through to a same-named branch.
+		if exists {
 			return RefTarget{Kind: []RefKind{TagRef, BranchRef}[i], Commit: commit}, nil
 		}
 	}

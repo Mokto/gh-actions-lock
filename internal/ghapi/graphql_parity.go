@@ -230,10 +230,14 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 		if repo.HeadRef == nil {
 			repo.Head = nil
 		}
+		// Tag precedence keys off the tag existing, not peeling: a tag that
+		// targets a tree or blob still hides a same-named branch.
 		var oid string
 		switch {
-		case repo.Tag != nil:
-			oid = repo.Tag.OID
+		case repo.TagRef != nil:
+			if repo.Tag != nil {
+				oid = repo.Tag.OID
+			}
 		case repo.Head != nil:
 			oid = repo.Head.OID
 		}
