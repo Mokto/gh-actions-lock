@@ -374,31 +374,47 @@ type LockedPin struct {
 
 // Closure returns the workflow's recorded pins, direct and transitive, by
 // walking the `uses:` list of each direct pin that live accepts. Stale roots
-// are skipped so their children are not reported. Each pin appears once.
+// are skipped so their children are not reported. Each pin appears once; a
+// pin the workflow uses directly is always reported as direct (no Parent),
+// even when a composite also uses it.
 func (s *State) Closure(workflowKey string, live func(parserlock.Pin) bool) []LockedPin {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []LockedPin
 	seen := map[string]bool{}
-	var walk func(key, parent string)
-	walk = func(key, parent string) {
+	add := func(key, parent string) (parserlock.Action, bool) {
 		if seen[key] {
-			return
+			return parserlock.Action{}, false
 		}
 		seen[key] = true
 		pin, ok := parserlock.ParsePin(key)
 		action, found := s.file.Dependencies[key]
 		if !ok || !found {
-			return
+			return parserlock.Action{}, false
 		}
 		out = append(out, LockedPin{Pin: pin, Action: action, Parent: parent})
-		for _, child := range action.Uses {
-			walk(child, key)
+		return action, true
+	}
+	var walk func(key, parent string)
+	walk = func(key, parent string) {
+		if action, ok := add(key, parent); ok {
+			for _, child := range action.Uses {
+				walk(child, key)
+			}
 		}
 	}
+	// Claim every root first, so traversal order can't make one transitive.
+	var roots []string
 	for _, key := range s.file.Workflows[workflowKey] {
 		if pin, ok := parserlock.ParsePin(key); ok && live(pin) {
-			walk(key, "")
+			if _, ok := add(key, ""); ok {
+				roots = append(roots, key)
+			}
+		}
+	}
+	for _, key := range roots {
+		for _, child := range s.file.Dependencies[key].Uses {
+			walk(child, key)
 		}
 	}
 	return out

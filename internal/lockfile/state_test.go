@@ -12,6 +12,8 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeMetadataResolver struct{}
@@ -1008,4 +1010,26 @@ func TestState_SetUnionsUsesAcrossRenames(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("uses = %v, want %v", got, want)
 	}
+}
+
+// TestStateClosureDirectPinIsNeverTransitive: a pin the workflow uses
+// directly is direct even when a composite listed before it also uses it.
+func TestStateClosureDirectPinIsNeverTransitive(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	sha := "9ddf35b71a482be7d8922b28e8d00df16b77e315"
+	lock := "version: 'v0.0.3'\ndependencies:\n" +
+		"  'actions/checkout@" + sha + "':\n    ref: 'v4'\n    commit: 'sha1-" + sha + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"  'octo/composite@v1':\n    ref: 'v1'\n    commit: 'sha1-" + strings.Repeat("e", 40) + "'\n    owner_id: 1\n    repo_id: 2\n" +
+		"    uses:\n      - 'actions/checkout@" + sha + "'\n" +
+		"workflows:\n  '.github/workflows/ci.yml':\n    - 'octo/composite@v1'\n    - 'actions/checkout@" + sha + "'\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+	store, err := LoadState(dir, fakeMetadataResolver{})
+	require.NoError(t, err)
+
+	got := map[string]string{}
+	for _, lp := range store.Closure(".github/workflows/ci.yml", func(parserlock.Pin) bool { return true }) {
+		got[lp.Pin.String()] = lp.Parent
+	}
+	assert.Equal(t, map[string]string{"octo/composite@v1": "", "actions/checkout@" + sha: ""}, got)
 }
