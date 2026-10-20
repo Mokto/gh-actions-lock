@@ -25,8 +25,8 @@ func TestDisposeParity(t *testing.T) {
 		wantSev  checks.Severity
 	}{
 		{name: "accept-moved repairs a direct full-SHA pin", mode: acceptMoved, subject: paritySubject{pin: shaPin, pruned: true}, wantKeep: true, wantSev: checks.SeverityWarning},
-		{name: "accept-moved keeps a transitive full-SHA pin blocking", mode: acceptMoved, parent: "octo/composite@v1", subject: paritySubject{pin: shaPin, pruned: true}, wantKeep: true, wantSev: checks.SeverityError},
-		{name: "accept-moved keeps a direct full-SHA pin a composite also pins blocking", mode: acceptMoved, subject: paritySubject{pin: shaPin, pruned: true, pinnedBy: "octo/composite@v1"}, wantKeep: true, wantSev: checks.SeverityError},
+		{name: "accept-moved keeps a transitive full-SHA pin blocking", mode: acceptMoved, parent: "octo/composite@v1", subject: paritySubject{pin: shaPin, pruned: true, heldBy: "octo/composite@v1"}, wantKeep: true, wantSev: checks.SeverityError},
+		{name: "accept-moved keeps a direct full-SHA pin a composite also pins blocking", mode: acceptMoved, subject: paritySubject{pin: shaPin, pruned: true, heldBy: "octo/composite@v1"}, wantKeep: true, wantSev: checks.SeverityError},
 		{name: "relock keeps a full-SHA pin blocking", mode: relock, subject: paritySubject{pin: shaPin, pruned: true}, wantKeep: true, wantSev: checks.SeverityError},
 		{name: "relock drops a mutable pin planning re-resolves", mode: relock, subject: paritySubject{pin: tagPin, pruned: true}},
 		{name: "relock keeps a mutable pin planning keeps", mode: relock, subject: paritySubject{pin: tagPin}, wantKeep: true, wantSev: checks.SeverityError},
@@ -58,7 +58,7 @@ func TestDisposeParity_SharedPinRemediationNamesComposite(t *testing.T) {
 	for name, mode := range map[string]parityMode{"default": {}, "accept-moved": {relock: true, acceptMoved: true}} {
 		t.Run(name, func(t *testing.T) {
 			f := checks.Finding{Category: checks.UnreachablePin, Severity: checks.SeverityError, Dependency: &dep.Dependency{NWO: "actions/checkout"}, Remediation: checks.AcceptMovedRemediation}
-			assert.True(t, disposeParity(mode, &f, paritySubject{pin: pin, pruned: true, pinnedBy: "octo/composite@v1"}))
+			assert.True(t, disposeParity(mode, &f, paritySubject{pin: pin, pruned: true, heldBy: "octo/composite@v1"}))
 			assert.Equal(t, checks.SeverityError, f.Severity)
 			assert.Equal(t, "upgrade or replace octo/composite@v1 with a version whose pin of actions/checkout can be verified, or stop using it", f.Remediation)
 		})

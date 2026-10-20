@@ -111,8 +111,8 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 			k := lp.Pin.String()
 			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref,
-				pruned:   pruned[checks.PruneKey(lp.Pin.NWO, lp.Pin.Ref, lockedSHA(lp.Action.Commit))],
-				pinnedBy: firstParent(edges[k]),
+				pruned: pruned[checks.PruneKey(lp.Pin.NWO, lp.Pin.Ref, lockedSHA(lp.Action.Commit))],
+				heldBy: heldBy(lp, edges[k]),
 			})
 		}
 		if pw.Resolved {
@@ -172,7 +172,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if !ok && mode.verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
 			}
-			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, pruned: o.pruned, pinnedBy: o.pinnedBy, head: pins[i].Head, inconclusive: st.Err != nil}) {
+			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, pruned: o.pruned, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil}) {
 				continue
 			}
 			wr := &report.Workflows[o.report]
@@ -199,9 +199,9 @@ type parityOwner struct {
 	fresh  bool
 	// pruned marks a recorded entry planning re-resolves.
 	pruned bool
-	// pinnedBy is a composite (NWO@ref) whose recorded `uses:` also lists
-	// this entry, though Closure reports it as the workflow's own pin.
-	pinnedBy string
+	// heldBy is the composite that keeps this entry as recorded when
+	// --accept-moved re-resolves the workflow's use: see heldBy.
+	heldBy string
 }
 
 // compositeEdges maps each pin a composite in the recorded closure lists in
@@ -218,10 +218,36 @@ func compositeEdges(closure []lockfile.LockedPin) map[string][]lockfile.LockedPi
 	return out
 }
 
-// firstParent is the first of composites as NWO@ref, or "".
-func firstParent(composites []lockfile.LockedPin) string {
-	if len(composites) == 0 {
+// plannedAway reports whether planning provably replaces or removes a
+// recorded entry, given what a finding makes it do with the workflow's use
+// (checks.PruneEffect). Planning prunes only the workflow's own pins, and
+// writing a workflow keeps every recorded edge, so an entry a composite
+// lists survives unless the workflow's use overwrites that very key: a
+// mutable ref re-resolved in place. A full-SHA use may be re-keyed by
+// narrowing, and a dropped use leaves the key behind. composites are the
+// recorded composites that list lp's key.
+func plannedAway(lp lockfile.LockedPin, composites []lockfile.LockedPin, effect checks.PruneEffect) bool {
+	if lp.Parent != "" {
+		return false
+	}
+	switch effect {
+	case checks.Reresolved:
+		return len(composites) == 0 || !parserlock.IsFullSha(lp.Pin.Ref)
+	case checks.Dropped:
+		return len(composites) == 0
+	}
+	return false
+}
+
+// heldBy is the composite (NWO@ref) that keeps a recorded entry as recorded
+// even when --accept-moved re-resolves the workflow's use of it, or "" when
+// that repairs it. Repair advice and the override both ask this.
+func heldBy(lp lockfile.LockedPin, composites []lockfile.LockedPin) string {
+	switch {
+	case plannedAway(lp, composites, checks.Reresolved):
 		return ""
+	case lp.Parent != "":
+		return lockParent(lp)
 	}
 	return composites[0].Pin.NWO + "@" + composites[0].Pin.Ref
 }

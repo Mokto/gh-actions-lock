@@ -23,10 +23,10 @@ type paritySubject struct {
 	// make planning drop and re-resolve (checks.PrunesDependency), so what
 	// the run writes for it is not the recorded commit.
 	pruned bool
-	// pinnedBy is a composite (NWO@ref) that also pins a recorded direct
-	// entry. Planning keeps the composite's recorded edge to it, moved or
-	// not, so the entry stays as recorded.
-	pinnedBy string
+	// heldBy is the composite that keeps the entry as recorded even when
+	// --accept-moved re-resolves the workflow's use (see heldBy in
+	// parity.go); "" when that repairs it.
+	heldBy string
 	// head is the ref the commit was traced to; "" for an entry without one.
 	head string
 	// inconclusive marks a check that couldn't finish.
@@ -50,10 +50,8 @@ type paritySubject struct {
 // --accept-moved also accepts a direct full-SHA key whose recorded ref no
 // longer vouches for it: the finding becomes a warning that itself prunes
 // the entry, and planning records a tag or branch that contains the commit,
-// or fails. A transitive one stays blocking: planning doesn't rebuild an
-// unchanged composite's dependencies, so nothing would replace its entry.
-// That holds too for a direct pin that a composite also pins, moved or not:
-// both share one entry.
+// or fails. An entry a composite holds (see heldBy) gets no override, and
+// its advice names the composite.
 func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 	if s.fresh {
 		if s.inconclusive {
@@ -64,16 +62,10 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 	}
 	fullSHA := parserlock.IsFullSha(s.pin.Ref)
 	c := f.Category
-	// A composite holds the entry as its child, or shares it with a direct
-	// use; either way planning keeps the composite's recorded entry.
-	holder := f.ParentNWO
-	if holder == "" {
-		holder = s.pinnedBy
-	}
 	if c == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
-		f.Remediation = unreachableRemediation(holder, f.Dependency.NWO)
+		f.Remediation = unreachableRemediation(s.heldBy, f.Dependency.NWO)
 	}
-	if m.acceptMoved && c == checks.UnreachablePin && fullSHA && !f.RefMissing && holder == "" {
+	if m.acceptMoved && c == checks.UnreachablePin && fullSHA && !f.RefMissing && s.heldBy == "" {
 		f.Severity = checks.SeverityWarning
 		f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
 		return true

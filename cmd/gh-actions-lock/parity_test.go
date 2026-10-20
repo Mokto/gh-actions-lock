@@ -2080,6 +2080,100 @@ jobs:
 	assert.Equal(t, lock, string(after), "nothing is written")
 }
 
+// TestParity_SharedMutablePinAcceptsMoved: actions/checkout@v4 is used
+// directly and through an unchanged composite, and its recorded commit left
+// v4's history. Both uses share the one v4 entry, which --accept-moved
+// re-resolves in place, so the advice is --accept-moved, and following it
+// writes a lock that verifies.
+func TestParity_SharedMutablePinAcceptsMoved(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	root := "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			head := v
+			if nwo == "actions/checkout" {
+				head = parityTestMoved
+			}
+			data["a"+i] = map[string]any{
+				"nameWithOwner": nwo,
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": v},
+				"tag":           map[string]any{"oid": head},
+				"tagRef":        map[string]any{"oid": head},
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	repos := map[string]map[string]any{
+		"octo/root":        testRepoResponse("octo/root", rootSHA, root),
+		"actions/checkout": testRepoResponse("actions/checkout", parityTestMoved, nodeActionYAML),
+	}
+	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			if i, ok := strings.CutPrefix(k, "owner"); ok {
+				data["a"+i] = repos[v.(string)+"/"+body.Variables["name"+i].(string)]
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA),
+		httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", parityTestMoved, "v4", parityTestMoved)))
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/root@v1
+      - uses: actions/checkout@v4
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@v4'\n" +
+		"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n    - 'actions/checkout@v4'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	p, err := runParity(t, reg, "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent)
+	var advice []string
+	for _, f := range p.Findings {
+		if f.Category == "unreachable-pin" {
+			advice = append(advice, f.Remediation)
+		}
+	}
+	assert.Equal(t, []string{"verify it, then run `gh actions-lock --accept-moved`"}, advice)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-interactive", path)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	require.NoError(t, err, "%s\n%s", stderr, after)
+	assert.Contains(t, string(after), "commit: 'sha1-"+parityTestMoved+"'")
+	assert.NotContains(t, string(after), parityTestSHA)
+	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
+	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
+}
+
 // reposDown fails every request about the given owner/repos except the
 // parity query, which reports the pins themselves.
 type reposDown struct {
