@@ -239,7 +239,8 @@ func groupPinnedByWorkflow(rec *Record) map[string][]dep.Dependency {
 // retainUnresolvablePins re-adds the workflow's existing on-disk pins for any
 // entry that cannot be resolved this run (flagged for investigation or transiently
 // unresolvable, e.g. 403/SSO). Without this a co-located re-pin silently
-// drops the existing pin.
+// drops the existing pin. Planned refs are spelled as the workflow spells
+// them, so they reach recorded pins by reference identity.
 func retainUnresolvablePins(rec *Record, store *lockfile.State, wfPath string, deps []dep.Dependency, directKeys map[string]bool) []dep.Dependency {
 	retain := make(map[string]bool)
 	for _, e := range rec.Entries {
@@ -248,7 +249,7 @@ func retainUnresolvablePins(rec *Record, store *lockfile.State, wfPath string, d
 		}
 		for _, wf := range e.Workflows {
 			if wf == wfPath {
-				retain[dep.FoldedKey(e.NWO, e.Ref)] = true
+				retain[dep.RefKey(e.NWO, e.Ref)] = true
 			}
 		}
 	}
@@ -261,10 +262,10 @@ func retainUnresolvablePins(rec *Record, store *lockfile.State, wfPath string, d
 	}
 	have := make(map[string]bool, len(deps))
 	for _, d := range deps {
-		have[dep.FoldedKey(d.NWO, d.Ref)] = true
+		have[dep.RefKey(d.NWO, d.Ref)] = true
 	}
 	for _, d := range existing {
-		k := dep.FoldedKey(d.NWO, d.Ref)
+		k := dep.RefKey(d.NWO, d.Ref)
 		if retain[k] && !have[k] {
 			deps = append(deps, d)
 			directKeys[d.Key()] = true

@@ -501,3 +501,23 @@ func TestCommitRejectsIncompleteClosure(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, content, after)
 }
+
+// TestRetainUnresolvablePinsReachesFullSHAInAnyCase: an unresolvable
+// workflow ref spelling a full SHA in another case than its recorded key
+// still keeps that recorded pin.
+func TestRetainUnresolvablePinsReachesFullSHAInAnyCase(t *testing.T) {
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	wfPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
+	store, err := lockfile.LoadState(dir, fakeMeta{})
+	require.NoError(t, err)
+	recorded := dep.Dependency{NWO: "o/a", Ref: sha, Tag: "v1.0.0", SHA: sha, HashAlgo: "sha1"}
+	require.NoError(t, store.Set(context.Background(), workflowfile.KeyFromPath(wfPath), []dep.Dependency{recorded}, nil, nil))
+
+	rec := &Record{Entries: []Entry{{NWO: "o/a", Ref: strings.ToUpper(sha), Resolution: Unresolved, Workflows: []string{wfPath}}}}
+	got := retainUnresolvablePins(rec, store, wfPath, nil, map[string]bool{})
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "o/a@"+sha, got[0].Key())
+}

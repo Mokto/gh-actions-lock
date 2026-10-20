@@ -796,7 +796,7 @@ func retainedLockTargets(report *checks.Report, opts PlanOptions) map[string]boo
 	retained := make(map[string]bool)
 	for _, wfKey := range opts.Store.WorkflowKeys() {
 		live := func(p parserlock.Pin, _ parserlock.Action) bool {
-			return !staleByWorkflow[wfKey][p.String()]
+			return !staleByWorkflow[wfKey][dep.RefKey(p.NWO, p.Ref)]
 		}
 		for _, locked := range opts.Store.Closure(wfKey, live) {
 			retained[locked.Key] = true
@@ -820,7 +820,7 @@ func staleRoots(report *checks.Report, opts PlanOptions) map[string]map[string]b
 		stale := make(map[string]bool)
 		for _, f := range wr.Findings {
 			if f.Category == checks.Stale && f.Dependency != nil {
-				stale[dep.FoldedKey(f.Dependency.NWO, f.Dependency.Ref)] = true
+				stale[dep.RefKey(f.Dependency.NWO, f.Dependency.Ref)] = true
 			}
 		}
 		staleByWorkflow[workflowfile.KeyFromPath(wr.Path)] = stale
