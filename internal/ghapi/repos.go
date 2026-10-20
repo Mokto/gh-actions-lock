@@ -236,28 +236,15 @@ func (c *Client) GetBranchHead(ctx context.Context, owner, repo, name string) (B
 		if bh, ok := c.namedBranchCache.Get(key); ok {
 			return bh, nil
 		}
-		path := fmt.Sprintf("repos/%s/%s/git/ref/heads/%s",
-			url.PathEscape(owner), url.PathEscape(repo), escapeBranchPath(name))
-		var resp struct {
-			Ref    string `json:"ref"`
-			Object struct {
-				SHA  string `json:"sha"`
-				Type string `json:"type"`
-			} `json:"object"`
-		}
-		if err := c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &resp); err != nil {
-			var httpErr *api.HTTPError
-			if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
-				c.namedBranchCache.Put(key, BranchHead{}) // negative cache
-			}
+		ref, found, err := c.gitRef(ctx, owner, repo, "refs/heads/"+name)
+		if err != nil {
 			return BranchHead{}, nil
 		}
-		// A prefix (non-exact) match returns an array, decoding to an empty
-		// object here; treat that as "not found" rather than guessing.
-		if resp.Object.SHA == "" {
+		if !found || ref.Object.SHA == "" {
+			c.namedBranchCache.Put(key, BranchHead{}) // negative cache
 			return BranchHead{}, nil
 		}
-		bh := BranchHead{Name: name, SHA: resp.Object.SHA}
+		bh := BranchHead{Name: name, SHA: ref.Object.SHA}
 		c.namedBranchCache.Put(key, bh)
 		return bh, nil
 	})

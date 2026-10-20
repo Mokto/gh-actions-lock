@@ -318,3 +318,28 @@ func TestTagsAtCommit_ReadsEveryPage(t *testing.T) {
 		})
 	}
 }
+
+// TestGetBranchHead_SharedRefLayer: branch heads go through the shared exact
+// ref lookup, so they work under the Dependabot proxy and read only a ref
+// that exists by exactly that name.
+func TestGetBranchHead_SharedRefLayer(t *testing.T) {
+	for _, proxy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "authenticated", true: "dependabot proxy"}[proxy], func(t *testing.T) {
+			if proxy {
+				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+			}
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/heads/main$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/main", "abc")))
+			reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/heads/rel$`),
+				httpmock.JSONResponse([]any{httpmock.GitRefResponse("refs/heads/rel/x", "abc")}))
+			c := newTestClient(t, reg)
+			c.anonHTTP = &http.Client{Transport: reg}
+
+			bh, ok := c.GetBranchHead(context.Background(), "o", "r", "main")
+			assert.True(t, ok)
+			assert.Equal(t, "abc", bh.SHA)
+			_, ok = c.GetBranchHead(context.Background(), "o", "r", "rel")
+			assert.False(t, ok, "a prefix match is not the branch")
+		})
+	}
+}
