@@ -33,6 +33,14 @@ When in doubt, fewer words. If a comment reads like marketing or a victory lap, 
 - Table-driven by default; subtests named with what they assert, not how.
 - One assertion per logical claim; multiple `assert.X` calls beat one giant struct compare.
 - Don't golden-snapshot what you can assert structurally.
+- Name each test file after the source file it tests: `foo.go` → `foo_test.go`.
+  No topic or scenario test files; `TestEveryTestFileHasSource` enforces it.
+- Real upstream commits come from `internal/testfixture` pins, which record
+  their release and are checked against their recorded ref by
+  `make test-fixtures`. Use `testfixture.Synthetic` for commits that only
+  exist in a fake API.
+- Fake GitHub with `httpmock` (`StubRepo`, `ParityIntact`, `RoundTripFunc`,
+  `CountingTransport`) rather than a new per-file transport.
 
 ### Where does a test belong?
 
