@@ -93,10 +93,11 @@ func TestLoadState_ValidEntryRefLoads(t *testing.T) {
 	}
 }
 
-// TestLoadState_OwnSHARefIsUnrecorded: a workflow's full-SHA pin recorded
-// with that SHA as its ref loads, but as unrecorded, so a run re-resolves it
-// and records its tag or branch instead of failing the whole lockfile.
-func TestLoadState_OwnSHARefIsUnrecorded(t *testing.T) {
+// TestLoadState_OwnSHARefLoads: a workflow's full-SHA pin recorded with
+// that SHA as its ref loads and stays recorded, so the run can report and
+// re-resolve it instead of failing the whole lockfile; it never seeds ref
+// resolution.
+func TestLoadState_OwnSHARefLoads(t *testing.T) {
 	dir := writeEntryRefLock(t, entryRefSHA, entryRefSHA)
 	s, err := LoadState(dir, fakeMetadataResolver{})
 	require.NoError(t, err)
@@ -105,7 +106,8 @@ func TestLoadState_OwnSHARefIsUnrecorded(t *testing.T) {
 	assert.Equal(t, entryRefSHA, s.File().Dependencies[key].Ref, "the entry is kept as written")
 	deps, err := s.Get(".github/workflows/ci.yml")
 	require.NoError(t, err)
-	assert.Empty(t, deps)
+	require.Len(t, deps, 1, "still recorded for the workflow")
+	assert.False(t, Seedable(deps[0]), "never seeds ref resolution")
 	all := s.AllDeps()
 	require.Len(t, all, 1, "still recorded, so its host binds")
 	assert.False(t, Seedable(all[0]), "never seeds ref resolution")

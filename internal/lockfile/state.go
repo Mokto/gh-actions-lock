@@ -370,8 +370,6 @@ func (s *State) PruneWorkflows(keep map[string]bool, refs ...parserlock.ActionRe
 
 // Get returns the dependencies recorded for workflowKey (e.g.
 // ".github/workflows/ci.yml"). Returns nil when the workflow has no entry.
-// An entry that records its own SHA as its ref is left out, so the run
-// treats the pin as unrecorded and re-resolves it.
 func (s *State) Get(workflowKey string) ([]dep.Dependency, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -385,12 +383,8 @@ func (s *State) Get(workflowKey string) ([]dep.Dependency, error) {
 		if !ok {
 			return nil, fmt.Errorf("invalid pin %q in %s for workflow %q", raw, parserlock.Path, workflowKey)
 		}
-		action, found := s.file.Dependencies[raw]
-		if found && RecordsOwnSHA(pin, action.Ref) {
-			continue
-		}
 		d := pinToDep(pin)
-		if found {
+		if action, found := s.file.Dependencies[raw]; found {
 			d.Hostname = s.hostOrHome(action.Hostname)
 			d.Tag, d.Branch = parserlock.SplitRef(action.Ref)
 			if idx := strings.Index(action.Commit, "-"); idx >= 0 {

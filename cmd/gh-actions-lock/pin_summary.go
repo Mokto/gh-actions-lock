@@ -132,7 +132,8 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 		renderPinnedEntries(console, pinned)
 	}
 
-	renderReRecorded(console, pinned, record.EntryRepairs)
+	// A re-recorded entry keeps its key and commit, so it may be Verified.
+	renderReRecorded(console, append(slices.Clone(pinned), record.Verified()...), record.EntryRepairs)
 
 	if len(narrowed) > 0 && len(pinned) == 0 {
 		console.TermBlank()
@@ -284,9 +285,9 @@ func renderAcceptedOverrides(console *ui.UI, report *checks.Report, pinned []pin
 
 // renderReRecorded names each pin whose entry recorded its commit SHA as
 // its ref, now re-recorded with a tag or branch.
-func renderReRecorded(console *ui.UI, pinned []pin.Entry, repairs []pin.EntryRepair) {
+func renderReRecorded(console *ui.UI, entries []pin.Entry, repairs []pin.EntryRepair) {
 	seen := map[string]bool{}
-	for _, e := range pinned {
+	for _, e := range entries {
 		key := e.NWO + "@" + e.Ref
 		if !e.ReRecorded || seen[key] {
 			continue

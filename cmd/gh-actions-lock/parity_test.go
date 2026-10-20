@@ -1580,6 +1580,81 @@ func TestSHARecordedRef_ChildFixRepairs(t *testing.T) {
 	}
 }
 
+// TestSHARecordedRef_RootClosureChecked: a workflow pin whose entry records
+// its own SHA is re-resolved, which stops at seeded entries, so parity must
+// still check its stored closure: a replaced repository two levels down
+// blocks.
+func TestSHARecordedRef_RootClosureChecked(t *testing.T) {
+	for _, args := range [][]string{{"--verify"}, nil} {
+		t.Run(fmt.Sprint(args), func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			for range 3 {
+				reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+					var body struct {
+						Variables map[string]any `json:"variables"`
+					}
+					require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+					data := map[string]any{}
+					for i := 0; ; i++ {
+						owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+						if !ok {
+							break
+						}
+						name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+						id := 1
+						if name == "setup-go" {
+							id = 999
+						}
+						oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+						data[fmt.Sprintf("a%d", i)] = map[string]any{
+							"nameWithOwner": owner + "/" + name, "databaseId": id,
+							"commit": oid, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+						}
+					}
+					return httpmock.JSONResponse(map[string]any{"data": data})(req)
+				})
+			}
+			composite := "runs:\n  using: composite\n  steps:\n    - uses: actions/cache@v1\n"
+			reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, composite)},
+			}))
+			isolateRunLogs(t)
+			writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+parityTestSHA+`
+`)
+			entry := func(key, ref string, uses ...string) string {
+				out := "    '" + key + "':\n        ref: '" + ref + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+				for i, u := range uses {
+					if i == 0 {
+						out += "        uses:\n"
+					}
+					out += "            - '" + u + "'\n"
+				}
+				return out
+			}
+			lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - 'actions/checkout@" + parityTestSHA + "'\n" +
+				"dependencies:\n" + entry("actions/cache@v1", "v1", "actions/setup-go@v1") +
+				entry("actions/checkout@"+parityTestSHA, parityTestSHA, "actions/cache@v1") + entry("actions/setup-go@v1", "v1")
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			p, err := runParity(t, parityFallback{reg}, append(args, "--no-interactive")...)
+			require.ErrorIs(t, err, errSilent)
+			var replaced bool
+			for _, f := range p.Findings {
+				replaced = replaced || f.Category == "repo-replaced" && strings.Contains(f.Detail, "actions/setup-go")
+			}
+			assert.True(t, replaced, "findings: %+v", p.Findings)
+			assert.Equal(t, lock, readTempLockfilePins(t))
+		})
+	}
+}
+
 // TestSHARecordedRef_ScopedFixWarns: a fix run given workflow paths warns
 // about an own-SHA entry of a workflow it didn't select, names the entry and
 // the full-scan repair, never claims every workflow is valid, still writes

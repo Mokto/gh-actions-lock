@@ -67,8 +67,9 @@ func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]
 
 // checkSHARecordedRef emits a remediable NotPinned error for each workflow
 // pin whose entry records its own SHA as its ref. The Actions backend
-// rejects the pin, so it is not pinned; a fix run re-records the tag or
-// branch the commit came from (see lockfile.RecordsOwnSHA).
+// rejects the pin, so it is not pinned; the finding asks a fix run to
+// re-resolve the entry and record the tag or branch the commit came from
+// (see lockfile.RecordsOwnSHA).
 func checkSHARecordedRef(pw ParsedWorkflow, wfEntry []string, deps map[string]parserlock.Action) []Finding {
 	bad := map[string]string{}
 	for _, raw := range wfEntry {
@@ -89,6 +90,7 @@ func checkSHARecordedRef(pw ParsedWorkflow, wfEntry []string, deps map[string]pa
 		f.Detail = fmt.Sprintf("lock entry for %s records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", raw, parserlock.ShortSHA(deps[raw].Ref))
 		f.Remediation = "run `gh actions-lock` to record the tag or branch this commit came from"
 		f.Dependency = synthDep(ref, lockedPin{Commit: deps[raw].Commit}.SHA())
+		f.Reresolve = true
 		out = append(out, f)
 	}
 	return out

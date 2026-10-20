@@ -77,6 +77,9 @@ type Finding struct {
 	// tracked action, not onboarding, so --no-onboard lets it through to
 	// be resolved and history-checked.
 	TrackedAction bool
+	// Reresolve asks planning to drop this finding's recorded dependency
+	// from the inventory and resolve it afresh (see PrunesDependency).
+	Reresolve bool
 }
 
 // InventoryEntry describes a single dependency with context.

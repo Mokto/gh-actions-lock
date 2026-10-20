@@ -50,7 +50,8 @@ func ValidEntryRef(pin parserlock.Pin, ref string) bool {
 // RecordsOwnSHA reports whether a full-SHA key's entry records that same
 // SHA as its ref. The Actions backend rejects it, but a run can re-record
 // the tag or branch the commit came from, so such an entry loads instead
-// of failing the lockfile: a workflow's own pin as unrecorded.
+// of failing the lockfile. It stays recorded and tracked; only ref seeding
+// (Seedable) and parity's ref lookup skip it.
 func RecordsOwnSHA(pin parserlock.Pin, ref string) bool {
 	return parserlock.IsFullSha(pin.Ref) && strings.EqualFold(ref, pin.Ref)
 }
