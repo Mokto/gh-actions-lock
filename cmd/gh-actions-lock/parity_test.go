@@ -1827,19 +1827,31 @@ jobs:
 
 // TestSHARecordedRef_RepairFollowsTheWrite: entry repair follows what the
 // run writes, not the selected workflow's old lock roots. A workflow onboarded
-// onto a composite another workflow already locked writes that composite's
-// stored `uses:`, so its own-SHA child is repaired, or blocks the run when no
-// tag or branch contains its commit.
+// onto, or replacing a root with, a composite another workflow already
+// locked writes that composite's stored `uses:`, so its own-SHA child is
+// repaired, or blocks the run when no tag or branch contains its commit.
 func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 	const head = "dddddddddddddddddddddddddddddddddddddddd"
-	for _, repairable := range []bool{true, false} {
-		t.Run(fmt.Sprintf("repairable=%v", repairable), func(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		repairable bool
+		// replaces gives new.yml an existing lock root its `uses:` no
+		// longer names, so the run replaces it with the shared composite.
+		replaces bool
+	}{
+		{"onboarding/repairable", true, false},
+		{"onboarding/unrepairable", false, false},
+		{"root replacement/repairable", true, true},
+		{"root replacement/unrepairable", false, true},
+	} {
+		repairable := tt.repairable
+		t.Run(tt.name, func(t *testing.T) {
 			base, compare, tags := parityTestSHA, "behind", []string{"v4.2.0", parityTestSHA}
 			if !repairable {
 				base, compare, tags = "cccccccccccccccccccccccccccccccccccccccc", "diverged", nil
 			}
 			reg := &httpmock.Registry{}
-			for _, repo := range []string{"checkout", "cache"} {
+			for _, repo := range []string{"checkout", "cache", "setup-go"} {
 				for range 4 {
 					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
 						httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
@@ -1860,12 +1872,17 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", wf), []byte(body), 0o600))
 			}
 			cache := "actions/cache@" + parityTestSHA
-			lock := "version: 'v0.0.3'\nworkflows:\n" +
+			newRoot, setupGo := "", ""
+			if tt.replaces {
+				newRoot = "    '.github/workflows/new.yml':\n        - 'actions/setup-go@v1'\n"
+				setupGo = "    'actions/setup-go@v1':\n        ref: 'v1'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+			}
+			lock := "version: 'v0.0.3'\nworkflows:\n" + newRoot +
 				"    '.github/workflows/old.yml':\n        - 'actions/checkout@v6.1.0'\n" +
 				"    '.github/workflows/workflow.yml': []\n" +
 				"dependencies:\n" +
 				"    '" + cache + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n" +
-				"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - '" + cache + "'\n"
+				"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - '" + cache + "'\n" + setupGo
 			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
 
 			_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive", filepath.Join(".github", "workflows", "new.yml"))
@@ -1880,6 +1897,7 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 			assert.Contains(t, after, "    '.github/workflows/new.yml':\n        - 'actions/checkout@v6.1.0'\n")
 			assert.Contains(t, after, "    '"+cache+"':\n        ref: 'v4.2.0'\n")
 			assert.NotContains(t, after, "ref: '"+parityTestSHA+"'")
+			assert.NotContains(t, after, "actions/setup-go")
 		})
 	}
 }
