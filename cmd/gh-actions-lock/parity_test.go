@@ -2178,9 +2178,26 @@ jobs:
 // TestParity_RelockKeepsStaleSharedChildBlocking: checkout@v4 was a direct
 // pin and also a composite's child. The workflow dropped the direct use, so
 // its stale finding prunes the direct entry, but the composite's recorded
-// edge keeps the entry in the lock. Its inconclusive history check must
-// still block.
+// edge keeps the entry in the lock. Whether its history check failed or
+// proved the commit gone, no mode may excuse or accept it: there is no
+// direct use left to re-resolve.
 func TestParity_RelockKeepsStaleSharedChildBlocking(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		diverged bool
+		args     []string
+		want     string
+	}{
+		{"relock, history unknown", false, []string{"--relock"}, "could not check v4 history"},
+		{"relock, commit gone", true, []string{"--relock"}, "is not in actions/checkout's history"},
+		{"accept-moved, history unknown", false, []string{"--accept-moved"}, "could not check v4 history"},
+		{"accept-moved, commit gone", true, []string{"--accept-moved"}, "is not in actions/checkout's history"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testStaleSharedChild(t, tc.diverged, tc.args, tc.want) })
+	}
+}
+
+func testStaleSharedChild(t *testing.T, diverged bool, args []string, want string) {
 	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	const liveRoot = "ffffffffffffffffffffffffffffffffffffffff"
 	reg := &httpmock.Registry{}
@@ -2210,7 +2227,12 @@ func TestParity_RelockKeepsStaleSharedChildBlocking(t *testing.T) {
 	}))
 	reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/compare/`),
 		httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": rootSHA}}))
-	rt := reposDown{reg, []string{"actions/checkout"}}
+	var rt http.RoundTripper = reposDown{reg, []string{"actions/checkout"}}
+	if diverged {
+		reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+			httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+		rt = reg
+	}
 	useDefaultTransport(t, rt)
 	path := writeTempWorkflow(t, `
 name: ci
@@ -2229,11 +2251,11 @@ jobs:
 	lockPath := filepath.Join(".github", "workflows", "actions.lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
 
-	_, stderr, err := runCommandWithHTTP(t, rt, "--relock", "--no-narrow", "--no-interactive", path)
+	_, stderr, err := runCommandWithHTTP(t, rt, append(args, "--no-narrow", "--no-interactive", path)...)
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
 	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
-	assert.Contains(t, stderr, "could not check v4 history")
+	assert.Contains(t, stderr, want)
 	assert.Equal(t, lock, string(after), "nothing is written")
 }
 
