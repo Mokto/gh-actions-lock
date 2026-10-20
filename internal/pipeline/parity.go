@@ -80,7 +80,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		owners[i] = append(owners[i], o)
 	}
 	fresh := freshClosure(resolved, parents)
-	graph := newFreshGraph(resolved, parents)
+	graph := newFreshGraph(resolved)
 	for _, pw := range parsed {
 		ri, ok := reportIdx[pw.Path]
 		if !ok || isBlocked(pw) {
@@ -95,8 +95,6 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			_, ok := direct[strings.ToLower(p.Owner+"/"+p.Repo)+"@"+p.Ref]
 			return ok
 		}
-		// A recorded entry is replaced only if this run resolved its root,
-		// and the entry too unless the fresh graph drops it.
 		var freshOwners []parityOwner
 		var freshRoots map[string]bool
 		if !pw.Resolved {
@@ -112,8 +110,8 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 			k := lp.Pin.String()
 			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref,
-				replaced: freshRoots[root[k]] && graph.replaces(k),
-				pinnedBy: graph.unchangedParent(edges[k]),
+				replaced: freshRoots[root[k]] && graph.resolved[k],
+				pinnedBy: firstParent(edges[k]),
 			})
 		}
 		for _, o := range freshOwners {
@@ -197,9 +195,8 @@ type parityOwner struct {
 	fresh  bool
 	// replaced marks a recorded pin under a root this run re-resolved.
 	replaced bool
-	// pinnedBy is an unchanged composite (NWO@ref) whose recorded `uses:`
-	// also lists this entry, though Closure reports it as the workflow's own
-	// pin.
+	// pinnedBy is a composite (NWO@ref) whose recorded `uses:` also lists
+	// this entry, though Closure reports it as the workflow's own pin.
 	pinnedBy string
 }
 
@@ -219,14 +216,15 @@ func compositeEdges(closure []lockfile.LockedPin) map[string][]lockfile.LockedPi
 
 // freshGraph is what this run's resolve found, keyed by Pin.String.
 type freshGraph struct {
-	// sha is each resolved pin's commit.
-	sha map[string]string
-	// child marks a pin a resolved composite uses.
-	child map[string]bool
+	// resolved marks each pin this run resolved. Only that proves a recorded
+	// entry is replaced: planning keeps a recorded composite's edges, so a
+	// child missing from the fresh graph, whether its resolution failed or
+	// its composite dropped it, stays in the lock as recorded.
+	resolved map[string]bool
 }
 
-func newFreshGraph(resolved []dep.Dependency, parents map[string][]string) freshGraph {
-	g := freshGraph{sha: map[string]string{}, child: map[string]bool{}}
+func newFreshGraph(resolved []dep.Dependency) freshGraph {
+	g := freshGraph{resolved: map[string]bool{}}
 	for _, d := range resolved {
 		if d.SHA == "" {
 			continue
@@ -237,36 +235,19 @@ func newFreshGraph(resolved []dep.Dependency, parents map[string][]string) fresh
 		}
 		for _, k := range keys {
 			if p, ok := parserlock.ParsePin(k); ok {
-				g.sha[p.String()] = d.SHA
+				g.resolved[p.String()] = true
 			}
-		}
-	}
-	for k := range parents {
-		if p, ok := parserlock.ParsePin(k); ok {
-			g.child[p.String()] = true
 		}
 	}
 	return g
 }
 
-// replaces reports whether the fresh graph supersedes a recorded entry under
-// a resolved root: it resolved the entry, or no resolved composite uses it,
-// so planning drops it. A child that failed to resolve is neither.
-func (g freshGraph) replaces(key string) bool {
-	return g.sha[key] != "" || !g.child[key]
-}
-
-// unchangedParent is the first of composites (NWO@ref) that resolved to its
-// recorded commit, or didn't resolve: planning keeps its recorded
-// dependencies. A composite that moved is rebuilt, so it repins its children.
-func (g freshGraph) unchangedParent(composites []lockfile.LockedPin) string {
-	for _, c := range composites {
-		live := g.sha[c.Pin.String()]
-		if live == "" || strings.EqualFold(live, lockedSHA(c.Action.Commit)) {
-			return c.Pin.NWO + "@" + c.Pin.Ref
-		}
+// firstParent is the first of composites as NWO@ref, or "".
+func firstParent(composites []lockfile.LockedPin) string {
+	if len(composites) == 0 {
+		return ""
 	}
-	return ""
+	return composites[0].Pin.NWO + "@" + composites[0].Pin.Ref
 }
 
 // closureRoots maps each pin of a recorded closure to the workflow's direct

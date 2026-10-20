@@ -23,9 +23,9 @@ type paritySubject struct {
 	// replaced marks a recorded pin under a root this run re-resolved, so
 	// the entry will be rewritten from the fresh resolution.
 	replaced bool
-	// pinnedBy is an unchanged composite (NWO@ref) that also pins a
-	// recorded direct entry. Planning doesn't rebuild an unchanged
-	// composite's dependencies, so the entry stays as recorded.
+	// pinnedBy is a composite (NWO@ref) that also pins a recorded direct
+	// entry. Planning keeps the composite's recorded edge to it, moved or
+	// not, so the entry stays as recorded.
 	pinnedBy string
 	// head is the ref the commit was traced to; "" for an entry without one.
 	head string
@@ -49,8 +49,8 @@ type paritySubject struct {
 // longer vouches for it: the finding becomes a warning, and planning records
 // a tag or branch that contains the commit, or fails. A transitive one stays
 // blocking: planning doesn't rebuild an unchanged composite's dependencies,
-// so nothing would replace its entry. That holds too for a direct pin that an
-// unchanged composite also pins: both share one entry.
+// so nothing would replace its entry. That holds too for a direct pin that a
+// composite also pins, moved or not: both share one entry.
 func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 	if s.fresh {
 		if s.inconclusive {
