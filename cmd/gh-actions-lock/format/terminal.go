@@ -180,6 +180,8 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 // categories in JSON. Only a ref the lockfile recorded can no longer exist.
 func findingLabel(f checks.Finding) string {
 	switch {
+	case f.RefRefused && f.Category == checks.UnreachablePin:
+		return "Ref name refused"
 	case (f.RefMissing || f.RefGone) && f.Category == checks.UnreachablePin && f.FreshRef:
 		return "Not a tag or branch"
 	case (f.RefMissing || f.RefGone) && f.Category == checks.UnreachablePin:

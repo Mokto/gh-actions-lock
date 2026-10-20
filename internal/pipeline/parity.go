@@ -355,6 +355,14 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 			f.Remediation = "point `uses:` at a tag or branch that exists, then run `gh actions-lock`"
 			f.RefMissing = true
 		}
+		if !ghapi.AcceptedRefName(pc.Head.String()) {
+			// Refused by name, not looked up: it may well exist.
+			f.Detail = fmt.Sprintf("ref %s looks like `git describe` output, which the Actions backend refuses as a tag or branch name; it will reject this pin%s", pc.Head, via)
+			f.RefGone, f.RefRefused = false, true
+			if f.RefMissing {
+				f.Remediation = "point `uses:` at a tag or branch whose name doesn't end in -g<hex>, then run `gh actions-lock`"
+			}
+		}
 	case st.NameWithOwner != "" && !strings.EqualFold(st.NameWithOwner, nwo):
 		f.Category = checks.RepoRenamed
 		f.Severity = checks.SeverityWarning

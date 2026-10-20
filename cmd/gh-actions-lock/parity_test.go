@@ -1674,7 +1674,7 @@ jobs:
 
 			_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
 			require.ErrorIs(t, err, errSilent, stderr)
-			assert.Contains(t, stderr, "is not a tag or branch of actions/checkout")
+			assert.Contains(t, stderr, "looks like `git describe` output")
 			assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
 		})
 	}
@@ -1725,12 +1725,12 @@ jobs:
 		}
 	}
 	require.Len(t, unreachable, 1, "%+v", p.Findings)
-	assert.Contains(t, unreachable[0], "ref "+ref+" is not a tag or branch of actions/checkout")
+	assert.Contains(t, unreachable[0], "ref "+ref+" looks like `git describe` output")
 	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
 	require.ErrorIs(t, err, errSilent)
-	assert.Contains(t, stderr, "Not a tag or branch actions/checkout@"+ref, "the lockfile never recorded it")
+	assert.Contains(t, stderr, "Ref name refused actions/checkout@"+ref, "the lockfile never recorded it")
 	assert.NotContains(t, stderr, "Ref no longer exists")
 }
 
