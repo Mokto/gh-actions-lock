@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -2327,6 +2328,60 @@ jobs:
 	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
 	assert.Contains(t, stderr, "could not check release history")
 	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
+// TestParity_AcceptMovedRepairsParityOnlyUnreachablePin: diagnosis
+// couldn't classify actions/checkout@v4's move (its history check failed),
+// but parity then found the recorded commit gone from v4's history. The pin
+// is the workflow's alone, so --accept-moved re-resolves it in place: it
+// must repair it, not block on the finding only parity raised.
+func TestParity_AcceptMovedRepairsParityOnlyUnreachablePin(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			if i, ok := strings.CutPrefix(k, "oid"); ok {
+				data["a"+i] = map[string]any{"nameWithOwner": "actions/checkout", "databaseId": 1, "commit": map[string]any{"oid": v},
+					"tag": map[string]any{"oid": parityTestMoved}, "tagRef": map[string]any{"oid": parityTestMoved}}
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQL(`.`), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestMoved, nodeActionYAML)},
+	}))
+	var compares atomic.Int32
+	diverged := httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`), func(req *http.Request) (*http.Response, error) {
+		// Diagnosis asks first and gets no answer; parity then does.
+		if compares.Add(1) <= 1 {
+			return httpmock.StatusResponse(http.StatusServiceUnavailable)(req)
+		}
+		return diverged(req)
+	})
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+
+	stdout, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", "--json=valid,findings", path)
+	require.Equal(t, int32(2), compares.Load(), "diagnosis, then parity")
+	require.NoError(t, err, "%s\n%s", stdout, stderr)
+	lock := readTempLockfilePins(t)
+	assert.Contains(t, lock, "sha1-"+parityTestMoved)
+	assert.NotContains(t, lock, parityTestSHA)
+	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
+	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 }
 
 // reposDown fails every request about the given owner/repos except the

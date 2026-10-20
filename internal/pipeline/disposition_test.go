@@ -27,6 +27,8 @@ func TestDisposeParity(t *testing.T) {
 		{name: "accept-moved repairs a direct full-SHA pin", mode: acceptMoved, subject: paritySubject{pin: shaPin, away: true}, wantKeep: true, wantSev: checks.SeverityWarning},
 		{name: "accept-moved keeps a transitive full-SHA pin blocking", mode: acceptMoved, parent: "octo/composite@v1", subject: paritySubject{pin: shaPin, away: true, heldBy: "octo/composite@v1"}, wantKeep: true, wantSev: checks.SeverityError},
 		{name: "accept-moved keeps a direct full-SHA pin a composite also pins blocking", mode: acceptMoved, subject: paritySubject{pin: shaPin, away: true, heldBy: "octo/composite@v1"}, wantKeep: true, wantSev: checks.SeverityError},
+		{name: "accept-moved repairs a mutable pin only the workflow holds", mode: acceptMoved, subject: paritySubject{pin: tagPin}, wantKeep: true, wantSev: checks.SeverityWarning},
+		{name: "accept-moved keeps a composite's mutable child blocking", mode: acceptMoved, subject: paritySubject{pin: tagPin, heldBy: "octo/composite@v1"}, wantKeep: true, wantSev: checks.SeverityError},
 		{name: "relock keeps a full-SHA pin blocking", mode: relock, subject: paritySubject{pin: shaPin, away: true}, wantKeep: true, wantSev: checks.SeverityError},
 		{name: "relock drops a mutable pin planning replaces", mode: relock, subject: paritySubject{pin: tagPin, away: true}},
 		{name: "relock keeps a mutable pin planning keeps", mode: relock, subject: paritySubject{pin: tagPin}, wantKeep: true, wantSev: checks.SeverityError},

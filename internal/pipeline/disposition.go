@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"fmt"
+
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 )
@@ -48,10 +50,11 @@ type paritySubject struct {
 // includes a composite's child, which planning keeps from the recorded
 // graph, and a pin whose move couldn't be classified.
 //
-// --accept-moved also accepts a direct full-SHA key whose recorded ref no
-// longer vouches for it: the finding becomes a warning that itself prunes
-// the entry, and planning records a tag or branch that contains the commit,
-// or fails. An entry a composite holds (see heldBy) gets no override, and
+// --accept-moved also accepts a pin whose recorded ref no longer vouches
+// for it, when re-resolving the workflow's use repairs it: the finding
+// becomes a warning that itself prunes the entry, and planning locks a
+// mutable ref at its current commit, or records a tag or branch that
+// contains a full-SHA key's commit, or fails. An entry a composite holds (see heldBy) gets no override, and
 // its advice names the composite.
 func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 	if s.fresh {
@@ -66,9 +69,14 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 	if c == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
 		f.Remediation = unreachableRemediation(s.heldBy, f.Dependency.NWO)
 	}
-	if m.acceptMoved && c == checks.UnreachablePin && fullSHA && !f.RefMissing && s.heldBy == "" {
+	// The kept warning itself makes planning re-resolve the entry
+	// (checks.PruneEffect), which heldBy says repairs it.
+	if m.acceptMoved && c == checks.UnreachablePin && !f.RefMissing && s.heldBy == "" {
 		f.Severity = checks.SeverityWarning
 		f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
+		if !fullSHA {
+			f.Remediation = fmt.Sprintf("accepted: --accept-moved locks %s at its current commit", s.pin.Ref)
+		}
 		return true
 	}
 	excused := m.relock && s.away
