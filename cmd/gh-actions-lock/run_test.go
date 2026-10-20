@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -467,6 +468,33 @@ func TestCompleteness_RelockWorkflowWithoutActionsReleasesSharedPins(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, "sha1-"+graphLeafSHA, file.Dependencies["acme/child@v2"].Commit)
 	assert.Empty(t, file.Workflows[".github/workflows/ci.yml"])
+}
+
+// TestCompleteness_VerifyChecksFullSHAKeyUnderItsOwnEntry: a full-SHA root
+// with its own entry is checked against that entry's edges, not those of a
+// sibling entry that happens to pin the same commit.
+func TestCompleteness_VerifyChecksFullSHAKeyUnderItsOwnEntry(t *testing.T) {
+	path, file := generateGraph(t)
+	shaKey := "acme/parent@" + graphParentSHA
+	entry := file.Dependencies["acme/parent@v1.0.0"]
+	entry.Uses = nil
+	file.Dependencies[shaKey] = entry
+	wfKey := ".github/workflows/" + filepath.Base(path)
+	file.Workflows[wfKey] = append(file.Workflows[wfKey], shaKey)
+	writeGraph(t, file)
+	require.NoError(t, os.WriteFile(path, []byte(graphWorkflow+"      - uses: "+shaKey+"\n"), 0o600))
+	before := snapshotWorkflows(t)
+
+	p, err := runParity(t, &graphTransport{}, "--verify", path)
+	require.ErrorIs(t, err, errSilent)
+	var blocking []string
+	for _, f := range p.Findings {
+		if f.Severity == "error" {
+			blocking = append(blocking, f.RequiredBy+": "+f.Detail)
+		}
+	}
+	assert.Equal(t, []string{shaKey + ": locked manifest for " + shaKey + " uses acme/child@v2 but the lockfile omits that edge"}, blocking)
+	assert.Equal(t, before, snapshotWorkflows(t))
 }
 
 func TestRun_ParitySSOGuidance(t *testing.T) {
