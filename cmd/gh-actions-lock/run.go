@@ -457,6 +457,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	})
 	endPlan()
 	rl.record = record
+	copts := &pin.CommitOptions{SkipNewWorkflowEntries: noOnboardFlag(cmd)}
+	if planErr == nil {
+		planErr = pin.PlanEntryRepairs(ctx, record, store, r, report, copts)
+	}
 	if planErr == nil && len(record.Unresolved()) > 0 {
 		planErr = fmt.Errorf("cannot write an incomplete lockfile: %d unresolved dependencies", len(record.Unresolved()))
 	}
@@ -491,7 +495,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 
 	// Parity excused or accepted some findings on the strength of this
 	// write; any it doesn't bear out block it.
-	if err := pin.Audit(ctx, record, store, report, &pin.CommitOptions{SkipNewWorkflowEntries: noOnboardFlag(cmd)}); err != nil {
+	if err := pin.Audit(ctx, record, store, report, copts); err != nil {
 		console.StopProgress()
 		return fmt.Errorf("checking the planned write: %w", err)
 	}
@@ -518,7 +522,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	// Commit: write all changes to disk atomically (fast local I/O, no
 	// spinner label — it finishes before the user could read one).
 	endCommit := prof.Phase("pin.Commit (disk writes)")
-	if err := pin.Commit(ctx, record, store, &pin.CommitOptions{SkipNewWorkflowEntries: noOnboardFlag(cmd)}); err != nil {
+	if err := pin.Commit(ctx, record, store, copts); err != nil {
 		console.StopProgress()
 		return fmt.Errorf("committing pins: %w", err)
 	}

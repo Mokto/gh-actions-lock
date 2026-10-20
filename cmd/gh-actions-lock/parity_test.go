@@ -1822,6 +1822,127 @@ jobs:
 	}
 }
 
+// TestSHARecordedRef_RepairFollowsTheWrite: entry repair follows what the
+// run writes, not the selected workflow's old lock roots. A workflow onboarded
+// onto a composite another workflow already locked writes that composite's
+// stored `uses:`, so its own-SHA child is repaired, or blocks the run when no
+// tag or branch contains its commit.
+func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	for _, repairable := range []bool{true, false} {
+		t.Run(fmt.Sprintf("repairable=%v", repairable), func(t *testing.T) {
+			base, compare, tags := parityTestSHA, "behind", []string{"v4.2.0", parityTestSHA}
+			if !repairable {
+				base, compare, tags = "cccccccccccccccccccccccccccccccccccccccc", "diverged", nil
+			}
+			reg := &httpmock.Registry{}
+			for _, repo := range []string{"checkout", "cache"} {
+				for range 4 {
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
+						httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/git/ref/heads/main`),
+						httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/tags`), httpmock.JSONResponse(httpmock.TagListResponse(tags...)))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/releases`), httpmock.JSONResponse([]map[string]any{}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/compare/`),
+						httpmock.JSONResponse(map[string]any{"status": compare, "merge_base_commit": map[string]any{"sha": base}}))
+				}
+				httpmock.NoTagsNamed(reg, "actions", repo)
+			}
+			isolateRunLogs(t)
+			writeTempWorkflow(t, "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n")
+			body := "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v6.1.0\n"
+			for _, wf := range []string{"old.yml", "new.yml"} {
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", wf), []byte(body), 0o600))
+			}
+			cache := "actions/cache@" + parityTestSHA
+			lock := "version: 'v0.0.3'\nworkflows:\n" +
+				"    '.github/workflows/old.yml':\n        - 'actions/checkout@v6.1.0'\n" +
+				"    '.github/workflows/workflow.yml': []\n" +
+				"dependencies:\n" +
+				"    '" + cache + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n" +
+				"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - '" + cache + "'\n"
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive", filepath.Join(".github", "workflows", "new.yml"))
+			after := readTempLockfilePins(t)
+			if !repairable {
+				require.ErrorIs(t, err, errSilent, stderr)
+				assert.Contains(t, stderr, "is not on any tag or branch of actions/cache")
+				assert.Equal(t, lock, after)
+				return
+			}
+			require.NoError(t, err, stderr)
+			assert.Contains(t, after, "    '.github/workflows/new.yml':\n        - 'actions/checkout@v6.1.0'\n")
+			assert.Contains(t, after, "    '"+cache+"':\n        ref: 'v4.2.0'\n")
+			assert.NotContains(t, after, "ref: '"+parityTestSHA+"'")
+		})
+	}
+}
+
+// TestSHARecordedRef_SameCommitTagAndSHA: a workflow that locks one commit
+// under its tag and under its own SHA, which a composite also uses, still
+// gets the SHA entry re-recorded.
+func TestSHARecordedRef_SameCommitTagAndSHA(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	reg := &httpmock.Registry{}
+	// The parity stub goes first: a repo stub matches any query for the repo.
+	for range 3 {
+		registerParity(reg)
+	}
+	for _, repo := range []string{"checkout", "cache"} {
+		for range 4 {
+			reg.Register(httpmock.GraphQLForRepo("actions", repo), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": testRepoResponse("actions/"+repo, parityTestSHA, nodeActionYAML)},
+			}))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
+				httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/git/ref/heads/main`),
+				httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v4.2.0", parityTestSHA)))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/releases`), httpmock.JSONResponse([]map[string]any{}))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/compare/`),
+				httpmock.JSONResponse(map[string]any{"status": "behind", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+		}
+		httpmock.NoTagsNamed(reg, "actions", repo)
+	}
+	isolateRunLogs(t)
+	cache := "actions/cache@" + parityTestSHA
+	writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+      - uses: actions/cache@v4.2.0
+      - uses: `+cache+`
+`)
+	entry := func(key, ref string, uses ...string) string {
+		out := "    '" + key + "':\n        ref: '" + ref + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+		for i, u := range uses {
+			if i == 0 {
+				out += "        uses:\n"
+			}
+			out += "            - '" + u + "'\n"
+		}
+		return out
+	}
+	lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n" +
+		"        - '" + cache + "'\n        - 'actions/cache@v4.2.0'\n        - 'actions/checkout@v6.1.0'\n" +
+		"dependencies:\n" + entry(cache, parityTestSHA) + entry("actions/cache@v4.2.0", "v4.2.0") + entry("actions/checkout@v6.1.0", "v6.1.0", cache)
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive", "--no-narrow")
+	require.NoError(t, err, stderr)
+	after := readTempLockfilePins(t)
+	assert.NotContains(t, after, "ref: '"+parityTestSHA+"'")
+	assert.Contains(t, after, "            - '"+cache+"'\n")
+}
+
 // TestSHARecordedRef_ScopedFixWarns: a fix run given workflow paths warns
 // about an own-SHA entry of a workflow it didn't select, names the entry and
 // the full-scan repair, never claims every workflow is valid, still writes

@@ -124,9 +124,6 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 		rec.Entries = append(rec.Entries, pr.entries...)
 		rec.Workflows = append(rec.Workflows, pr.wplans...)
 	}
-	if planErr == nil {
-		planErr = planEntryRepairs(ctx, rec, report, opts)
-	}
 
 	return rec, planErr
 }

@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/github/gh-actions-lock/internal/workflowfile"
 )
 
@@ -18,40 +20,50 @@ type EntryRepair struct {
 	Ref string
 }
 
-// planEntryRepairs finds the tag at the commit, else a branch containing it,
-// for each entry that records its own SHA as its ref and that the planned
-// workflows reach only through another entry's `uses:`. A workflow's own pin
-// of that shape is re-resolved by planWorkflow instead, and an entry nothing
-// reaches is dropped by Save. A commit no tag or branch contains is
-// Unresolved, so nothing is written.
-func planEntryRepairs(ctx context.Context, rec *Record, report *checks.Report, opts PlanOptions) error {
-	if opts.Store == nil || opts.Resolver == nil {
+// PlanEntryRepairs finds the tag at the commit, else a branch containing
+// it, for each entry recording its own SHA as its ref that the planned write
+// leaves reachable from a workflow it updates. It previews that write with
+// the code Commit uses (see Audit), so whatever keeps such an entry, a
+// workflow's own pin, a composite the run reuses from the lock, or a root it
+// replaces, is followed. An entry only unwritten workflows reach is left as
+// recorded, and one nothing reaches is dropped by Save. A commit no tag or
+// branch contains is Unresolved, so nothing is written.
+func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, resolver *resolve.Resolver, report *checks.Report, copts *CommitOptions) error {
+	if store == nil || resolver == nil {
 		return nil
 	}
-	// Follow only the roots this run keeps: a stale root's subtree is
-	// dropped, and a stale root a kept entry uses is reached as its child.
-	stale := staleRoots(report, opts)
+	// Preview without repairs: updateLockfile applies rec's.
+	rec.EntryRepairs = nil
+	ws := writers(rec, store, report, copts)
+	preview := store.Preview()
+	if err := updateLockfile(ctx, rec, ws, preview); err != nil {
+		return err
+	}
+	preview.GC()
+	unresolved := map[string]bool{}
+	for _, e := range rec.Unresolved() {
+		unresolved[strings.ToLower(e.NWO)+"@"+e.Ref] = true
+	}
+	all := func(parserlock.Pin, parserlock.Action) bool { return true }
 	workflows := map[string][]string{}
 	parents := map[string][]string{}
-	for _, wr := range report.Workflows {
-		wfKey := workflowfile.KeyFromPath(wr.Path)
-		live := func(p parserlock.Pin, _ parserlock.Action) bool { return !stale[wfKey][p.String()] }
-		for _, lp := range opts.Store.Closure(wfKey, live) {
-			if lp.Parent == "" || !lockfile.RecordsOwnSHA(lp.Pin, lp.Action.Ref) {
+	for _, wp := range ws {
+		for _, lp := range preview.Closure(workflowfile.KeyFromPath(wp.Path), all) {
+			key := lp.Pin.String()
+			if !lockfile.RecordsOwnSHA(lp.Pin, lp.Action.Ref) || unresolved[key] {
 				continue
 			}
-			key := lp.Pin.String()
-			if !slices.Contains(workflows[key], wr.Path) {
-				workflows[key] = append(workflows[key], wr.Path)
+			if !slices.Contains(workflows[key], wp.Path) {
+				workflows[key] = append(workflows[key], wp.Path)
 			}
-			if !slices.Contains(parents[key], lp.Parent) {
+			if lp.Parent != "" && !slices.Contains(parents[key], lp.Parent) {
 				parents[key] = append(parents[key], lp.Parent)
 			}
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(workflows)) {
 		pin, _ := parserlock.ParsePin(key)
-		tag, branch, err := opts.Resolver.DiscoverContaining(ctx, pin.Owner, pin.Repo, pin.Ref, pin.Ref)
+		tag, branch, err := resolver.DiscoverContaining(ctx, pin.Owner, pin.Repo, pin.Ref, pin.Ref)
 		if err != nil {
 			return fmt.Errorf("%s: %w", key, err)
 		}
