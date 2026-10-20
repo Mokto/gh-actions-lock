@@ -28,7 +28,7 @@ func planEntryRepairs(ctx context.Context, rec *Record, report *checks.Report, o
 	if opts.Store == nil || opts.Resolver == nil {
 		return nil
 	}
-	all := func(parserlock.Pin) bool { return true }
+	all := func(parserlock.Pin, parserlock.Action) bool { return true }
 	workflows := map[string][]string{}
 	for _, wr := range report.Workflows {
 		for _, lp := range opts.Store.Closure(workflowfile.KeyFromPath(wr.Path), all) {

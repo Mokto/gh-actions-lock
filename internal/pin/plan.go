@@ -738,7 +738,7 @@ func retainedLockTargets(report *checks.Report, opts PlanOptions) map[string]boo
 	// surviving composite. Only ignore targets absent from every closure.
 	retained := make(map[string]bool)
 	for _, wfKey := range opts.Store.WorkflowKeys() {
-		live := func(p parserlock.Pin) bool {
+		live := func(p parserlock.Pin, _ parserlock.Action) bool {
 			return !staleByWorkflow[wfKey][p.String()]
 		}
 		for _, locked := range opts.Store.Closure(wfKey, live) {

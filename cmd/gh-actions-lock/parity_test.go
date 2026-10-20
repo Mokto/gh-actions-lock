@@ -1657,6 +1657,75 @@ jobs:
 	}
 }
 
+// TestParity_RootUsedBySHAClosureChecked: a tag-keyed root the workflow
+// uses by its commit SHA (`uses:` rewritten to the commit) is still used,
+// so parity checks its stored closure like any other root's: a replaced
+// repository or a commit missing from it blocks, and a healthy one passes.
+func TestParity_RootUsedBySHAClosureChecked(t *testing.T) {
+	for _, deep := range []string{"replaced", "missing commit", "healthy"} {
+		t.Run(deep, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+				var body struct {
+					Variables map[string]any `json:"variables"`
+				}
+				require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+				data := map[string]any{}
+				for i := 0; ; i++ {
+					owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+					if !ok {
+						break
+					}
+					name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+					id := 1
+					if deep == "replaced" && name == "cache" {
+						id = 999
+					}
+					oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+					var commit any = oid
+					if deep == "missing commit" && name == "cache" {
+						commit = nil
+					}
+					data[fmt.Sprintf("a%d", i)] = map[string]any{
+						"nameWithOwner": owner + "/" + name, "databaseId": id,
+						"commit": commit, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+					}
+				}
+				return httpmock.JSONResponse(map[string]any{"data": data})(req)
+			})
+			writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+parityTestSHA+`
+`)
+			lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n" +
+				"dependencies:\n" +
+				"    'actions/cache@v1':\n        ref: 'v1'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n" +
+				"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - 'actions/cache@v1'\n"
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			p, err := runParity(t, reg, "--verify", "--no-interactive")
+			assert.Equal(t, lock, readTempLockfilePins(t))
+			if deep == "healthy" {
+				require.NoError(t, err, "%+v", p.Findings)
+				assert.True(t, p.Valid)
+				return
+			}
+			require.ErrorIs(t, err, errSilent)
+			want := map[string]string{"replaced": "repo-replaced", "missing commit": "unreachable-pin"}[deep]
+			var found bool
+			for _, f := range p.Findings {
+				found = found || f.Category == want && f.Severity == "error" && strings.Contains(f.Detail, "actions/cache")
+			}
+			assert.True(t, found, "findings: %+v", p.Findings)
+		})
+	}
+}
+
 // TestSHARecordedRef_ScopedFixWarns: a fix run given workflow paths warns
 // about an own-SHA entry of a workflow it didn't select, names the entry and
 // the full-scan repair, never claims every workflow is valid, still writes

@@ -93,12 +93,22 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			continue
 		}
 		recorded, _ := pw.PartitionRefs()
-		direct := make(map[string]parserlock.ActionRef, len(recorded))
-		for _, r := range recorded {
-			direct[strings.ToLower(r.Owner+"/"+r.Repo)+"@"+r.Ref] = r
+		// rootRef is the workflow ref that still uses a recorded root, by
+		// the same rule as the stale check (lockfile.UsedRoot).
+		uses := make([]func(parserlock.Pin, string) bool, len(recorded))
+		for i, r := range recorded {
+			uses[i] = lockfile.UsedRoot([]parserlock.ActionRef{r})
 		}
-		live := func(p parserlock.Pin) bool {
-			_, ok := direct[strings.ToLower(p.Owner+"/"+p.Repo)+"@"+p.Ref]
+		rootRef := func(p parserlock.Pin, a parserlock.Action) (parserlock.ActionRef, bool) {
+			for i, used := range uses {
+				if used(p, a.Commit) {
+					return recorded[i], true
+				}
+			}
+			return parserlock.ActionRef{}, false
+		}
+		live := func(p parserlock.Pin, a parserlock.Action) bool {
+			_, ok := rootRef(p, a)
 			return ok
 		}
 		// Planning writes a recorded entry back verbatim unless one of
@@ -116,7 +126,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		closure := store.Closure(workflowfile.KeyFromPath(pw.Path), live)
 		edges := compositeEdges(closure)
 		for _, lp := range closure {
-			ref := direct[strings.ToLower(lp.Pin.Owner+"/"+lp.Pin.Repo)+"@"+lp.Pin.Ref]
+			ref, _ := rootRef(lp.Pin, lp.Action)
 			if lp.Parent != "" {
 				ref = parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref}
 			}
