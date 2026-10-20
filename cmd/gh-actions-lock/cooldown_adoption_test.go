@@ -79,6 +79,8 @@ func (c *cooldownTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		return httpmock.JSONResponse(releases)(req)
 	case strings.Contains(req.URL.Path, "/releases/tags/"):
 		return httpmock.StatusResponse(404)(req)
+	case req.URL.Path == "/repos/actions/checkout/git/ref/tags/main":
+		return httpmock.StatusResponse(404)(req)
 	case strings.Contains(req.URL.Path, "/git/ref/heads/"):
 		return httpmock.JSONResponse(map[string]any{"object": map[string]any{"sha": parityTestSHA, "type": "commit"}})(req)
 	case strings.HasPrefix(req.URL.Path, "/repos/") && strings.Count(req.URL.Path, "/") == 3:

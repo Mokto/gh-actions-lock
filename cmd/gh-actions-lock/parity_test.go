@@ -1467,6 +1467,7 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 					reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", parityTestSHA)))
 					registerNodeManifests(reg)
 					if mode == "relock" {
+						httpmock.NoTagsNamed(reg, "actions", "checkout")
 						reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
 							httpmock.JSONResponse(map[string]any{"default_branch": "main"}))
 						reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
@@ -1881,6 +1882,7 @@ func TestParity_FullSHAKeyTitleMatchesCause(t *testing.T) {
 func TestParity_FullSHAKeyMovedTagWarns(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerNodeManifests(reg)
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": map[string]any{
 			"nameWithOwner": "actions/checkout",

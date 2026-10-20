@@ -868,7 +868,7 @@ scenarios:
     category: multi_workflow
     description: "Real-binary live composite resolution preserves cross-repo uses: chains and shared dependencies across three controlled workflow roots, independently of the fixture repository's own reusable-workflow policy"
     needs_token: true
-    tags: [real_repo]
+    tags: [live]
     flags: [".github/workflows/composite.yml", ".github/workflows/self.yml", ".github/workflows/shared.yml"]
     fixtures:
       workflows:
@@ -1612,6 +1612,7 @@ scenarios:
     category: multi_workflow
     description: "A blocked workflow stops the whole run: nothing is written, and only the blocked workflow is counted as failed"
     needs_token: true
+    tags: [live]
     fixtures:
       workflows:
         blocked.yml:
@@ -2111,7 +2112,7 @@ scenarios:
     category: onboarding
     description: "Real-binary GitHub.com onboarding of a controlled workflow emits v0.0.3 without hostnames and resolves a complete live composite graph, independently of the fixture repository's own reusable-workflow policy"
     needs_token: true
-    tags: [real_repo]
+    tags: [live]
     flags: [".github/workflows/ci.yml"]
     fixtures:
       workflows:
