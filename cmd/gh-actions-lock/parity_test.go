@@ -310,9 +310,15 @@ func TestParity_MovedExactTagFollowsHistory(t *testing.T) {
 		block  bool
 	}{
 		{"moved ahead warns under verify", "ahead", parityTestSHA, []string{"--verify"}, "ref-moved", false},
-		{"moved ahead passes a default run", "ahead", parityTestSHA, []string{"--no-onboard", "--no-narrow", "--no-interactive"}, "", false},
+		{"moved ahead passes a default run", "ahead", parityTestSHA, nil, "", false},
+		{"moved ahead passes no-onboard", "ahead", parityTestSHA, []string{"--no-onboard", "--no-narrow", "--no-interactive"}, "", false},
+		{"moved ahead passes no-fix", "ahead", parityTestSHA, []string{"--no-fix"}, "", false},
+		{"moved ahead passes keep-sha", "ahead", parityTestSHA, []string{"--keep-sha"}, "", false},
 		{"lost commit blocks verify", "diverged", "cccccccccccccccccccccccccccccccccccccccc", []string{"--verify"}, "unreachable-pin", true},
-		{"lost commit blocks a default run", "diverged", "cccccccccccccccccccccccccccccccccccccccc", []string{"--no-onboard", "--no-narrow", "--no-interactive"}, "unreachable-pin", true},
+		{"lost commit blocks a default run", "diverged", "cccccccccccccccccccccccccccccccccccccccc", nil, "unreachable-pin", true},
+		{"lost commit blocks no-onboard", "diverged", "cccccccccccccccccccccccccccccccccccccccc", []string{"--no-onboard", "--no-narrow", "--no-interactive"}, "unreachable-pin", true},
+		{"lost commit blocks no-fix", "diverged", "cccccccccccccccccccccccccccccccccccccccc", []string{"--no-fix"}, "unreachable-pin", true},
+		{"lost commit blocks keep-sha", "diverged", "cccccccccccccccccccccccccccccccccccccccc", []string{"--keep-sha"}, "unreachable-pin", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -328,6 +334,9 @@ func TestParity_MovedExactTagFollowsHistory(t *testing.T) {
 			}))
 			reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
 				httpmock.JSONResponse(map[string]any{"status": tt.status, "merge_base_commit": map[string]any{"sha": tt.base}}))
+			if !tt.block {
+				registerNodeManifests(reg)
+			}
 			path := writeTempWorkflow(t, `
 name: ci
 on: push
@@ -337,6 +346,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.1
 `, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+			lockBefore := readTempLockfilePins(t)
+			workflowBefore, err := os.ReadFile(path)
+			require.NoError(t, err)
 			p, err := runParity(t, reg, append(tt.args, path)...)
 			lock := readTempLockfilePins(t)
 			assert.Contains(t, lock, "sha1-"+parityTestSHA)
@@ -359,6 +371,10 @@ jobs:
 			require.ErrorIs(t, err, errSilent)
 			assert.False(t, p.Valid)
 			assert.Equal(t, "error", p.Findings[0].Severity)
+			assert.Equal(t, lockBefore, lock)
+			workflowAfter, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, workflowBefore, workflowAfter)
 		})
 	}
 }
@@ -388,6 +404,7 @@ jobs:
 	t.Run("moved exact tag warns", func(t *testing.T) {
 		reg := &httpmock.Registry{}
 		defer reg.Verify(t)
+		registerNodeManifests(reg)
 		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{"a0": map[string]any{
 				"nameWithOwner": "actions/checkout",
@@ -405,6 +422,60 @@ jobs:
 		assert.Contains(t, stderr, "All 1 workflow valid")
 		assert.NotContains(t, stderr, "✗")
 	})
+}
+
+func TestParity_ExactTagRefreshRequiresAcceptMovedAfterHistoryLoss(t *testing.T) {
+	for _, lost := range []bool{false, true} {
+		for _, accept := range []bool{false, true} {
+			t.Run(fmt.Sprintf("history-lost=%t/accept-moved=%t", lost, accept), func(t *testing.T) {
+				reg := &httpmock.Registry{}
+				defer reg.Verify(t)
+				reg.Register(httpmock.GraphQL(`file: file\(path`), httpmock.JSONResponse(map[string]any{
+					"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestMoved, nodeActionYAML)},
+				}))
+				reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+					"data": map[string]any{
+						"a0": map[string]any{
+							"nameWithOwner": "actions/checkout",
+							"commit":        map[string]any{"oid": parityTestSHA},
+							"tag":           map[string]any{"oid": parityTestMoved},
+						},
+						"a1": map[string]any{
+							"nameWithOwner": "actions/checkout",
+							"commit":        map[string]any{"oid": parityTestMoved},
+							"tag":           map[string]any{"oid": parityTestMoved},
+						},
+					},
+				}))
+				status, base := "ahead", parityTestSHA
+				if lost {
+					status, base = "diverged", "cccccccccccccccccccccccccccccccccccccccc"
+				}
+				for range 2 {
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+						httpmock.JSONResponse(map[string]any{"status": status, "merge_base_commit": map[string]any{"sha": base}}))
+				}
+				path := writeTempWorkflow(t, "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4.2.1\n",
+					"actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+				before := snapshotWorkflows(t)
+				args := []string{"--relock", "--no-narrow", "--no-interactive"}
+				if accept {
+					args = append(args, "--accept-moved")
+				}
+				_, stderr, err := runCommandWithHTTP(t, reg, append(args, path)...)
+				if lost && !accept {
+					require.ErrorIs(t, err, errSilent, stderr)
+					assert.Contains(t, stderr, "is not in actions/checkout's history")
+					assert.Equal(t, before, snapshotWorkflows(t))
+					return
+				}
+				require.NoError(t, err, stderr)
+				file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+				require.NoError(t, err)
+				assert.Equal(t, "sha1-"+parityTestMoved, file.Dependencies["actions/checkout@v4.2.1"].Commit)
+			})
+		}
+	}
 }
 
 // TestParity_DefaultRunPrintsParityFinding: parity findings have no pin
@@ -457,8 +528,8 @@ func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 }
 
 // TestParity_UnchangedRerunRequestCountRESTOnly covers the Dependabot proxy
-// path: one repos/{owner}/{repo} call per unique repository plus one commits
-// call per ref that still points at its locked commit.
+// path: matching refs avoid extra parity SHA lookups, without skipping
+// tag/branch collision checks or immutable manifest inspection.
 func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 	reg := &httpmock.Registry{}

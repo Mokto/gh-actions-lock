@@ -118,7 +118,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	tagMoved := make([]bool, len(states))
 	for i := range states {
 		st, pc := &states[i], pins[i]
-		if pc.Head == "" || st.Err != nil || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
+		if pc.Head == "" || st.Err != nil || st.AmbiguousRef || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
 			continue
 		}
 		switch ancestry, detail, cause := r.CheckAncestryCause(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); ancestry {
