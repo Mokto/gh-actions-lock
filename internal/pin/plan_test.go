@@ -1438,15 +1438,9 @@ func TestPruneStaleInventory_Relock(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := pruneStaleInventory(inventory, findings, tt.acceptMoved, tt.relock)
-			if hasDep(got, "octo/branch") == tt.wantPrunedRef {
-				t.Errorf("ref-moved dep present=%v, want pruned=%v", hasDep(got, "octo/branch"), tt.wantPrunedRef)
-			}
-			if hasDep(got, "octo/unreach") == tt.wantPrunedUnr {
-				t.Errorf("unreachable-pin dep present=%v, want pruned=%v", hasDep(got, "octo/unreach"), tt.wantPrunedUnr)
-			}
-			if !hasDep(got, "octo/keep") {
-				t.Errorf("unrelated dep octo/keep must never be pruned")
-			}
+			assert.Equal(t, !tt.wantPrunedRef, hasDep(got, "octo/branch"), "ref-moved dep kept")
+			assert.Equal(t, !tt.wantPrunedUnr, hasDep(got, "octo/unreach"), "unreachable-pin dep kept")
+			assert.True(t, hasDep(got, "octo/keep"), "unrelated dep must never be pruned")
 		})
 	}
 }

@@ -24,9 +24,8 @@ import (
 
 func TestNewRootCmdSuppressesCobraUsageForHandledErrors(t *testing.T) {
 	cmd := newRootCmd(nil)
-	if !cmd.SilenceUsage || !cmd.SilenceErrors {
-		t.Fatalf("expected root command to suppress Cobra usage/errors for handled failures")
-	}
+	assert.True(t, cmd.SilenceUsage)
+	assert.True(t, cmd.SilenceErrors)
 }
 
 func TestNewRootCmd_Version(t *testing.T) {
@@ -39,26 +38,17 @@ func TestNewRootCmd_Version(t *testing.T) {
 	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"--version"})
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if stderr.Len() != 0 {
-		t.Fatalf("expected empty stderr, got %q", stderr.String())
-	}
+	require.NoError(t, cmd.Execute())
+	assert.Empty(t, stderr.String())
 
 	// We check the output shape ("actions-lock version <value>\n") instead of
 	// comparing with cliVersion(). cliVersion() reads build info that can change
 	// across build setups, and calling it here would only repeat the code.
 	const prefix = "actions-lock version "
 	out := stdout.String()
-	if !strings.HasPrefix(out, prefix) || !strings.HasSuffix(out, "\n") {
-		t.Fatalf("unexpected output format: %q", out)
-	}
+	require.True(t, strings.HasPrefix(out, prefix) && strings.HasSuffix(out, "\n"), "output %q", out)
 	version := strings.TrimSuffix(strings.TrimPrefix(out, prefix), "\n")
-	if version == "" {
-		t.Fatalf("expected non-empty version in stdout: %q", out)
-	}
+	assert.NotEmpty(t, version, "output %q", out)
 }
 
 func TestCheckCommand_HelpExplainsHostAndAuthOverrides(t *testing.T) {
@@ -148,9 +138,7 @@ func writeTempWorkflow(t *testing.T, body string, pins ...string) string {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
 
 	body = strings.TrimSpace(body) + "\n"
-	if strings.Contains(body, "\ndependencies:") {
-		t.Fatalf("writeTempWorkflow: workflow body contains embedded `dependencies:` block; pass pins as the variadic argument instead")
-	}
+	require.NotContains(t, body, "\ndependencies:", "pass pins as arguments, not an embedded dependencies block")
 
 	wfRel := filepath.Join(".github", "workflows", "workflow.yml")
 	wfPath := filepath.Join(dir, wfRel)
@@ -183,9 +171,7 @@ func writeTempLockfile(t *testing.T, repoDir, wfName string, pinStrings []string
 		key, commit, _ := strings.Cut(raw, "=")
 		commit, ref, _ := strings.Cut(commit, "=")
 		pin, ok := parserlock.ParsePin(key)
-		if !ok {
-			t.Fatalf("writeTempLockfile: invalid pin %q", key)
-		}
+		require.True(t, ok, "invalid pin %q", key)
 		ref = cmp.Or(ref, pin.Ref)
 		if commit == "" {
 			// Generate deterministic fake commit from pin key.
