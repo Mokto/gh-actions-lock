@@ -559,35 +559,23 @@ func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.A
 	return unrecorded, shaSeen
 }
 
-// pruneStaleInventory drops inventory entries matching a stale finding (a pin
-// the workflow no longer references), so a fix-mode re-pin converges.
-// acceptMoved additionally prunes ref-moved and unreachable-pin deps; relock
-// prunes ref-moved deps only, so a benign branch/version advance can be
-// re-pinned without accepting a possibly-tampered unreachable pin. A
-// same-ID redirect is pruned so it re-resolves under the canonical name.
+// pruneStaleInventory drops inventory entries matching a pruning finding
+// (see checks.PrunesDependency), so a fix-mode re-pin converges.
 func pruneStaleInventory(inventory []checks.InventoryEntry, findings []checks.Finding, acceptMoved, relock bool) []checks.InventoryEntry {
 	stale := make(map[string]bool)
 	for _, f := range findings {
-		switch {
-		case f.Dependency == nil:
-			continue
-		case f.Category == checks.Stale,
-			f.Category == checks.UnreachablePin && acceptMoved,
-			f.Category == checks.RefMoved && (acceptMoved || relock),
-			f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning:
-		default:
+		if !checks.PrunesDependency(f, acceptMoved, relock) {
 			continue
 		}
 		d := f.Dependency
-		stale[strings.ToLower(d.NWO+"@"+d.Ref+":"+d.SHA)] = true
+		stale[checks.PruneKey(d.NWO, d.Ref, d.SHA)] = true
 	}
 	if len(stale) == 0 {
 		return inventory
 	}
 	out := make([]checks.InventoryEntry, 0, len(inventory))
 	for _, inv := range inventory {
-		key := strings.ToLower(inv.Dep.NWO + "@" + inv.Dep.Ref + ":" + inv.Dep.SHA)
-		if stale[key] {
+		if stale[checks.PruneKey(inv.Dep.NWO, inv.Dep.Ref, inv.Dep.SHA)] {
 			continue
 		}
 		out = append(out, inv)
