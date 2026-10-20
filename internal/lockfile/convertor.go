@@ -34,12 +34,8 @@ func depToPin(d dep.Dependency) (parserlock.Pin, error) {
 	}, nil
 }
 
-// ValidEntryRef reports whether ref is a lock entry ref the Actions backend
-// resolver accepts for pin: a short tag or branch name it accepts (never a
-// SHA, a refs/ name, revision syntax like main~1, or a `git describe` name),
-// and the key's own ref unless the key is a full SHA. The
-// resolver looks it up as refs/tags/<ref>, then refs/heads/<ref>, and
-// requires the locked commit in its history.
+// ValidEntryRef checks a non-empty short tag or branch name accepted by the
+// Actions backend, matching the key unless the key is a full SHA.
 func ValidEntryRef(pin parserlock.Pin, ref string) bool {
 	if ref == "" || isSHARef(ref) || strings.HasPrefix(ref, "refs/") || !ghapi.AcceptedRefName(ref) {
 		return false
