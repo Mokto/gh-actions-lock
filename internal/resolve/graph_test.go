@@ -100,3 +100,55 @@ func TestGraphFlattenRenamed(t *testing.T) {
 		})
 	}
 }
+
+// TestGraphRewritesBelongToTheReferrer: only a workflow root takes a new
+// ref or a redirect's canonical repository; a manifest's edge keeps what it
+// declares, so an action both name is split, never renamed.
+func TestGraphRewritesBelongToTheReferrer(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	t.Run("$/ and literal forms of one sub-action", func(t *testing.T) {
+		r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
+			ghapi.ForActionRef("o", "action", "", "v1"): {
+				dep:       dep.Dependency{NWO: "o/action", Ref: "v1", SHA: sha},
+				actionYML: "runs:\n  using: composite\n  steps:\n    - uses: $/sub\n    - uses: o/action/sub@v1\n",
+			},
+			ghapi.ForActionRef("o", "action", "sub", "v1"): {
+				dep:       dep.Dependency{NWO: "o/action", Path: "sub", Ref: "v1", SHA: sha},
+				actionYML: "runs:\n  using: node20\n",
+			},
+		})
+		g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "v1"}})
+		require.NoError(t, err)
+		deps, parents := g.FlattenRenamed(map[string]string{"o/action@v1": "v1.0.0"})
+		assert.Equal(t, []string{"o/action@v1.0.0", "o/action@v1"}, depKeys(deps))
+		assert.Equal(t, dep.ParentMap{"o/action@v1": {"o/action@v1.0.0"}}, parents)
+	})
+	t.Run("redirected repository a composite also names", func(t *testing.T) {
+		old := parserlock.ActionRef{Owner: "old", Repo: "action", Ref: "v1"}
+		r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
+			ghapi.ForActionRef("old", "action", "", "v1"): {
+				dep:       dep.Dependency{NWO: "new/action", Ref: "v1", SHA: sha, OriginalRefs: []parserlock.ActionRef{old}},
+				actionYML: "runs:\n  using: node20\n",
+			},
+			ghapi.ForActionRef("c", "comp", "", "v1"): {
+				dep:       dep.Dependency{NWO: "c/comp", Ref: "v1", SHA: sha},
+				actionYML: "runs:\n  using: composite\n  steps:\n    - uses: old/action@v1\n",
+			},
+		})
+		g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{old, {Owner: "c", Repo: "comp", Ref: "v1"}})
+		require.NoError(t, err)
+		deps, parents := g.Flatten()
+		assert.Equal(t, []string{"new/action@v1", "old/action@v1", "c/comp@v1"}, depKeys(deps))
+		assert.Equal(t, []parserlock.ActionRef{old}, deps[0].OriginalRefs, "the workflow root is rewritten to the new name")
+		assert.Empty(t, deps[1].OriginalRefs, "the composite's reference is not")
+		assert.Equal(t, dep.ParentMap{"old/action@v1": {"c/comp@v1"}}, parents)
+	})
+}
+
+func depKeys(deps []dep.Dependency) []string {
+	var keys []string
+	for _, d := range deps {
+		keys = append(keys, d.Key())
+	}
+	return keys
+}
