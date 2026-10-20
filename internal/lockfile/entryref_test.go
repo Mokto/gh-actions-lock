@@ -241,3 +241,25 @@ func TestLoadState_ContentErrorLineKeepsRefCase(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadState_ContentErrorNamesFirstEntry: with several invalid entries,
+// the error always names the first in file order.
+func TestLoadState_ContentErrorNamesFirstEntry(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	lock := "version: 'v0.0.3'\nworkflows: {}\ndependencies:\n"
+	for _, repo := range []string{"zeta", "alpha", "mid", "beta", "omega", "gamma"} {
+		lock += "  'actions/" + repo + "@" + entryRefSHA + "':\n" +
+			"    ref: 'refs/heads/main'\n" +
+			"    commit: 'sha1-" + entryRefSHA + "'\n" +
+			"    owner_id: 1\n" +
+			"    repo_id: 1\n"
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(lock), 0o600))
+
+	for range 20 {
+		_, err := LoadState(dir, fakeMetadataResolver{})
+		require.ErrorIs(t, err, ErrCorruptLockfile)
+		require.Contains(t, err.Error(), "line 4: entry for actions/zeta@"+entryRefSHA+" ")
+	}
+}

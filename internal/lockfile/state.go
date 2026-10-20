@@ -2,11 +2,14 @@ package lockfile
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -67,12 +70,12 @@ func (e *contentError) Error() string { return e.msg }
 
 func (e *contentError) Is(target error) bool { return target == ErrCorruptLockfile }
 
-// entryLine returns the 1-based line of the dependency entry for pin, or 0
-// if it can't be found. It matches whole quoted mapping keys ('key':), so a
-// workflow list item doesn't match, and compares canonical pin keys: owner
-// and repo fold, refs are case-sensitive.
-func entryLine(contents []byte, pin parserlock.Pin) int {
-	want := pin.String()
+// entryLines maps each dependency entry's canonical pin key to its 1-based
+// line. It matches whole quoted mapping keys ('key':), so a workflow list
+// item doesn't match, and keys by canonical pin: owner and repo fold, refs
+// are case-sensitive. The first line wins for duplicate keys.
+func entryLines(contents []byte) map[string]int {
+	lines := map[string]int{}
 	for n, line := range bytes.Split(contents, []byte("\n")) {
 		key, ok := strings.CutPrefix(string(bytes.TrimSpace(line)), "'")
 		if !ok {
@@ -81,11 +84,13 @@ func entryLine(contents []byte, pin parserlock.Pin) int {
 		if key, ok = strings.CutSuffix(key, "':"); !ok {
 			continue
 		}
-		if p, ok := parserlock.ParsePin(key); ok && p.String() == want {
-			return n + 1
+		if p, ok := parserlock.ParsePin(key); ok {
+			if _, seen := lines[p.String()]; !seen {
+				lines[p.String()] = n + 1
+			}
 		}
 	}
-	return 0
+	return lines
 }
 
 // LoadState reads the lockfile at repoRoot, returning an empty in-memory file
@@ -158,8 +163,24 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 			}
 		}
 	}
+	// Check entries in file order, so an invalid lockfile is always reported
+	// by its first bad entry.
+	lines := entryLines(contents)
+	line := func(key string) int {
+		if p, ok := parserlock.ParsePin(key); ok {
+			if n, ok := lines[p.String()]; ok {
+				return n
+			}
+		}
+		return len(contents) + 1
+	}
+	keys := slices.Collect(maps.Keys(file.Dependencies))
+	slices.SortFunc(keys, func(a, b string) int {
+		return cmp.Or(cmp.Compare(line(a), line(b)), strings.Compare(a, b))
+	})
 	normalizedDependencies := make(map[string]parserlock.Action, len(file.Dependencies))
-	for pinKey, action := range file.Dependencies {
+	for _, pinKey := range keys {
+		action := file.Dependencies[pinKey]
 		pin, ok := parserlock.ParsePin(pinKey)
 		if !ok {
 			normalizedDependencies[pinKey] = action
@@ -167,8 +188,8 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 		}
 		if !ValidEntryRef(pin, action.Ref) && !(RecordsOwnSHA(pin, action.Ref) && direct[pin.String()]) {
 			where := parserlock.Path
-			if line := entryLine(contents, pin); line > 0 {
-				where = fmt.Sprintf("%s: line %d", where, line)
+			if n, ok := lines[pin.String()]; ok {
+				where = fmt.Sprintf("%s: line %d", where, n)
 			}
 			return nil, &contentError{fmt.Sprintf("%s: entry for %s %s", where, pinKey, entryRefError(pin, action.Ref))}
 		}
