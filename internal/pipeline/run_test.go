@@ -6,6 +6,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -104,10 +105,10 @@ func TestPartitionRefs(t *testing.T) {
 			name: "bare SHA ref matches by SHA",
 			pw: checks.ParsedWorkflow{
 				Refs: []parserlock.ActionRef{
-					ref("actions", "checkout", "", "de0fac2e4500dabe0009e67214ff5f5447ce83dd"),
+					ref("actions", "checkout", "", testfixture.CheckoutV6.SHA),
 				},
 				ExistingDeps: []dep.Dependency{
-					mkDep("actions/checkout", "v6.0.2", "de0fac2e4500dabe0009e67214ff5f5447ce83dd"),
+					mkDep("actions/checkout", "v6.0.2", testfixture.CheckoutV6.SHA),
 				},
 			},
 			wantRecordedLen: 1,

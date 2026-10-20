@@ -8,6 +8,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/resolve"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 )
 
 // Typed map keys for the test stub: a small struct per lookup tuple so
@@ -55,9 +56,9 @@ func (s *stubCheckResolver) PeelTagObject(_ context.Context, owner, repo, sha st
 	return commit, ok
 }
 
-const (
+var (
 	shaCheckoutV4 = "8e8c483db84b4bee98b60c0593521ed34d9990e8"
-	shaCheckoutV3 = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	shaCheckoutV3 = testfixture.CheckoutV4.SHA
 	shaSetupGoV5  = "0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	shaImpostor   = "ffffffffffffffffffffffffffffffffffffffff"
 )

@@ -15,6 +15,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -278,8 +279,8 @@ jobs:
 	t.Run("successful run logs success without printing the path", func(t *testing.T) {
 		logDir := isolateRunLogs(t)
 		reg := &httpmock.Registry{}
-		reg.StubRepo("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd")
-		workflowPath := writeTempWorkflow(t, workflowUsing("actions/checkout@v6"), "actions/checkout@v6=sha1-de0fac2e4500dabe0009e67214ff5f5447ce83dd")
+		reg.StubRepo("actions/checkout", testfixture.CheckoutV6.SHA)
+		workflowPath := writeTempWorkflow(t, workflowUsing("actions/checkout@v6"), "actions/checkout@v6=sha1-"+testfixture.CheckoutV6.SHA)
 
 		_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", workflowPath)
 		require.NoError(t, err)

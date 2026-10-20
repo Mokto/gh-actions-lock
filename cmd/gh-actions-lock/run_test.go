@@ -611,12 +611,12 @@ func TestCheckCommand_JSONWithHTTPMocks(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
-	reg.StubRepo("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd")
-	reg.StubRepo("actions/setup-go", "4a3601121dd01d1626a1e23e37211e3254c1c06c")
+	reg.StubRepo("actions/checkout", testfixture.CheckoutV6.SHA)
+	reg.StubRepo("actions/setup-go", testfixture.SetupGoV6.SHA)
 
 	workflowPath := writeTempWorkflow(t, workflowUsing("actions/checkout@v6", "actions/setup-go@v6"),
-		"actions/checkout@v6=sha1-de0fac2e4500dabe0009e67214ff5f5447ce83dd",
-		"actions/setup-go@v6=sha1-4a3601121dd01d1626a1e23e37211e3254c1c06c",
+		"actions/checkout@v6=sha1-"+testfixture.CheckoutV6.SHA,
+		"actions/setup-go@v6=sha1-"+testfixture.SetupGoV6.SHA,
 	)
 
 	payload, err := runCheckJSON(t, reg, "--relock", "--no-fix", workflowPath)
@@ -793,7 +793,7 @@ func TestCheckCommand_JSONDependenciesWithRequiredBy(t *testing.T) {
 	compositeYAML := "name: Setup Go\nruns:\n  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
 
 	// Per-ref resolution queries (parallel resolver resolves one ref per worker).
-	reg.StubRepo("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd")
+	reg.StubRepo("actions/checkout", testfixture.CheckoutV6.SHA)
 	reg.Register(
 		httpmock.GraphQLForRepo("actions", "setup-go"),
 		httpmock.JSONResponse(map[string]any{
@@ -902,7 +902,7 @@ func TestCheckCommand_JSONDefaultFieldsExcludesDependencies(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
-	reg.StubRepo("actions/checkout", "de0fac2e4500dabe0009e67214ff5f5447ce83dd")
+	reg.StubRepo("actions/checkout", testfixture.CheckoutV6.SHA)
 
 	workflowPath := writeTempWorkflow(t, workflowUsing("actions/checkout@v6"),
 		"actions/checkout@v6",
@@ -934,8 +934,8 @@ func TestCheck_SeedFromLockfile_SkipsHTTPForCachedDeps(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
-	checkoutSHA := "de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
+	checkoutSHA := testfixture.CheckoutV6.SHA
+	setupGoSHA := testfixture.SetupGoV6.SHA
 
 	// Only register an HTTP stub for setup-go (the NEW dep).
 	// No stub for checkout — the seed must serve it from cache.
@@ -990,8 +990,8 @@ func TestCheck_NoFix_WritesNothing(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
-	checkoutSHA := "de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
+	checkoutSHA := testfixture.CheckoutV6.SHA
+	setupGoSHA := testfixture.SetupGoV6.SHA
 
 	// setup-go is the unpinned (new) dep — it resolves from the mock. checkout
 	// is seeded from the lockfile and must not hit the network.
@@ -1044,7 +1044,7 @@ func TestCheck_DefaultJSON_AutofixWrites(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
-	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
+	setupGoSHA := testfixture.SetupGoV6.SHA
 
 	// Resolve setup-go@v6.0.0 → setupGoSHA.
 	reg.StubRepo("actions/setup-go", setupGoSHA)
@@ -1168,7 +1168,7 @@ jobs:
 	lockYAML := "version: " + parserlock.Version + "\n" +
 		"dependencies:\n" +
 		"  actions/checkout@v6:\n" +
-		"    ref: v6\n    commit: sha1-de0fac2e4500dabe0009e67214ff5f5447ce83dd\n    owner_id: 1\n    repo_id: 1\n" +
+		"    ref: v6\n    commit: sha1-" + testfixture.CheckoutV6.SHA + "\n    owner_id: 1\n    repo_id: 1\n" +
 		"workflows:\n" +
 		"  .github/workflows/workflow.yml:\n" +
 		"    - actions/checkout@v6\n" +
@@ -1310,7 +1310,7 @@ func TestCheck_MixedCaseUsesAcrossWorkflowsPinsEach(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
-	checkoutSHA := "11bd71901bbe5b1630ceea73d27597364c9af683"
+	checkoutSHA := testfixture.CheckoutV4.SHA
 	reg.StubRepo("actions/checkout", checkoutSHA)
 	reg.Register(httpmock.REST("GET", `repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 		"id":    2,
@@ -1345,9 +1345,9 @@ func TestCheck_MixedCaseUsesAcrossWorkflowsPinsEach(t *testing.T) {
 // its own finding, the same in the terminal and in --json, and nothing is
 // written.
 func TestCheck_BareSHAOffHistoryRefuses(t *testing.T) {
-	const (
+	var (
 		impostor = "11d0dfc58a242e392d9695aa26812e1d1eb8e439"
-		head     = "11bd71901bbe5b1630ceea73d27597364c9af683"
+		head     = testfixture.CheckoutV4.SHA
 	)
 	stubs := func() *httpmock.Registry {
 		reg := &httpmock.Registry{}
@@ -1757,8 +1757,8 @@ func writeParallelStepsRepo(t *testing.T, workflow string) string {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "workflow.yml"), []byte(workflow), 0o600))
 	lockYAML := "version: '" + parserlock.Version + "'\ndependencies:\n" +
-		"  'actions/checkout@v6':\n    ref: 'v6'\n    commit: 'sha1-de0fac2e4500dabe0009e67214ff5f5447ce83dd'\n    owner_id: 1\n    repo_id: 1\n" +
-		"  'actions/setup-go@v6':\n    ref: 'v6'\n    commit: 'sha1-4a3601121dd01d1626a1e23e37211e3254c1c06c'\n    owner_id: 1\n    repo_id: 1\n" +
+		"  'actions/checkout@v6':\n    ref: 'v6'\n    commit: 'sha1-" + testfixture.CheckoutV6.SHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"  'actions/setup-go@v6':\n    ref: 'v6'\n    commit: 'sha1-" + testfixture.SetupGoV6.SHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
 		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'actions/checkout@v6'\n    - 'actions/setup-go@v6'\n"
 	lockPath := filepath.Join(dir, ".github", "workflows", "actions.lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(lockYAML), 0o600))
@@ -1851,8 +1851,8 @@ jobs:
 // call. Returns the lockfile path.
 func writeStaleLockfileRepo(t *testing.T) string {
 	t.Helper()
-	checkoutSHA := "de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
+	checkoutSHA := testfixture.CheckoutV6.SHA
+	setupGoSHA := testfixture.SetupGoV6.SHA
 
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
@@ -1955,7 +1955,7 @@ func TestCheck_NoFix_ReportsStaleWorkflow(t *testing.T) {
 // only the lockfile). It chdirs into the repo and returns the lockfile path.
 func writeLastWorkflowDeletedRepo(t *testing.T) string {
 	t.Helper()
-	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
+	setupGoSHA := testfixture.SetupGoV6.SHA
 
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
@@ -2097,8 +2097,8 @@ func TestTenantHostPrunesBeforeVerifyingHosts(t *testing.T) {
 					before = strings.Replace(before, "  'actions/checkout@v5':\n",
 						"  'actions/checkout@v5':\n    hostname: 'github.com'\n", 1)
 				}
-				before = strings.Replace(before, "sha1-4a3601121dd01d1626a1e23e37211e3254c1c06c'\n    owner_id: 1\n    repo_id: 1",
-					"sha1-4a3601121dd01d1626a1e23e37211e3254c1c06c'\n    owner_id: 2\n    repo_id: 2", 1)
+				before = strings.Replace(before, "sha1-"+testfixture.SetupGoV6.SHA+"'\n    owner_id: 1\n    repo_id: 1",
+					"sha1-"+testfixture.SetupGoV6.SHA+"'\n    owner_id: 2\n    repo_id: 2", 1)
 			}
 			require.NoError(t, os.WriteFile(path, []byte(before), 0o600))
 			staleCalls := 0
@@ -2162,7 +2162,7 @@ func TestTenantHostPrunesBeforeVerifyingHosts(t *testing.T) {
 			require.NoError(t, err)
 			assert.Contains(t, string(after), "actions/checkout@v6")
 			assert.Contains(t, string(after), "repo_id: 1")
-			assert.Contains(t, string(after), "sha1-de0fac2e4500dabe0009e67214ff5f5447ce83dd")
+			assert.Contains(t, string(after), "sha1-"+testfixture.CheckoutV6.SHA)
 			assert.NotContains(t, string(after), "deleted.yml")
 			assert.NotContains(t, string(after), "old.yml")
 			assert.NotContains(t, string(after), "actions/setup-go")
@@ -2286,7 +2286,7 @@ func TestMigrateLocalActions_EndToEnd(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
-	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
+	setupGoSHA := testfixture.SetupGoV6.SHA
 
 	reg.StubRepo("actions/setup-go", setupGoSHA)
 	reg.Register(

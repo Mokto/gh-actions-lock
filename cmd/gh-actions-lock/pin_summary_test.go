@@ -11,6 +11,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/resolve"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/github/gh-actions-lock/internal/ui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -653,7 +654,7 @@ func TestRenderAcceptedOverrides_NamesEachOverride(t *testing.T) {
 		},
 	}}}
 	pinned := []pin.Entry{
-		{NWO: "actions/checkout", Ref: "v4.2.2", SHA: "11bd71901bbe5b1630ceea73d27597364c9af683"},
+		{NWO: "actions/checkout", Ref: "v4.2.2", SHA: testfixture.CheckoutV4.SHA},
 		{NWO: "actions/setup-node", Ref: "v4.4.0", SHA: "49933ea5288caeca8642d1e84afbd3f7d6820020"},
 		{NWO: "octo/kept", Ref: "v1", SHA: "cccccccccccccccccccccccccccccccccccccccc"},
 	}

@@ -3,6 +3,7 @@ package format
 import (
 	"testing"
 
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -13,7 +14,7 @@ func tagChecker(tags map[string]bool) TagObjectCheck {
 }
 
 func TestDepReleaseURL(t *testing.T) {
-	const commitSHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	commitSHA := testfixture.CheckoutV4.SHA
 	const tagObjectSHA = "d746ffe35508b1917358783b479e04febd2b8f71"
 	knowsTag := tagChecker(map[string]bool{
 		"actions/github-script|" + tagObjectSHA: true,

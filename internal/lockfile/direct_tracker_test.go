@@ -6,11 +6,12 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestNewDirectTracker_Matching(t *testing.T) {
-	sha1 := "11bd71901bbe5b1630ceea73d27597364c9af683"
+	sha1 := testfixture.CheckoutV4.SHA
 	sha256 := strings.Repeat("ab", 32)
 
 	tests := []struct {

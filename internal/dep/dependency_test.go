@@ -3,6 +3,7 @@ package dep
 import (
 	"testing"
 
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,10 +18,10 @@ func TestDependencyStringRoundTrip(t *testing.T) {
 			dep: Dependency{
 				NWO:      "actions/checkout",
 				Ref:      "v4",
-				SHA:      "11bd71901bbe5b1630ceea73d27597364c9af683",
+				SHA:      testfixture.CheckoutV4.SHA,
 				HashAlgo: "sha1",
 			},
-			want: "actions/checkout@v4:sha1-11bd71901bbe5b1630ceea73d27597364c9af683",
+			want: "actions/checkout@v4:sha1-" + testfixture.CheckoutV4.SHA,
 		},
 		{
 			name: "sha256 dependency",
@@ -37,9 +38,9 @@ func TestDependencyStringRoundTrip(t *testing.T) {
 			dep: Dependency{
 				NWO: "actions/checkout",
 				Ref: "v4",
-				SHA: "11bd71901bbe5b1630ceea73d27597364c9af683",
+				SHA: testfixture.CheckoutV4.SHA,
 			},
-			want: "actions/checkout@v4:sha1-11bd71901bbe5b1630ceea73d27597364c9af683",
+			want: "actions/checkout@v4:sha1-" + testfixture.CheckoutV4.SHA,
 		},
 	}
 

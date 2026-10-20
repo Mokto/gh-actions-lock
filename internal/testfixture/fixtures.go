@@ -56,6 +56,11 @@ var (
 		OwnerID: actionsOwnerID, RepoID: checkoutRepoID,
 		Source: "actions/checkout v4.2.0",
 	}
+	CheckoutV421 = Pin{
+		Repo: "actions/checkout", Ref: "v4.2.1", SHA: "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871",
+		OwnerID: actionsOwnerID, RepoID: checkoutRepoID,
+		Source: "actions/checkout v4.2.1",
+	}
 	CheckoutV6 = Pin{
 		Repo: "actions/checkout", Ref: "v6", SHA: "de0fac2e4500dabe0009e67214ff5f5447ce83dd",
 		OwnerID: actionsOwnerID, RepoID: checkoutRepoID,
@@ -82,7 +87,7 @@ var (
 // Pins lists every named pin.
 func Pins() []Pin {
 	return []Pin{
-		CheckoutV4, CheckoutMain, CheckoutV420, CheckoutV6,
+		CheckoutV4, CheckoutMain, CheckoutV420, CheckoutV421, CheckoutV6,
 		SetupGoV5, SetupGoV6, ImpostorCommit,
 	}
 }

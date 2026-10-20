@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/testfixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,9 +22,9 @@ import (
 // blocks with an error and nothing is written. Neither may drop the old pin
 // and pass, which is what Dependabot SHA bumps hit.
 func TestNoOnboard_BareSHAOnTrackedAction(t *testing.T) {
-	const (
-		oldSHA   = "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871"
-		newSHA   = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	var (
+		oldSHA   = testfixture.CheckoutV421.SHA
+		newSHA   = testfixture.CheckoutV4.SHA
 		impostor = "11d0dfc58a242e392d9695aa26812e1d1eb8e439"
 	)
 	tests := []struct {
@@ -103,10 +104,10 @@ jobs:
 // The bump targets a commit behind the branch head so the history check has
 // to call Compare.
 func TestNoOnboard_ProxyTransientResolveAborts(t *testing.T) {
-	const (
-		oldSHA = "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871"
-		newSHA = "d632683dd7b4114ad314bca15554477dd762a938"
-		head   = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	var (
+		oldSHA = testfixture.CheckoutV421.SHA
+		newSHA = testfixture.CheckoutV420.SHA
+		head   = testfixture.CheckoutV4.SHA
 	)
 	failures := []struct {
 		name string
@@ -201,10 +202,10 @@ func trackedSHAStubs(reg *httpmock.Registry, uses, head string) *httpmock.Regist
 // another hits an outage, the run is still a retry. A 404 in one batch must
 // not hide a 5xx in another.
 func TestProxyTransientNotMaskedByMissingRef(t *testing.T) {
-	const (
-		oldSHA = "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871"
-		newSHA = "d632683dd7b4114ad314bca15554477dd762a938"
-		head   = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	var (
+		oldSHA = testfixture.CheckoutV421.SHA
+		newSHA = testfixture.CheckoutV420.SHA
+		head   = testfixture.CheckoutV4.SHA
 	)
 	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 	reg := &httpmock.Registry{}
