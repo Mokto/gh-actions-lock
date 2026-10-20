@@ -862,13 +862,20 @@ func TestRun_AmbiguousSHASpellingRefusesWrite(t *testing.T) {
 	const child = "abcdef0123456789abcdef0123456789abcdef01"
 	upper := strings.ToUpper(child)
 	for _, tt := range []struct {
-		name     string
-		spelling string
-		args     []string
+		name      string
+		spelling  string
+		args      []string
+		upperHost string
+		// fullScan scans every workflow, as --relock must to collapse.
+		fullScan bool
 	}{
 		{name: "no exact spelling", spelling: "AbCdEf0123456789abcdef0123456789abcdef01"},
 		{name: "exact spelling", spelling: child},
 		{name: "accept-moved", spelling: child, args: []string{"--accept-moved"}},
+		// --accept-moved implies a relock internally, but only an explicit
+		// --relock may collapse spellings.
+		{name: "accept-moved of every workflow", spelling: child, args: []string{"--accept-moved"}, fullScan: true},
+		{name: "spellings on two hosts", spelling: child, upperHost: "github.com"},
 		// A partial scan can't rewrite the workflows that keep the other
 		// spelling, so --relock can't collapse it.
 		{name: "relock of some workflows", spelling: child, args: []string{"--relock"}},
@@ -876,10 +883,18 @@ func TestRun_AmbiguousSHASpellingRefusesWrite(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/child@"+tt.spelling+"\n")
 			shaSpellingLock(t, path, child, upper)
+			if tt.upperHost != "" {
+				lock := strings.Replace(readTempLockfilePins(t), "  'acme/child@"+upper+"':\n", "  'acme/child@"+upper+"':\n    hostname: '"+tt.upperHost+"'\n", 1)
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+			}
 			before := readTempLockfilePins(t)
 			wfBefore := snapshotWorkflows(t)
 
-			p, err := runParity(t, &graphTransport{childSHA: child, childOnMain: true}, append(tt.args, "--no-narrow", path)...)
+			args := append(tt.args, "--no-narrow")
+			if !tt.fullScan {
+				args = append(args, path)
+			}
+			p, err := runParity(t, &graphTransport{childSHA: child, childOnMain: true}, args...)
 			require.ErrorIs(t, err, errSilent)
 			var ambiguous []format.Finding
 			for _, f := range p.Findings {
@@ -1021,13 +1036,19 @@ func TestRun_VerifyLocalFollowsFullSHASpellings(t *testing.T) {
 // another by a manifest, is recorded once under one canonical spelling, and
 // the result verifies.
 func TestRun_RelockCollapsesSHASpellings(t *testing.T) {
+	for _, args := range [][]string{{"--relock"}, {"--relock", "--accept-moved"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) { testRelockCollapsesSHASpellings(t, args) })
+	}
+}
+
+func testRelockCollapsesSHASpellings(t *testing.T, args []string) {
 	const child = "abcdef0123456789abcdef0123456789abcdef01"
 	upper := strings.ToUpper(child)
 	path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/child@AbCdEf0123456789abcdef0123456789abcdef01\n")
 	shaSpellingLock(t, path, child, upper)
 	transport := &graphTransport{childSHA: child, childOnMain: true, parentUsesChildAt: upper}
 
-	_, stderr, err := runCommandWithHTTP(t, transport, "--relock", "--no-narrow")
+	_, stderr, err := runCommandWithHTTP(t, transport, append(args, "--no-narrow")...)
 	require.NoError(t, err, stderr)
 	lock := readTempLockfilePins(t)
 	file, err := parserlock.Parse([]byte(lock))
@@ -1041,7 +1062,7 @@ func TestRun_RelockCollapsesSHASpellings(t *testing.T) {
 	_, stderr, err = runCommandWithHTTP(t, transport, "--verify")
 	require.NoError(t, err, stderr)
 
-	_, stderr, err = runCommandWithHTTP(t, transport, "--relock", "--no-narrow")
+	_, stderr, err = runCommandWithHTTP(t, transport, append(args, "--no-narrow")...)
 	require.NoError(t, err, stderr)
 	assert.Equal(t, lock, readTempLockfilePins(t), "a second relock converges")
 }
