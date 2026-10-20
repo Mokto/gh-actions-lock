@@ -879,7 +879,7 @@ func replaceOffHistoryFindings(report *checks.Report, unresolved []pin.Entry) []
 				if len(e.RequiredBy) > 0 {
 					f.ParentNWO = e.RequiredBy[0]
 					f.Detail += fmt.Sprintf(" (used by %s)", f.ParentNWO)
-					f.Remediation = fmt.Sprintf("upgrade or replace %s with a version whose pin of %s can be verified, or stop using it", f.ParentNWO, e.NWO)
+					f.Remediation = checks.UnreachableRemediation(f.ParentNWO, e.NWO)
 				}
 				wr.Findings = append(kept, f)
 			}
