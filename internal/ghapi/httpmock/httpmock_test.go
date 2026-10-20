@@ -3,8 +3,12 @@ package httpmock
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGraphQLAndRegistry(t *testing.T) {
@@ -55,5 +59,28 @@ func TestGraphQLQueryResponder(t *testing.T) {
 	if !called {
 		t.Fatal("expected GraphQLQuery callback to run")
 	}
+	reg.Verify(t)
+}
+
+func TestServeHTTP(t *testing.T) {
+	reg := &Registry{}
+	reg.RegisterReusable(REST(http.MethodGet, `/repos/o/r$`), JSONResponse(map[string]any{"id": 1}))
+	srv := httptest.NewServer(reg)
+	defer srv.Close()
+
+	for range 2 {
+		resp, err := http.Get(srv.URL + "/api/v3/repos/o/r")
+		require.NoError(t, err)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.JSONEq(t, `{"id":1}`, string(body))
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	}
+
+	resp, err := http.Get(srv.URL + "/missing")
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	reg.Verify(t)
 }

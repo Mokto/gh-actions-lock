@@ -93,6 +93,24 @@ func (r *Registry) RoundTrip(req *http.Request) (*http.Response, error) {
 	return nil, fmt.Errorf("no registered HTTP stubs matched %v", req.URL)
 }
 
+// ServeHTTP serves the registry as a fake server, so a subprocess can talk
+// to it over a real socket. Unmatched requests get a GitHub-style 404.
+func (r *Registry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	resp, err := r.RoundTrip(req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+		return
+	}
+	defer resp.Body.Close()
+	for k, vs := range resp.Header {
+		w.Header()[k] = vs
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
 // GraphQL matches a POST GraphQL request whose query matches q.
 func GraphQL(q string) Matcher {
 	re := regexp.MustCompile(q)
