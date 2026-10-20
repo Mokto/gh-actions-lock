@@ -61,8 +61,10 @@ func tenantHostFixture(t *testing.T, publicStatus int) http.RoundTripper {
 			return httpmock.JSONResponse(map[string]any{"data": map[string]any{
 				"a0": testRepoResponse("tenant/internal", tenantSHA, composite),
 			}})(req)
-		case !tenant && (path == "/repos/actions/public/commits/v2" || path == "/repos/actions/public/commits/"+publicSHA):
+		case !tenant && (path == "/repos/actions/public/commits/v2" || path == "/repos/actions/public/commits/refs/tags/v2" || path == "/repos/actions/public/commits/"+publicSHA):
 			return httpmock.JSONResponse(map[string]any{"sha": publicSHA})(req)
+		case !tenant && path == "/repos/actions/public/commits/refs/heads/v2":
+			return httpmock.StatusResponse(http.StatusNotFound)(req)
 		case !tenant && path == "/repos/actions/public/git/ref/tags/v2":
 			return httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2", publicSHA))(req)
 		case !tenant && path == "/repos/actions/public/git/ref/heads/v2":
@@ -89,8 +91,8 @@ jobs:
       - uses: actions/public@v2
 `)
 	args := []string{"--hostname", "tenant.ghe.com", "--no-interactive", "--no-narrow", "--no-migrate-local-actions", "--json", path}
-	_, _, err := runCommandWithHTTP(t, tenantHostFixture(t, 200), args...)
-	require.NoError(t, err)
+	stdout, stderr, err := runCommandWithHTTP(t, tenantHostFixture(t, 200), args...)
+	require.NoError(t, err, stdout, stderr)
 	raw := readTempLockfilePins(t)
 	file, err := parserlock.Parse([]byte(raw))
 	require.NoError(t, err)

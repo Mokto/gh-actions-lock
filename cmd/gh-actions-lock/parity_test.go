@@ -440,11 +440,13 @@ func TestParity_ExactTagRefreshRequiresAcceptMovedAfterHistoryLoss(t *testing.T)
 							"nameWithOwner": "actions/checkout",
 							"commit":        map[string]any{"oid": parityTestSHA},
 							"tag":           map[string]any{"oid": parityTestMoved},
+							"tagRef":        map[string]any{},
 						},
 						"a1": map[string]any{
 							"nameWithOwner": "actions/checkout",
 							"commit":        map[string]any{"oid": parityTestMoved},
 							"tag":           map[string]any{"oid": parityTestMoved},
+							"tagRef":        map[string]any{},
 						},
 					},
 				}))
@@ -972,7 +974,8 @@ func TestParity_DependabotProxyFirstRunKeepsRenamedName(t *testing.T) {
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
 	}))
 	commit := httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})
-	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/commits/v2\.2\.2$`), commit)
+	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/commits/refs/tags/v2\.2\.2$`), commit)
+	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/commits/refs/heads/v2\.2\.2$`), httpmock.StatusResponse(http.StatusNotFound))
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/git/ref/tags/v2\.2\.2$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2.2.2", parityTestSHA)))
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/git/ref/heads/v2\.2\.2$`), httpmock.StatusResponse(http.StatusNotFound))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/contents/action\.yml$`), httpmock.StatusResponse(http.StatusNotFound))
@@ -1108,7 +1111,7 @@ jobs:
 			}
 			reg.Register(httpmock.REST("GET", compareURL), httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
 			if proxy {
-				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/heads/v4$`), httpmock.StatusResponse(http.StatusNotFound))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/heads/v4$`), httpmock.StatusResponse(http.StatusNotFound))
 				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
 				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.yml$`), httpmock.JSONResponse(map[string]any{
 					"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML)),
@@ -1282,7 +1285,7 @@ func TestParity_VerifyRefCaseSensitive(t *testing.T) {
 						heads = append(heads, ref)
 						return httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/"+ref, parityTestSHA))(req)
 					})
-					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/heads/`+ref+`$`), httpmock.StatusResponse(http.StatusNotFound))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/heads/`+ref+`$`), httpmock.StatusResponse(http.StatusNotFound))
 				}
 			} else {
 				reg.Register(httpmock.GraphQL(`head: object\(expression`), func(req *http.Request) (*http.Response, error) {
@@ -1437,17 +1440,23 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 					require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
 					assert.Equal(t, "refs/tags/"+tt.ref+"^{commit}", body.Variables["tag0"], "the recorded ref is looked up only as a tag or branch")
 					assert.Equal(t, "refs/heads/"+tt.ref+"^{commit}", body.Variables["head0"], "the recorded ref is looked up only as a tag or branch")
-					return httpmock.JSONResponse(map[string]any{
-						"data": map[string]any{"a0": map[string]any{
+					data := map[string]any{"a0": map[string]any{
+						"nameWithOwner": "actions/checkout",
+						"databaseId":    1,
+						"commit":        map[string]any{"oid": parityTestSHA},
+						"tag":           tt.tag,
+						"tagRef":        tt.tag,
+						"head":          tt.head,
+						"headRef":       tt.head,
+					}}
+					if _, fresh := body.Variables["owner1"]; fresh {
+						data["a1"] = map[string]any{
 							"nameWithOwner": "actions/checkout",
 							"databaseId":    1,
 							"commit":        map[string]any{"oid": parityTestSHA},
-							"tag":           tt.tag,
-							"tagRef":        tt.tag,
-							"head":          tt.head,
-							"headRef":       tt.head,
-						}},
-					})(req)
+						}
+					}
+					return httpmock.JSONResponse(map[string]any{"data": data})(req)
 				})
 				if tt.compare != nil {
 					reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+live), tt.compare)

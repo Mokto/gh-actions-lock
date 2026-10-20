@@ -28,6 +28,8 @@ func (c *collisionTransport) RoundTrip(req *http.Request) (*http.Response, error
 			"commit":        map[string]any{"oid": parityTestSHA},
 			"tag":           map[string]any{"oid": parityTestSHA},
 			"head":          map[string]any{"oid": parityTestMoved},
+			"tagRef":        map[string]any{},
+			"headRef":       map[string]any{},
 		}}})(req)
 	case httpmock.GraphQL(`file: file\(path`)(req):
 		c.resolutions++
@@ -41,6 +43,11 @@ func (c *collisionTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})(req)
 	case req.URL.Path == "/repos/actions/checkout/commits/refs/heads/v4.2.2":
 		return httpmock.JSONResponse(map[string]any{"sha": parityTestMoved})(req)
+	case req.URL.Path == "/repos/actions/checkout/git/ref/tags/v4.2.2":
+		c.parityChecks++
+		return httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v4.2.2", parityTestSHA))(req)
+	case req.URL.Path == "/repos/actions/checkout/git/ref/heads/v4.2.2":
+		return httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/v4.2.2", parityTestMoved))(req)
 	}
 	return nil, fmt.Errorf("unexpected collision fixture request: %s %s", req.Method, req.URL)
 }

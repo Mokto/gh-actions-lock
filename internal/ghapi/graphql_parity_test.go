@@ -271,6 +271,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 		defer reg.Verify(t)
 		reg.Register(httpmock.REST("GET", `^/repos/o/r$`), httpmock.JSONResponse(map[string]any{"full_name": "o/r"}))
 		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/tags/v1\.0\.0$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v1.0.0", paritySHA)))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/heads/v1\.0\.0$`), httpmock.StatusResponse(http.StatusNotFound))
 
 		c := newTestClient(t, reg)
 		c.anonHTTP = &http.Client{Transport: reg}
@@ -324,6 +325,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 			"ref": "refs/tags/v1.0.0", "object": map[string]any{"sha": parityMoved, "type": "tag"},
 		}))
 		reg.Register(httpmock.REST("GET", `^/repos/o/r/commits/refs/tags/v1\.0\.0$`), httpmock.JSONResponse(map[string]any{"sha": paritySHA}))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/heads/v1\.0\.0$`), httpmock.StatusResponse(http.StatusNotFound))
 
 		c := newTestClient(t, reg)
 		c.anonHTTP = &http.Client{Transport: reg}

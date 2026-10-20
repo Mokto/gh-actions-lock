@@ -434,8 +434,8 @@ func TestCompleteness_ProxyTransientManifestReadIsRetry(t *testing.T) {
 		"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
 	}))
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
-	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
-	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/heads/v4$`), httpmock.StatusResponse(http.StatusNotFound))
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v4", parityTestSHA)))
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/heads/v4$`), httpmock.StatusResponse(http.StatusNotFound))
 	for range 10 {
 		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.ya?ml$`), httpmock.StatusResponse(http.StatusServiceUnavailable))
 	}

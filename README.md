@@ -134,6 +134,8 @@ fails before writing any file.
 Suspicious pins whose recorded commit is no longer
 reachable upstream are left as errors — use `--accept-moved` to re-resolve
 those as well.
+For a full-SHA pin, `--accept-moved` can repair its recorded ref only if an
+accepted tag or branch still contains the same commit.
 
 A deleted recorded ref still blocks, including with `--relock --accept-moved`.
 Restore the trusted ref or deliberately select and review another ref. A branch
