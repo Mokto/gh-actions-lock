@@ -56,6 +56,10 @@ type Finding struct {
 	// tag or branch, including a full-SHA key's recorded ref, which
 	// RefMissing leaves unset. It only picks the terminal title.
 	RefGone bool
+	// RefRefused marks an unreachable-pin finding whose ref name the Actions
+	// backend refuses by policy, so it was never looked up. It only picks
+	// the terminal title.
+	RefRefused bool
 	// TagMoved marks a ref-moved warning from parity: an exact-version tag
 	// moved ahead of its locked commit. Unlike a sticky mutable ref, the
 	// terminal shows it; the JSON category is unchanged.

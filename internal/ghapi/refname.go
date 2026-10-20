@@ -42,6 +42,12 @@ func ValidRefName(name string) bool {
 // describeSuffix matches the "-g<hex>" ending of a `git describe` name.
 var describeSuffix = regexp.MustCompile(`-g[0-9a-fA-F]{4,}$`)
 
+// DescribeName reports whether name is a valid ref name shaped like
+// `git describe` output, which the Actions backend refuses.
+func DescribeName(name string) bool {
+	return ValidRefName(name) && describeSuffix.MatchString(name)
+}
+
 // AcceptedRefName reports whether name is a ref name the Actions backend
 // accepts: a valid ref name that isn't shaped like `git describe` output.
 func AcceptedRefName(name string) bool {

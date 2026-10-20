@@ -39,3 +39,14 @@ func TestAcceptedRefName(t *testing.T) {
 		assert.Equal(t, tt.want, AcceptedRefName(tt.name), tt.name)
 	}
 }
+
+func TestDescribeName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"v1.0.0-1-gabcd1234": true,
+		"v1-gabc":            false,
+		"main~1":             false,
+		"v1.0.0":             false,
+	} {
+		assert.Equal(t, want, DescribeName(name), name)
+	}
+}

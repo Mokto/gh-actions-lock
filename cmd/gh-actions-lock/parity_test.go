@@ -12,6 +12,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
+	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1423,7 +1424,7 @@ jobs:
 
 			_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
 			require.ErrorIs(t, err, errSilent, stderr)
-			assert.Contains(t, stderr, "is not a tag or branch of actions/checkout")
+			assert.Contains(t, stderr, refusalDetail(ref))
 			assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
 		})
 	}
@@ -1474,12 +1475,16 @@ jobs:
 		}
 	}
 	require.Len(t, unreachable, 1, "%+v", p.Findings)
-	assert.Contains(t, unreachable[0], "ref "+ref+" is not a tag or branch of actions/checkout")
+	assert.Contains(t, unreachable[0], refusalDetail(ref))
 	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
 	require.ErrorIs(t, err, errSilent)
-	assert.Contains(t, stderr, "Not a tag or branch actions/checkout@"+ref, "the lockfile never recorded it")
+	title := "Not a tag or branch"
+	if ghapi.DescribeName(ref) {
+		title = "Ref name refused"
+	}
+	assert.Contains(t, stderr, title+" actions/checkout@"+ref, "the lockfile never recorded it")
 	assert.NotContains(t, stderr, "Ref no longer exists")
 }
 
@@ -1723,6 +1728,14 @@ jobs:
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
 	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
+// refusalDetail is the finding detail for a `uses:` ref parity refuses.
+func refusalDetail(ref string) string {
+	if ghapi.DescribeName(ref) {
+		return "ref " + ref + " looks like `git describe` output"
+	}
+	return "ref " + ref + " is not a tag or branch of actions/checkout"
 }
 
 // writeFullSHAWorkflow writes a workflow using actions/checkout at
