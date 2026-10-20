@@ -173,10 +173,10 @@ func TestProximaPartialGraphQLErrorDoesNotSucceed(t *testing.T) {
 	assert.Empty(t, result[0].CommitOID)
 }
 
-// TestProximaRoutesEveryRepoMethod: on a tenant client every exported method
+// TestTenantHostRoutesEveryRepoMethod: on a tenant client every exported method
 // that takes a repository must select its host first; the routing client has
 // no REST client of its own. Any new method is covered automatically.
-func TestProximaRoutesEveryRepoMethod(t *testing.T) {
+func TestTenantHostRoutesEveryRepoMethod(t *testing.T) {
 	ctxType := reflect.TypeFor[context.Context]()
 	typ := reflect.TypeFor[*Client]()
 	for i := range typ.NumMethod() {
