@@ -332,6 +332,25 @@ func (p PinCheck) refs() []string {
 	return []string{"refs/tags/" + p.Head, "refs/heads/" + p.Head}
 }
 
+// TagExists reports whether owner/repo has a tag named exactly name.
+func (c *Client) TagExists(ctx context.Context, owner, repo, name string) (bool, error) {
+	c, err := c.ForRepo(ctx, owner, repo)
+	if err != nil {
+		return false, err
+	}
+	var raw json.RawMessage
+	path := fmt.Sprintf("repos/%s/%s/git/ref/tags/%s", url.PathEscape(owner), url.PathEscape(repo), escapeBranchPath(name))
+	found, err := c.restGet(ctx, owner, path, &raw)
+	if err != nil || !found {
+		return false, err
+	}
+	var ref struct {
+		Ref string `json:"ref"`
+	}
+	// A name that only prefixes other tags gets an array back.
+	return json.Unmarshal(raw, &ref) == nil && ref.Ref == "refs/tags/"+name, nil
+}
+
 // restRefCommit returns the commit the exact ref qualified peels to.
 // commits/{ref} alone would also evaluate a name that is no ref, so the ref
 // must first exist by that name.

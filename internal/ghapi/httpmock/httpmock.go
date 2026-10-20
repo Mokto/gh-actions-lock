@@ -23,6 +23,7 @@ type Responder func(req *http.Request) (*http.Response, error)
 type stub struct {
 	stack     string
 	matched   bool
+	reusable  bool
 	matcher   Matcher
 	responder Responder
 }
@@ -44,13 +45,20 @@ func (r *Registry) Register(m Matcher, resp Responder) {
 	})
 }
 
+// RegisterReusable adds a matcher/response pair that serves every matching
+// request rather than just the first. Verify doesn't require it to match.
+func (r *Registry) RegisterReusable(m Matcher, resp Responder) {
+	r.Register(m, resp)
+	r.stubs[len(r.stubs)-1].reusable = true
+}
+
 // Verify fails the test if any registered stubs were never exercised.
 func (r *Registry) Verify(t *testing.T) {
 	t.Helper()
 
 	var unmatched []string
 	for _, s := range r.stubs {
-		if !s.matched {
+		if !s.matched && !s.reusable {
 			unmatched = append(unmatched, s.stack)
 		}
 	}
@@ -74,7 +82,7 @@ func (r *Registry) RoundTrip(req *http.Request) (*http.Response, error) {
 	defer r.mu.Unlock()
 
 	for _, s := range r.stubs {
-		if s.matched || !s.matcher(req) {
+		if s.matched && !s.reusable || !s.matcher(req) {
 			continue
 		}
 		s.matched = true

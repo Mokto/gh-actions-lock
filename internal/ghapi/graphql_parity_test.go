@@ -343,3 +343,32 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 		assert.Empty(t, states[0].HeadOID)
 	})
 }
+
+func TestTagExists(t *testing.T) {
+	for _, proxy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "authenticated", true: "dependabot proxy"}[proxy], func(t *testing.T) {
+			if proxy {
+				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+			}
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/tags/v1$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v1", paritySHA)))
+			reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/tags/main$`), httpmock.StatusResponse(http.StatusNotFound))
+			// git/ref answers a name that only prefixes refs with an array.
+			reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/tags/v2$`),
+				httpmock.JSONResponse([]any{httpmock.GitRefResponse("refs/tags/v2/x", paritySHA)}))
+			reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/tags/down$`), httpmock.StatusResponse(http.StatusBadGateway))
+
+			c := newTestClient(t, reg)
+			c.anonHTTP = &http.Client{Transport: reg}
+			ctx := context.Background()
+			for name, want := range map[string]bool{"v1": true, "main": false, "v2": false} {
+				got, err := c.TagExists(ctx, "o", "r", name)
+				require.NoError(t, err, name)
+				assert.Equal(t, want, got, name)
+			}
+			_, err := c.TagExists(ctx, "o", "r", "down")
+			assert.Error(t, err, "a failed lookup is not a missing tag")
+		})
+	}
+}

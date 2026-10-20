@@ -1,6 +1,8 @@
 // Package httpmock provides HTTP test fakes for the ghapi client.
 package httpmock
 
+import "regexp"
+
 // This file mirrors cli/cli's pkg/httpmock/legacy.go: a small set of
 // cross-cutting GitHub REST response shapes used by tests across multiple
 // packages. Keep the surface narrow — only fixtures that are duplicated in
@@ -64,4 +66,10 @@ func CompareAncestorResponse(mergeBaseSHA string) any {
 // or refs/heads/x) pointing at a commit.
 func GitRefResponse(qualified, sha string) any {
 	return map[string]any{"ref": qualified, "object": map[string]any{"sha": sha, "type": "commit"}}
+}
+
+// NoTagsNamed answers every exact tag lookup in owner/repo with 404, for
+// tests whose branches have no same-named tag.
+func NoTagsNamed(reg *Registry, owner, repo string) {
+	reg.RegisterReusable(REST("GET", `(?i)repos/`+regexp.QuoteMeta(owner+"/"+repo)+`/git/ref/tags/`), StatusResponse(404))
 }

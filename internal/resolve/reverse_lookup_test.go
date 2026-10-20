@@ -29,6 +29,7 @@ func TestReverseLookup_ContainingBranchDoesNotIdentifyHistoricalCommit(t *testin
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
+			httpmock.NoTagsNamed(reg, "owner", "action")
 			defer reg.Verify(t)
 			reg.Register(httpmock.REST("GET", `repos/owner/action$`),
 				httpmock.JSONResponse(map[string]any{"default_branch": "main"}))

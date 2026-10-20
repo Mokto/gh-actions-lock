@@ -1579,6 +1579,7 @@ func testAcceptMovedGoneRef(t *testing.T, status string) {
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
 			httpmock.JSONResponse(map[string]any{"status": status, "merge_base_commit": map[string]any{"sha": base}}))
 	}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	path := writeFullSHAWorkflow(t, "v6.1.0")
 
 	lockBefore := readTempLockfilePins(t)

@@ -57,6 +57,8 @@ func TestNarrowDirectDeps_SameNWOSiblingRefsNormalizeIndependently(t *testing.T)
 	)
 
 	reg := &httpmock.Registry{}
+
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout/tags`),
 		httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", patchSHA, "v21", bareSHA)),
@@ -528,6 +530,7 @@ func TestPlanPreservesDifferentHistoricalSHAsOnSameBranch(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
+			httpmock.NoTagsNamed(reg, "owner", "action")
 			defer reg.Verify(t)
 			reg.Register(httpmock.REST("GET", `repos/owner/action/git/ref/heads/main`),
 				httpmock.JSONResponse(map[string]any{
@@ -616,6 +619,7 @@ func TestPlanNormalizationRespectsLockedTarget(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
+			reg.RegisterReusable(httpmock.REST("GET", `/git/ref/tags/`), httpmock.StatusResponse(404))
 			defer reg.Verify(t)
 			reg.Register(httpmock.REST("GET", `repos/`+tt.nwo+`$`),
 				httpmock.JSONResponse(map[string]any{"default_branch": "main"}))
@@ -907,6 +911,7 @@ func TestNoNarrow_BareSHA(t *testing.T) {
 	newSlowPathFixtures := func(t *testing.T) (*resolve.Resolver, *tag.Lister, checks.WorkflowReport, *httpmock.Registry) {
 		t.Helper()
 		reg := &httpmock.Registry{}
+		httpmock.NoTagsNamed(reg, "actions", "checkout")
 
 		// GraphQL: resolve the bare-SHA ref to itself.
 		reg.Register(

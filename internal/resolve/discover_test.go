@@ -18,6 +18,7 @@ func TestDiscoverContaining_PrefersHintTag(t *testing.T) {
 	// orderedBranches with hintRef="v4.2.2" (not a branch) and no default:
 	// lex order → main first → compare(abc...m000) matches.
 	reg := &httpmock.Registry{}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout/branches`),
 		httpmock.JSONResponse(httpmock.BranchListResponse("main", "m000", "releases/v4", "rv4000")),
@@ -52,6 +53,7 @@ func TestDiscoverContaining_PrefersHintTag(t *testing.T) {
 func TestDiscoverContaining_BranchOnly(t *testing.T) {
 	// sha="def", hintRef="main". main HEAD == "def" → exact match, no compare.
 	reg := &httpmock.Registry{}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout/branches`),
 		httpmock.JSONResponse(httpmock.BranchListResponse("main", "def")),
@@ -116,6 +118,7 @@ func TestDiscoverContainingDefault_PrefersDefaultBranch(t *testing.T) {
 	// sha="abc", hintRef="", defaultBranch="main".
 	// No exact match → compare path. orderedBranches puts main first.
 	reg := &httpmock.Registry{}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout/branches`),
 		httpmock.JSONResponse(httpmock.BranchListResponse("feature/x", "fx000", "main", "m000", "zzz", "z000")),
@@ -150,6 +153,7 @@ func TestDiscoverContaining_AutoDiscoversDefaultAndPrefersProtected(t *testing.T
 	// branches (aaa, zzz) are not in the protected-branch API response and
 	// so are never compared. main doesn't contain abc; releases/v4 does.
 	reg := &httpmock.Registry{}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout$`),
 		httpmock.JSONResponse(map[string]any{"default_branch": "main"}),
@@ -196,6 +200,7 @@ func TestDiscoverContaining_UnprotectedOnlyFallsBack(t *testing.T) {
 	// Repo has no protected branches. We fall back to the full branch
 	// list.
 	reg := &httpmock.Registry{}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout/branches`),
 		httpmock.JSONResponse(httpmock.BranchListResponseProtected(
@@ -228,6 +233,7 @@ func TestDiscoverContaining_CommitOnlyOnUnprotectedBranchFallsBack(t *testing.T)
 	// contains abc. Phase 1 scans protected branches only (main); compare
 	// shows abc is not on main. Phase 2 full scan finds dev via exact match.
 	reg := &httpmock.Registry{}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	// Phase 1: listProtectedBranches returns only main.
 	reg.Register(
 		httpmock.RESTWithQuery("GET", `repos/actions/checkout/branches`, "protected=true"),
@@ -271,6 +277,7 @@ func TestDiscoverContaining_CommitOnlyOnUnprotectedBranchFallsBack(t *testing.T)
 func TestReverseLookup_PopulatesTagBranchAndRewritesSHAPins(t *testing.T) {
 	// SHA pin: dep.SHA="abc123", dep.Ref=full-sha. main HEAD=="abc123" → exact match.
 	reg := &httpmock.Registry{}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout/branches`),
 		httpmock.JSONResponse(httpmock.BranchListResponse("main", "abc123")),
@@ -434,9 +441,11 @@ func TestReverseLookup_PreservesBranchRefOverTag(t *testing.T) {
 
 // TestDiscoverContaining_SkipsBranchShadowedByTag: the Actions backend
 // resolver looks a recorded ref up as a tag first, so a branch whose name is
-// also a tag would resolve to the tag. Such a branch is never recorded.
+// also a tag would resolve to the tag. Such a branch is never recorded,
+// even when the tag is beyond the first page of the tag list.
 func TestDiscoverContaining_SkipsBranchShadowedByTag(t *testing.T) {
 	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout/branches`),
 		httpmock.JSONResponse(httpmock.BranchListResponse("main", "m000", "release", "r000")),
@@ -447,9 +456,18 @@ func TestDiscoverContaining_SkipsBranchShadowedByTag(t *testing.T) {
 			httpmock.JSONResponse(httpmock.CompareAncestorResponse("abc")),
 		)
 	}
+	// The listing's first page doesn't include the tag named main.
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout/tags`),
-		httpmock.JSONResponse(httpmock.TagListResponse("main", "zzz")),
+		httpmock.JSONResponse(httpmock.TagListResponse("v1", "zzz")),
+	)
+	reg.Register(
+		httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/main$`),
+		httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/main", "zzz")),
+	)
+	reg.Register(
+		httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/release$`),
+		httpmock.StatusResponse(http.StatusNotFound),
 	)
 
 	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
@@ -466,5 +484,28 @@ func TestDiscoverContaining_SkipsBranchShadowedByTag(t *testing.T) {
 	}
 	if branch != "release" {
 		t.Fatalf("expected the unshadowed branch release, got %q", branch)
+	}
+}
+
+// TestDiscoverContaining_ShadowCheckFailureFailsClosed: a tag lookup that
+// can't finish is never read as "no such tag".
+func TestDiscoverContaining_ShadowCheckFailureFailsClosed(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.Register(
+		httpmock.REST("GET", `repos/actions/checkout/branches`),
+		httpmock.JSONResponse(httpmock.BranchListResponse("main", "abc")),
+	)
+	reg.Register(
+		httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/main$`),
+		httpmock.StatusResponse(http.StatusBadGateway),
+	)
+
+	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := r.DiscoverContainingDefault(context.Background(), "actions", "checkout", "abc", "main", "main"); err == nil {
+		t.Fatal("expected an error")
 	}
 }

@@ -193,6 +193,7 @@ func trackedSHAStubs(reg *httpmock.Registry, uses, head string) *httpmock.Regist
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`), httpmock.JSONResponse(compare))
 	}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	return reg
 }
 

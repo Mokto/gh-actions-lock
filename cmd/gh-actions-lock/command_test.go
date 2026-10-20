@@ -96,6 +96,8 @@ func TestCheck_BareSHAUsesExactMajorTagAndVerifiesLocally(t *testing.T) {
 	)
 
 	reg := &httpmock.Registry{}
+
+	httpmock.NoTagsNamed(reg, "dawidd6", "action-download-artifact")
 	reg.Register(
 		httpmock.GraphQLForRepo("dawidd6", "action-download-artifact"),
 		httpmock.JSONResponse(map[string]any{

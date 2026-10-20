@@ -1040,6 +1040,8 @@ func TestDiscoverContaining_BranchBeyondPageCap_NotImpostor(t *testing.T) {
 	sha := "aafc3630d7b9aafc3630d7b9aafc3630d7b9aafc"
 
 	reg := &httpmock.Registry{}
+
+	httpmock.NoTagsNamed(reg, "vercel", "next.js")
 	reg.Register(
 		httpmock.REST("GET", `repos/vercel/next.js/git/ref/heads/canary`),
 		httpmock.JSONResponse(gitRefHeadResponse("canary", sha)),
