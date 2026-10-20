@@ -48,18 +48,21 @@ claim in both.
   end to end, but with a stubbed resolver so it stays deterministic. Runs in
   the blocking `test` CI job with no token. Reach for this to prove the
   command plumbs its pieces together.
-- **Catalog scenario** (`test/scenarios/catalog.yml`, run by the Ruby
-  harness) — the *real compiled binary* against the real API or a stub
-  server. Use it only for what a Go mock can't prove: real arg parsing, the
-  real lockfile emitter, live transitive resolution over real fixtures.
+- **Catalog scenario** (`test/scenarios/catalog.yml`, run by `test/e2e`)
+  — the *real compiled binary* against the real API or a fake GitHub named
+  by `stub:` (profiles in `test/e2e/e2e.go`). Use it only for what a Go mock
+  can't prove: real arg parsing, the real lockfile emitter, live transitive
+  resolution over real fixtures.
 
 Pitfalls that have bitten us:
 
-- **`needs_token: true` scenarios do not guard merge.** They run only in the
-  non-blocking `integration-live` CI job. Never let a token-gated scenario be
-  the *only* coverage for a behavior — back it with a Go test.
-- **Only `stub`-tagged scenarios run in the blocking `integration-stub`
-  job.** An untagged, no-token scenario runs nowhere in required CI.
+- **`needs_token: true` scenarios do not guard merge.** They run only with
+  `E2E_LIVE=1`, in the non-blocking `integration-live` CI job. Never let a
+  token-gated scenario be the *only* coverage for a behavior — back it with
+  a Go test.
+- **Every other scenario must be tagged `stub`.** Those run hermetically in
+  `go test ./...`; `TestEveryScenarioRunsInCI` rejects a scenario that is
+  neither.
 - **Same-assertion duplication is not defense-in-depth.** If a Go command
   test already asserts the observable behavior deterministically, add a
   catalog scenario only for the real-binary / real-API delta, and say so in

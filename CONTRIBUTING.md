@@ -15,13 +15,12 @@ Please note that this project is released with a [Contributor Code of Conduct](C
 These are one time installations required to be able to test your changes locally as part of the pull request (PR) submission process.
 
 1. Install Go [through download](https://go.dev/doc/install) | [through Homebrew](https://formulae.brew.sh/formula/go). The required version is pinned in [`go.mod`](go.mod).
-1. Some integration tests use Ruby; install it [through download](https://www.ruby-lang.org/en/documentation/installation/) | [through Homebrew](https://formulae.brew.sh/formula/ruby) if you plan to run them.
 
 ## Submitting a pull request
 
 1. [Fork][fork] and clone the repository.
 1. Build the extension: `make build`.
-1. Make sure the tests pass on your machine: `make test` (or `go test -race ./...`).
+1. Make sure the tests pass on your machine: `make test` (or `go test -race ./...`). This includes the hermetic end-to-end scenarios in `test/e2e`; `make test-integration` also runs the live ones against the real API.
 1. Make sure the code is formatted and vetted: `make fmt-check` and `make vet`.
 1. Create a new branch: `git checkout -b my-branch-name`.
 1. Make your change, add tests, and make sure the tests still pass.

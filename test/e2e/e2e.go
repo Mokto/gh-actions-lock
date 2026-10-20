@@ -553,6 +553,7 @@ var stubProfiles = map[string]func(*httpmock.Registry){
 	},
 	// REST only: a GraphQL POST gets a 404 and fails the run.
 	"dependabot_proxy": func(reg *httpmock.Registry) {
+		get(reg, `/git/ref/tags/v4$`, reply(http.StatusOK, httpmock.GitRefResponse("refs/tags/v4", mainSHA)))
 		get(reg, `/commits/`, reply(http.StatusOK, map[string]string{"sha": mainSHA}))
 		get(reg, `/contents/`, reply(http.StatusOK,
 			"name: 'Checkout'\ndescription: 'Checkout'\ninputs: {}\nruns:\n  using: node20\n  main: dist/index.js\n",
@@ -669,7 +670,7 @@ func parity(nwo string) httpmock.Responder {
 			}
 			oid := map[string]any{"oid": v}
 			data["a"+i] = map[string]any{"nameWithOwner": nwo, "databaseId": checkout.RepoID,
-				"commit": oid, "tag": oid, "head": oid}
+				"commit": oid, "tag": oid, "head": oid, "tagRef": map[string]any{}, "headRef": map[string]any{}}
 		}
 		return reply(http.StatusOK, map[string]any{"data": data})(req)
 	}

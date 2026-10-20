@@ -5,9 +5,11 @@ EXT_NAME := gh-actions-lock
 XDG_DATA_HOME ?= $(HOME)/.local/share
 EXT_DIR := $(XDG_DATA_HOME)/gh/extensions/$(EXT_NAME)
 
-RUBY := $(shell command -v /opt/homebrew/opt/ruby/bin/ruby 2>/dev/null || echo ruby)
+# End-to-end scenarios (test/scenarios/catalog.yml) against the built binary.
+# Live scenarios need GitHub auth (GH_TOKEN or gh auth login).
+E2E := go test -count=1 -timeout 30m ./test/e2e
 
-.PHONY: build test test-release vet fmt fmt-check test-integration test-shell test-live test-smoke test-stub test-real test-fixtures install reinstall uninstall
+.PHONY: build test test-release vet fmt fmt-check test-integration test-live test-smoke test-stub test-real test-fixtures install reinstall uninstall
 
 build:
 	go build -o $(BIN) ./cmd/gh-actions-lock
@@ -33,27 +35,24 @@ fmt-check:
 		exit 1; \
 	fi
 
-test-integration: build
-	$(RUBY) test/integration/run.rb
+test-integration:
+	E2E_LIVE=1 $(E2E)
 
-test-shell: build
-	$(RUBY) test/integration/run.rb --shell
+test-live:
+	E2E_LIVE=1 E2E_TAGS=live $(E2E)
 
-test-live: build
-	$(RUBY) test/integration/run.rb --live
-
-test-smoke: build
-	$(RUBY) test/integration/run.rb --smoke
+test-smoke:
+	E2E_LIVE=1 E2E_TAGS=smoke $(E2E)
 
 # Checks every testfixture pin against the live API (needs GitHub auth).
 test-fixtures:
 	GH_ACTIONS_LOCK_FIXTURE_GUARD=1 go test -count=1 -run TestPinsAreInRecordedRefHistory ./internal/testfixture
 
-test-stub: build
-	$(RUBY) test/integration/run.rb --stub
+test-stub:
+	E2E_TAGS=stub $(E2E)
 
-test-real: build
-	$(RUBY) test/integration/run.rb --real
+test-real:
+	E2E_LIVE=1 E2E_TAGS=real_repo $(E2E)
 
 # install/reinstall work from any checkout — main repo or worktree — by
 # placing the built binary directly into gh's extension dir. We skip
