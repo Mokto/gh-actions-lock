@@ -7,7 +7,7 @@ EXT_DIR := $(XDG_DATA_HOME)/gh/extensions/$(EXT_NAME)
 
 RUBY := $(shell command -v /opt/homebrew/opt/ruby/bin/ruby 2>/dev/null || echo ruby)
 
-.PHONY: build test test-release vet fmt fmt-check test-integration test-shell test-live test-smoke test-stub test-real install reinstall uninstall
+.PHONY: build test test-release vet fmt fmt-check test-integration test-shell test-live test-smoke test-stub test-real test-fixtures install reinstall uninstall
 
 build:
 	go build -o $(BIN) ./cmd/gh-actions-lock
@@ -44,6 +44,10 @@ test-live: build
 
 test-smoke: build
 	$(RUBY) test/integration/run.rb --smoke
+
+# Checks every testfixture pin against the live API (needs GitHub auth).
+test-fixtures:
+	GH_ACTIONS_LOCK_FIXTURE_GUARD=1 go test -count=1 -run TestPinsAreInRecordedRefHistory ./internal/testfixture
 
 test-stub: build
 	$(RUBY) test/integration/run.rb --stub

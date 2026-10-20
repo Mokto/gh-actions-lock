@@ -1,7 +1,13 @@
 package scenarios
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"testing"
+
+	"github.com/github/gh-actions-lock/internal/testfixture"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,5 +111,22 @@ func TestScenarioMatrix(t *testing.T) {
 	for _, c := range cat.Categories {
 		scenarios := cat.ByCategory(c.Name)
 		t.Logf("  %-20s %d scenarios  %s", c.Name, len(scenarios), c.Description)
+	}
+}
+
+// TestCatalogSHAsAreNamedPins keeps every real-looking commit in the catalog
+// tied to a testfixture.Pin, which the fixture guard checks against the live
+// API. Synthetic SHAs ("aaaa…") only ever meet the stub server.
+func TestCatalogSHAsAreNamedPins(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(thisFile), "catalog.yml"))
+	require.NoError(t, err)
+
+	for _, sha := range regexp.MustCompile(`\b[0-9a-f]{40}\b`).FindAllString(string(data), -1) {
+		if testfixture.IsSynthetic(sha) {
+			continue
+		}
+		_, ok := testfixture.BySHA(sha)
+		assert.True(t, ok, "catalog SHA %s is not a testfixture pin", sha)
 	}
 }

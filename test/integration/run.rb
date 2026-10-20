@@ -346,8 +346,8 @@ end
 CHECKOUT_SHA      = "11bd71901bbe5b1630ceea73d27597364c9af683"
 # Real actions/checkout v4.2.0 commit; exact tags are peeled on every run.
 CHECKOUT_V420_SHA = "d632683dd7b4114ad314bca15554477dd762a938"
-SETUP_GO_SHA      = "4a3601121dd01d1626a1e23e37211e3254c1c06c"
-CACHE_SHA         = "27d5ce7f107fe9357f9df03efb73ab90386fccae"
+# Real actions/setup-go v5.0.0 commit; recorded v5 ref contains it.
+SETUP_GO_SHA      = "0c52d547c9bc32b1aa3301fd7a9cb496313a4491"
 MAIN_BRANCH_SHA   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 FORGERY_LIVE_SHA  = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 FORGERY_MERGE_BASE = "cccccccccccccccccccccccccccccccccccccccc"
@@ -423,7 +423,7 @@ LOCKFILE_TEMPLATES = {
           "ref" => "v5",
           "commit" => "sha1-#{SETUP_GO_SHA}",
           "owner_id" => 44036562,
-          "repo_id" => 197814629
+          "repo_id" => 192624594
         }
       }
     )

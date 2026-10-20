@@ -1,0 +1,112 @@
+// Package testfixture names the real upstream commits that tests pin, so
+// every literal SHA in the suite has a provenance and a ref it is proven to
+// belong to. Fixtures that must never reach the network use Synthetic.
+//
+// TestPinsAreInRecordedRefHistory checks every pin against the live API; CI
+// runs it before the live integration suite.
+package testfixture
+
+import "strings"
+
+// Pin is a real commit recorded under a ref, as a lockfile entry would hold
+// it. Ref is empty for bare-SHA pins. Absent pins name a commit that must
+// not exist upstream, for impostor scenarios.
+type Pin struct {
+	Repo    string
+	Ref     string
+	SHA     string
+	Absent  bool
+	OwnerID int64
+	RepoID  int64
+	// Source names the release the commit is, so a reader can check it.
+	Source string
+}
+
+// Uses returns the workflow `uses:` form, e.g. "actions/checkout@v4".
+func (p Pin) Uses() string {
+	if p.Ref == "" {
+		return p.Repo + "@" + p.SHA
+	}
+	return p.Repo + "@" + p.Ref
+}
+
+// Commit returns the lockfile commit form, e.g. "sha1-11bd…".
+func (p Pin) Commit() string { return "sha1-" + p.SHA }
+
+const (
+	actionsOwnerID  = 44036562
+	checkoutRepoID  = 197814629
+	setupGoRepoID   = 192624594
+	checkoutV422SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
+)
+
+var (
+	CheckoutV4 = Pin{
+		Repo: "actions/checkout", Ref: "v4", SHA: checkoutV422SHA,
+		OwnerID: actionsOwnerID, RepoID: checkoutRepoID,
+		Source: "actions/checkout v4.2.2",
+	}
+	CheckoutMain = Pin{
+		Repo: "actions/checkout", Ref: "main", SHA: checkoutV422SHA,
+		OwnerID: actionsOwnerID, RepoID: checkoutRepoID,
+		Source: "actions/checkout v4.2.2, reachable from main",
+	}
+	CheckoutV420 = Pin{
+		Repo: "actions/checkout", Ref: "v4.2.0", SHA: "d632683dd7b4114ad314bca15554477dd762a938",
+		OwnerID: actionsOwnerID, RepoID: checkoutRepoID,
+		Source: "actions/checkout v4.2.0",
+	}
+	CheckoutV6 = Pin{
+		Repo: "actions/checkout", Ref: "v6", SHA: "de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+		OwnerID: actionsOwnerID, RepoID: checkoutRepoID,
+		Source: "actions/checkout v6.0.2",
+	}
+	SetupGoV5 = Pin{
+		Repo: "actions/setup-go", Ref: "v5", SHA: "0c52d547c9bc32b1aa3301fd7a9cb496313a4491",
+		OwnerID: actionsOwnerID, RepoID: setupGoRepoID,
+		Source: "actions/setup-go v5.0.0",
+	}
+	SetupGoV6 = Pin{
+		Repo: "actions/setup-go", Ref: "v6", SHA: "4a3601121dd01d1626a1e23e37211e3254c1c06c",
+		OwnerID: actionsOwnerID, RepoID: setupGoRepoID,
+		Source: "actions/setup-go v6.4.0",
+	}
+	// ImpostorCommit looks real but does not exist in the repository, so a
+	// bare-SHA pin to it must be reported as not pinned.
+	ImpostorCommit = Pin{
+		Repo: "nodeselector/actions-test-fixtures", SHA: "7b403c9ec14bd3ae0bbf793c2bee8815a7ac920b",
+		Absent: true, Source: "fabricated; must stay absent upstream",
+	}
+)
+
+// Pins lists every named pin.
+func Pins() []Pin {
+	return []Pin{
+		CheckoutV4, CheckoutMain, CheckoutV420, CheckoutV6,
+		SetupGoV5, SetupGoV6, ImpostorCommit,
+	}
+}
+
+// Synthetic returns a 40-character SHA of c repeated, for commits that only
+// exist in a fake API.
+func Synthetic(c byte) string { return strings.Repeat(string(c), 40) }
+
+// IsSynthetic reports whether sha is obviously fabricated ("aaaa…",
+// "abc123abc123…"). Real object IDs use far more than seven distinct digits.
+func IsSynthetic(sha string) bool {
+	seen := map[rune]bool{}
+	for _, r := range sha {
+		seen[r] = true
+	}
+	return len(seen) < 8
+}
+
+// BySHA returns the pin whose SHA is sha.
+func BySHA(sha string) (Pin, bool) {
+	for _, p := range Pins() {
+		if p.SHA == sha {
+			return p, true
+		}
+	}
+	return Pin{}, false
+}
