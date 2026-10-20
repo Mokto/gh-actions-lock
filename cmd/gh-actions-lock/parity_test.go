@@ -1353,6 +1353,72 @@ func TestSHARecordedRef_ReadOnlyBlocks(t *testing.T) {
 	}
 }
 
+// TestSHARecordedRef_FixReRecords: a fix run re-records a pin whose entry
+// records its own SHA with the tag at the commit, else a branch containing
+// it, keeping the full-SHA `uses:`. A commit no tag or branch contains, such
+// as a fork commit served under the upstream name, still blocks.
+func TestSHARecordedRef_FixReRecords(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	tests := []struct {
+		name    string
+		tags    []string
+		compare string
+		want    string
+	}{
+		{name: "tag at the commit", tags: []string{"v6.1.0", parityTestSHA}, compare: "behind", want: "v6.1.0"},
+		{name: "branch containing the commit", compare: "behind", want: "main"},
+		{name: "on no tag or branch", compare: "diverged"},
+	}
+	for _, tt := range tests {
+		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}} {
+			t.Run(tt.name+"/"+mode, func(t *testing.T) {
+				base := parityTestSHA
+				if tt.compare == "diverged" {
+					base = "cccccccccccccccccccccccccccccccccccccccc"
+				}
+				reg := &httpmock.Registry{}
+				for range 4 {
+					reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+						"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+					}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
+						httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+						httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse(tt.tags...)))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+						httpmock.JSONResponse(map[string]any{"status": tt.compare, "merge_base_commit": map[string]any{"sha": base}}))
+				}
+				httpmock.NoTagsNamed(reg, "actions", "checkout")
+				isolateRunLogs(t)
+				path := writeFullSHAWorkflow(t, parityTestSHA)
+				lockBefore := readTempLockfilePins(t)
+				wfBefore, err := os.ReadFile(path)
+				require.NoError(t, err)
+
+				_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, append(args, "--no-interactive", path)...)
+				wfAfter, rerr := os.ReadFile(path)
+				require.NoError(t, rerr)
+				assert.Equal(t, string(wfBefore), string(wfAfter), "`uses:` keeps the full SHA")
+				lock := readTempLockfilePins(t)
+				if tt.want == "" {
+					require.ErrorIs(t, err, errSilent, stderr)
+					assert.Contains(t, stderr, "is not on any tag or branch")
+					assert.Equal(t, lockBefore, lock)
+					return
+				}
+				require.NoError(t, err, stderr)
+				assert.Contains(t, lock, "'actions/checkout@"+parityTestSHA+"':")
+				assert.Contains(t, lock, "ref: '"+tt.want+"'")
+				assert.Contains(t, lock, "commit: 'sha1-"+parityTestSHA+"'")
+				assert.Equal(t, 1, strings.Count(stderr, "actions/checkout@"+parityTestSHA+": recorded ref was the commit SHA; re-recorded as "+tt.want), stderr)
+			})
+		}
+	}
+}
+
 // TestParity_NonBranchRefRefused: a key whose ref is neither a tag nor a
 // branch resolves by rev-parse rules but the Actions backend resolver rejects
 // it, so no mode may write a lock for it, including --relock, which otherwise

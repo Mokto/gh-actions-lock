@@ -447,6 +447,16 @@ func (s *State) Closure(workflowKey string, live func(parserlock.Pin) bool) []Lo
 	return out
 }
 
+// RecordsOwnSHA reports whether the lockfile's entry for owner/repo@sha
+// records that SHA as its ref (see the RecordsOwnSHA function).
+func (s *State) RecordsOwnSHA(owner, repo, sha string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pin := parserlock.Pin{Owner: owner, Repo: repo, Ref: sha}.Canonical()
+	action, ok := s.file.Dependencies[pin.String()]
+	return ok && RecordsOwnSHA(pin, action.Ref)
+}
+
 // RecordedRepoID returns the repo ID recorded for owner/repo, or 0. It never
 // hits the network.
 func (s *State) RecordedRepoID(owner, repo string) int64 {

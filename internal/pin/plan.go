@@ -228,6 +228,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	preservedDeps := make(map[int]bool)
 
 	narrowDirectDeps(ctx, opts, deps, rewriteTracker, rewrites, preservedDeps)
+	reRecorded := preserveReRecorded(opts, deps, rewriteTracker, preservedDeps)
 
 	// ReverseLookup canonicalizes each dep's ref while preserving the tags
 	// narrowing chose and transitive deps' declared refs.
@@ -308,7 +309,10 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	}
 
 	// Build entries for all pinned deps (skip any already emitted from inventory).
-	entries = append(entries, buildPinnedEntries(opts, wr, deps, parentMap, rootTracker, inventorySHA)...)
+	for _, e := range buildPinnedEntries(opts, wr, deps, parentMap, rootTracker, inventorySHA) {
+		e.ReRecorded = reRecorded[e.NWO+"@"+e.Ref]
+		entries = append(entries, e)
+	}
 
 	// Record findings that are informational (ref-moved, misleading-sha).
 	entries = append(entries, informationalEntries(wr, opts)...)
@@ -363,6 +367,24 @@ func rejectPartialSelfActionRewrites(opts PlanOptions, selfActionRefs []parserlo
 		}
 	}
 	return nil
+}
+
+// preserveReRecorded keeps the `uses:` of each direct full-SHA pin whose
+// entry recorded the SHA itself as its ref: the run only re-records the
+// entry's tag or branch. It returns the keys of those deps.
+func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, directTracker lockfile.DirectTracker, preservedDeps map[int]bool) map[string]bool {
+	out := map[string]bool{}
+	if opts.Store == nil {
+		return out
+	}
+	for i, d := range deps {
+		owner, repo := d.OwnerRepo()
+		if directTracker.IsDirect(i) && parserlock.IsFullSha(d.Ref) && opts.Store.RecordsOwnSHA(owner, repo, d.Ref) {
+			preservedDeps[i] = true
+			out[d.Key()] = true
+		}
+	}
+	return out
 }
 
 // narrowDirectDeps rewrites direct partial semver refs to exact patch tags,

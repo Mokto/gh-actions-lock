@@ -132,6 +132,8 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 		renderPinnedEntries(console, pinned)
 	}
 
+	renderReRecorded(console, pinned)
+
 	if len(narrowed) > 0 && len(pinned) == 0 {
 		console.TermBlank()
 	}
@@ -260,6 +262,20 @@ func renderAcceptedOverrides(console *ui.UI, report *checks.Report, pinned []pin
 				}
 			}
 		}
+	}
+}
+
+// renderReRecorded names each pin whose entry recorded its commit SHA as
+// its ref, now re-recorded with a tag or branch.
+func renderReRecorded(console *ui.UI, pinned []pin.Entry) {
+	seen := map[string]bool{}
+	for _, e := range pinned {
+		key := e.NWO + "@" + e.Ref
+		if !e.ReRecorded || seen[key] {
+			continue
+		}
+		seen[key] = true
+		console.TermWarn("%s: recorded ref was the commit SHA; re-recorded as %s", key, recordedEntryRef(e))
 	}
 }
 

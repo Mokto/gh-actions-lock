@@ -24,6 +24,9 @@ type Entry struct {
 	// same-repository rename, so their recorded `uses:` carry over.
 	RenamedFrom []string
 	FullScan    bool
+	// ReRecorded marks a full-SHA pin whose entry recorded the SHA itself
+	// as its ref; Commit records the tag or branch found for it instead.
+	ReRecorded bool
 }
 
 // WorkflowPlan records what Commit must write for one workflow file.
