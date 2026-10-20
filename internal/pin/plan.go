@@ -641,7 +641,7 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 			if newRef == "" && e.OnBranch != "" && opts.Resolver != nil {
 				// A containing branch cannot identify an older pinned commit.
 				owner, repo := splitNWO(e.NWO)
-				if head, ok := opts.Resolver.GetBranchHead(ctx, owner, repo, e.OnBranch); ok && strings.EqualFold(head.SHA, e.SHA) {
+				if ok, err := opts.Resolver.BranchAtCommit(ctx, owner, repo, e.OnBranch, e.SHA); err == nil && ok {
 					newRef = e.OnBranch
 				}
 			}

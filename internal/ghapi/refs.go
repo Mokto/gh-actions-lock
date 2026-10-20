@@ -38,17 +38,47 @@ func refNames(name string) []string {
 // refs lists the full names p's Head is looked up as.
 func (p PinCheck) refs() []string { return refNames(p.Head) }
 
-// ResolveRefName returns the commit name points at, looked up the way the
-// Actions backend resolver looks up a lock entry ref; "" when name is not a
-// tag or branch, or not a name the backend accepts.
-func (c *Client) ResolveRefName(ctx context.Context, owner, repo, name string) (string, error) {
-	for _, qualified := range refNames(name) {
-		sha, found, err := c.ExactRef(ctx, owner, repo, qualified)
-		if err != nil || found {
-			return sha, err
+// RefKind is which namespace a ref name resolved in.
+type RefKind int
+
+const (
+	// NoRef means the name is neither a tag nor a branch.
+	NoRef RefKind = iota
+	TagRef
+	BranchRef
+)
+
+// RefTarget is what a ref name resolves to. Existence and the peeled
+// commit are separate facts: a tag can exist yet not peel to a commit (it
+// targets a tree or blob), and tag precedence keys off existence alone.
+type RefTarget struct {
+	Kind RefKind
+	// Commit is the commit the ref peels to; empty when it doesn't peel
+	// to one.
+	Commit string
+}
+
+// LookupRefName looks name up the way the Actions backend resolver looks up
+// a lock entry ref: refs/tags/<name>, then refs/heads/<name>, by exact name.
+// A name the backend doesn't accept is never looked up.
+func (c *Client) LookupRefName(ctx context.Context, owner, repo, name string) (RefTarget, error) {
+	for i, qualified := range refNames(name) {
+		commit, exists, err := c.exactRef(ctx, owner, repo, qualified)
+		if err != nil {
+			return RefTarget{}, err
+		}
+		// Kept as before this type: a tag counts only once it peels.
+		if exists && commit != "" {
+			return RefTarget{Kind: []RefKind{TagRef, BranchRef}[i], Commit: commit}, nil
 		}
 	}
-	return "", nil
+	return RefTarget{}, nil
+}
+
+// ResolveRefName returns the commit name resolves to; see LookupRefName.
+func (c *Client) ResolveRefName(ctx context.Context, owner, repo, name string) (string, error) {
+	t, err := c.LookupRefName(ctx, owner, repo, name)
+	return t.Commit, err
 }
 
 // TagExists reports whether owner/repo has a tag named exactly name.
@@ -61,19 +91,30 @@ func (c *Client) TagExists(ctx context.Context, owner, repo, name string) (bool,
 	return found && ref.Object.SHA != "", err
 }
 
-// ExactRef returns the commit the exact ref qualified (refs/tags/x or
-// refs/heads/x) peels to.
-func (c *Client) ExactRef(ctx context.Context, owner, repo, qualified string) (string, bool, error) {
+// exactRef reports whether the exact ref qualified (refs/tags/x or
+// refs/heads/x) exists and, separately, the commit it peels to ("" when it
+// doesn't peel to a commit).
+func (c *Client) exactRef(ctx context.Context, owner, repo, qualified string) (commit string, exists bool, err error) {
 	ref, found, err := c.gitRef(ctx, owner, repo, qualified)
 	if err != nil || !found || ref.Object.SHA == "" {
 		return "", false, err
 	}
-	if ref.Object.Type == "commit" {
+	switch ref.Object.Type {
+	case "commit":
 		return ref.Object.SHA, true, nil
+	case "tag":
+		// An annotated tag: the ref exists, and a ref is resolved before
+		// any other reading of the name, so commits/{ref} peels this one.
+		sha, peeled, err := c.restCommit(ctx, owner, repo, qualified)
+		if err != nil {
+			return "", true, err
+		}
+		if !peeled {
+			return "", true, nil
+		}
+		return sha, true, nil
 	}
-	// An annotated tag: the ref exists, and a ref is resolved before any
-	// other reading of the name, so commits/{ref} peels this one.
-	return c.restCommit(ctx, owner, repo, qualified)
+	return "", true, nil
 }
 
 type gitRefBody struct {

@@ -85,6 +85,20 @@ func (c refCandidates) tagsAt(ctx context.Context, sha string, exhaustive bool) 
 	return slices.DeleteFunc(names, func(n string) bool { return !ghapi.AcceptedRefName(n) }), nil
 }
 
+// BranchAtCommit returns branch when it can be recorded for sha and names
+// sha exactly: its head is sha. Repairing a full-SHA `uses:` to a branch
+// goes through it rather than reading the branch head directly.
+func (r *Resolver) BranchAtCommit(ctx context.Context, owner, repo, branch, sha string) (bool, error) {
+	return refCandidates{r: r, owner: owner, repo: repo}.branchAt(ctx, branch, sha)
+}
+
+// branchAt reports whether branch can be recorded for sha and its head is
+// sha.
+func (c refCandidates) branchAt(ctx context.Context, branch, sha string) (bool, error) {
+	head, ok := c.r.GetBranchHead(ctx, c.owner, c.repo, branch)
+	return ok && strings.EqualFold(head.SHA, sha), nil
+}
+
 // containingBranch returns the first recordable branch containing sha in
 // the phased search order. A branch whose name is also a tag resolves to
 // the tag, so it is checked by exact tag name and the search continues

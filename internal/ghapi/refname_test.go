@@ -1,6 +1,7 @@
 package ghapi
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -48,5 +49,21 @@ func TestDescribeName(t *testing.T) {
 		"v1.0.0":             false,
 	} {
 		assert.Equal(t, want, DescribeName(name), name)
+	}
+}
+
+func TestRecordableRefName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"v4":                    true,
+		"releases/v4":           true,
+		"":                      false,
+		"refs/release":          false,
+		strings.Repeat("a", 40): false,
+		strings.Repeat("A", 64): false,
+		strings.Repeat("a", 39): true,
+		"release-g1234":         false,
+		"main~1":                false,
+	} {
+		assert.Equal(t, want, RecordableRefName(name), "%q", name)
 	}
 }

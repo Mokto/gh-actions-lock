@@ -41,7 +41,7 @@ func depToPin(d dep.Dependency) (parserlock.Pin, error) {
 // resolver looks it up as refs/tags/<ref>, then refs/heads/<ref>, and
 // requires the locked commit in its history.
 func ValidEntryRef(pin parserlock.Pin, ref string) bool {
-	if ref == "" || isSHARef(ref) || strings.HasPrefix(ref, "refs/") || !ghapi.AcceptedRefName(ref) {
+	if !ghapi.RecordableRefName(ref) {
 		return false
 	}
 	return parserlock.IsFullSha(pin.Ref) || ref == pin.Ref
