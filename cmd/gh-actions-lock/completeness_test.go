@@ -417,3 +417,36 @@ func TestCompleteness_CancelledManifestInspectionWritesNothing(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled, stderr)
 	assert.Equal(t, before, snapshotWorkflows(t))
 }
+
+// TestCompleteness_ProxyTransientManifestReadIsRetry: behind the Dependabot
+// proxy a transient manifest read under --verify is a retry (exit 2), like
+// resolution and parity, not a blocking finding.
+func TestCompleteness_ProxyTransientManifestReadIsRetry(t *testing.T) {
+	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+	reg := &httpmock.Registry{}
+	useDefaultTransport(t, reg)
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+		"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+	}))
+	for range 2 {
+		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+	}
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+	for range 10 {
+		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.ya?ml$`), httpmock.StatusResponse(http.StatusServiceUnavailable))
+	}
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
+	require.Error(t, err, stderr)
+	assert.NotErrorIs(t, err, errSilent, "a transient read under the proxy is a retry")
+	assert.Contains(t, err.Error(), "could not verify locked dependency manifests")
+}
