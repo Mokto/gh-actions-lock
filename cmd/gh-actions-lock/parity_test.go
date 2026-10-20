@@ -1701,6 +1701,75 @@ jobs:
 	assert.Equal(t, lock, string(after), "nothing is written")
 }
 
+// TestParity_RelockKeepsMovedChildBlocking: the composite is unchanged, but
+// its child's tag moved and the old commit's history can't be checked.
+// The child resolves afresh to the new commit, yet planning keeps the
+// composite's recorded entry for it, so the old commit is what gets
+// written: --relock must block on it, not excuse it.
+func TestParity_RelockKeepsMovedChildBlocking(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	root := "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			head := v
+			if nwo == "actions/checkout" {
+				head = parityTestMoved
+			}
+			data["a"+i] = map[string]any{
+				"nameWithOwner": nwo,
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": v},
+				"tag":           map[string]any{"oid": head},
+				"tagRef":        map[string]any{"oid": head},
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQLForRepo("octo", "root"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("octo/root", rootSHA, root)},
+	}))
+	reg.RegisterReusable(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestMoved, nodeActionYAML)},
+	}))
+	// Only the old commit's history check fails.
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`), httpmock.StatusResponse(http.StatusServiceUnavailable))
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/root@v1
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@v4'\n" +
+		"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent, stderr)
+	assert.Contains(t, stderr, "could not check v4 history")
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
 // reposDown fails every request about the given owner/repos except the
 // parity query, which reports the pins themselves.
 type reposDown struct {
@@ -2185,6 +2254,113 @@ jobs:
 
 	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
 	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
+}
+
+// TestParity_AcceptMovedKeepsNestedSharedFullSHAPinBlocking: the shared
+// full-SHA entry hangs under a nested composite (outer -> inner -> pin),
+// and the workflow uses it directly too. Whichever composite moved,
+// planning keeps a recorded edge to the old entry, so --accept-moved must
+// keep blocking rather than write a lock --verify rejects.
+func TestParity_AcceptMovedKeepsNestedSharedFullSHAPinBlocking(t *testing.T) {
+	for _, moved := range []string{"", "octo/outer", "octo/inner"} {
+		t.Run("moved="+moved, func(t *testing.T) { testNestedSharedPin(t, moved) })
+	}
+}
+
+func testNestedSharedPin(t *testing.T, moved string) {
+	const (
+		outerSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		innerSHA = "cccccccccccccccccccccccccccccccccccccccc"
+		liveSHA  = "ffffffffffffffffffffffffffffffffffffffff"
+		head     = "dddddddddddddddddddddddddddddddddddddddd"
+	)
+	recorded := map[string]string{"octo/outer": outerSHA, "octo/inner": innerSHA}
+	live := func(nwo string) string {
+		if nwo == moved {
+			return liveSHA
+		}
+		return recorded[nwo]
+	}
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			repo := map[string]any{"nameWithOwner": nwo, "databaseId": 1, "commit": map[string]any{"oid": v}}
+			if _, ok := recorded[nwo]; ok {
+				repo["tag"], repo["tagRef"] = map[string]any{"oid": live(nwo)}, map[string]any{"oid": live(nwo)}
+			}
+			data["a"+i] = repo
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	repos := map[string]map[string]any{
+		"octo/outer":       testRepoResponse("octo/outer", live("octo/outer"), "name: o\nruns:\n  using: composite\n  steps:\n    - uses: octo/inner@v1\n"),
+		"octo/inner":       testRepoResponse("octo/inner", live("octo/inner"), "name: i\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@"+parityTestSHA+"\n"),
+		"actions/checkout": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML),
+	}
+	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			if i, ok := strings.CutPrefix(k, "owner"); ok {
+				data["a"+i] = repos[v.(string)+"/"+body.Variables["name"+i].(string)]
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	for nwo, sha := range recorded {
+		reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`/compare/`),
+			httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": sha}}))
+	}
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout$`),
+		httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+		httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse()))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "behind", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/outer@v1
+      - uses: actions/checkout@`+parityTestSHA+`
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/outer@v1':\n    ref: 'v1'\n    commit: 'sha1-" + outerSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'octo/inner@v1'\n" +
+		"  'octo/inner@v1':\n    ref: 'v1'\n    commit: 'sha1-" + innerSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@" + parityTestSHA + "'\n" +
+		"  'actions/checkout@" + parityTestSHA + "':\n    ref: 'v4-gone'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/outer@v1'\n    - 'actions/checkout@" + parityTestSHA + "'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
+	assert.Contains(t, stderr, "ref v4-gone is not a tag or branch of actions/checkout")
+	assert.Contains(t, stderr, "upgrade or replace octo/inner@v1")
+	assert.Equal(t, lock, string(after), "nothing is written")
 }
 
 // refusalDetail is the finding detail for a `uses:` ref parity refuses.

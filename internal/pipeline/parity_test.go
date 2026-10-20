@@ -290,13 +290,38 @@ func TestCompositeEdges(t *testing.T) {
 }
 
 func TestFreshGraph(t *testing.T) {
+	const (
+		recorded = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		live     = "ffffffffffffffffffffffffffffffffffffffff"
+	)
+	pin := func(k, sha, parent string) lockfile.LockedPin {
+		p, ok := parserlock.ParsePin(k)
+		require.True(t, ok)
+		return lockfile.LockedPin{Pin: p, Action: parserlock.Action{Commit: "sha1-" + sha}, Parent: parent}
+	}
 	g := newFreshGraph([]dep.Dependency{
-		{NWO: "Octo/Root", Ref: "v1", SHA: "ffffffffffffffffffffffffffffffffffffffff"},
-		{NWO: "octo/renamed", Ref: "v2", SHA: "ffffffffffffffffffffffffffffffffffffffff", OriginalRefs: []parserlock.ActionRef{{Owner: "octo", Repo: "old", Ref: "v2"}}},
+		{NWO: "Octo/Root", Ref: "v1", SHA: live},
+		{NWO: "octo/same", Ref: "v1", SHA: recorded},
+		{NWO: "octo/moved", Ref: "v1", SHA: live},
+		{NWO: "octo/renamed", Ref: "v2", SHA: recorded, OriginalRefs: []parserlock.ActionRef{{Owner: "octo", Repo: "old", Ref: "v2"}}},
 		{NWO: "octo/failed", Ref: "v1"},
 	})
-	assert.True(t, g.resolved["octo/root@v1"], "keys fold owner/repo")
-	assert.True(t, g.resolved["octo/old@v2"], "a redirected pin counts under the name it was asked for")
-	assert.False(t, g.resolved["octo/failed@v1"], "a dependency without a commit didn't resolve")
-	assert.False(t, g.resolved["octo/child@v1"], "absence from the fresh graph proves nothing")
+	tests := []struct {
+		name string
+		lp   lockfile.LockedPin
+		want bool
+	}{
+		{"a resolved direct pin is written afresh", pin("octo/root@v1", recorded, ""), true},
+		{"a child resolved to its recorded commit is covered", pin("octo/same@v1", recorded, "octo/root@v1"), true},
+		{"a child resolved elsewhere stays as recorded", pin("octo/moved@v1", recorded, "octo/root@v1"), false},
+		{"a redirected child counts under the name it was asked for", pin("octo/old@v2", recorded, "octo/root@v1"), true},
+		{"a child without a commit didn't resolve", pin("octo/failed@v1", recorded, "octo/root@v1"), false},
+		{"absence from the fresh graph proves nothing", pin("octo/child@v1", recorded, "octo/root@v1"), false},
+		{"nor for a direct pin", pin("octo/child@v1", recorded, ""), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, g.replaces(tt.lp))
+		})
+	}
 }

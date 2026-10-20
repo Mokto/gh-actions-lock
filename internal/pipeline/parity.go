@@ -110,7 +110,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 			k := lp.Pin.String()
 			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref,
-				replaced: freshRoots[root[k]] && graph.resolved[k],
+				replaced: freshRoots[root[k]] && graph.replaces(lp),
 				pinnedBy: firstParent(edges[k]),
 			})
 		}
@@ -214,17 +214,12 @@ func compositeEdges(closure []lockfile.LockedPin) map[string][]lockfile.LockedPi
 	return out
 }
 
-// freshGraph is what this run's resolve found, keyed by Pin.String.
-type freshGraph struct {
-	// resolved marks each pin this run resolved. Only that proves a recorded
-	// entry is replaced: planning keeps a recorded composite's edges, so a
-	// child missing from the fresh graph, whether its resolution failed or
-	// its composite dropped it, stays in the lock as recorded.
-	resolved map[string]bool
-}
+// freshGraph is what this run's resolve found: each resolved pin's commit,
+// keyed by Pin.String.
+type freshGraph map[string]string
 
 func newFreshGraph(resolved []dep.Dependency) freshGraph {
-	g := freshGraph{resolved: map[string]bool{}}
+	g := freshGraph{}
 	for _, d := range resolved {
 		if d.SHA == "" {
 			continue
@@ -235,11 +230,26 @@ func newFreshGraph(resolved []dep.Dependency) freshGraph {
 		}
 		for _, k := range keys {
 			if p, ok := parserlock.ParsePin(k); ok {
-				g.resolved[p.String()] = true
+				g[p.String()] = d.SHA
 			}
 		}
 	}
 	return g
+}
+
+// replaces reports whether what this run writes for a recorded entry is
+// what it verified afresh. Planning writes a resolved direct pin from the
+// fresh resolve, but keeps a composite's recorded edges and their entries:
+// a child is covered only when it resolved to the very commit recorded. A
+// child missing from the fresh graph, because its resolution failed above
+// it or its composite dropped it, or one that resolved elsewhere, stays in
+// the lock as recorded and unverified.
+func (g freshGraph) replaces(lp lockfile.LockedPin) bool {
+	live := g[lp.Pin.String()]
+	if lp.Parent == "" {
+		return live != ""
+	}
+	return live != "" && strings.EqualFold(live, lockedSHA(lp.Action.Commit))
 }
 
 // firstParent is the first of composites as NWO@ref, or "".
