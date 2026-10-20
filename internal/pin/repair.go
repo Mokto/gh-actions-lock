@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
@@ -46,15 +47,15 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 	preview.GC()
 	unresolved := map[string]bool{}
 	for _, e := range rec.Unresolved() {
-		unresolved[strings.ToLower(e.NWO)+"@"+e.Ref] = true
+		unresolved[dep.RefKey(e.NWO, e.Ref)] = true
 	}
 	all := func(parserlock.Pin, parserlock.Action) bool { return true }
 	workflows := map[string][]string{}
 	parents := map[string][]string{}
 	for _, wp := range ws {
 		for _, lp := range preview.Closure(workflowfile.KeyFromPath(wp.Path), all) {
-			key := lp.Pin.String()
-			if !lockfile.RecordsOwnSHA(lp.Pin, lp.Action.Ref) || unresolved[key] {
+			key := lp.Key
+			if !lockfile.RecordsOwnSHA(lp.Pin, lp.Action.Ref) || unresolved[dep.RefKey(lp.Pin.NWO, lp.Pin.Ref)] {
 				continue
 			}
 			if !slices.Contains(workflows[key], wp.Path) {
