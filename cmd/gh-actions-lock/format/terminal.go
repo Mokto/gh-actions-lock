@@ -30,6 +30,13 @@ func PresentResults(out *ui.UI, report *checks.Report, valid bool, willRemediate
 		if f.Category == checks.FreshTag {
 			continue
 		}
+		if f.Severity == checks.SeverityError {
+			out.TermError("%s", f.Detail)
+			if f.Remediation != "" {
+				out.TermDetail("  %s", f.Remediation)
+			}
+			continue
+		}
 		out.TermWarn("%s", f.Detail)
 		if f.DocURL != "" {
 			out.TermDetail("see: %s", out.TermLink(f.DocURL, f.DocURL))

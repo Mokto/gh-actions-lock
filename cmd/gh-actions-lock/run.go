@@ -349,6 +349,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if opts.noFix && len(staleWorkflows) > 0 {
 		appendStaleWorkflowFindings(report, staleWorkflows, false)
 	}
+	if opts.noFix && !fullScan {
+		appendUnscannedOwnSHAFindings(report, store, opts.workflowPaths)
+		valid = report.IsValid()
+	}
 
 	// --no-onboard: refuse to onboard new workflows or actions. Rewrite the
 	// relevant not-pinned findings to onboarding-required and drop their refs

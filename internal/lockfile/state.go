@@ -478,6 +478,24 @@ func (s *State) RecordsOwnSHA(owner, repo, sha string) bool {
 	return ok && RecordsOwnSHA(pin, action.Ref)
 }
 
+// OwnSHAEntries returns, per workflow key, the sorted pin keys whose
+// entries record their own SHA as their ref.
+func (s *State) OwnSHAEntries() map[string][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string][]string{}
+	for wf, keys := range s.file.Workflows {
+		for _, key := range keys {
+			pin, ok := parserlock.ParsePin(key)
+			if action, found := s.file.Dependencies[key]; ok && found && RecordsOwnSHA(pin, action.Ref) {
+				out[wf] = append(out[wf], key)
+			}
+		}
+		slices.Sort(out[wf])
+	}
+	return out
+}
+
 // RecordedRepoID returns the repo ID recorded for owner/repo, or 0. It never
 // hits the network.
 func (s *State) RecordedRepoID(owner, repo string) int64 {
