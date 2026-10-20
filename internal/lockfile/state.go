@@ -516,6 +516,12 @@ func (s *State) PrepareRefresh(workflows []string, deps []dep.Dependency, parent
 			}
 		}
 	}
+	// Rediscovered entries the damaged recorded graph no longer reaches
+	// (a deleted root or incoming edge) are rebuilt too, not unioned with
+	// their old edges.
+	for _, key := range keyToPin {
+		refresh[key] = true
+	}
 	for key := range refresh {
 		if !protected[key] {
 			action := s.file.Dependencies[key]
