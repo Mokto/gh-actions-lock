@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -210,16 +211,20 @@ func TestCheck_NoFix_ReportsLastDeletedWorkflow(t *testing.T) {
 // TestCheck_EmptyRepo_NoLockfile_Errors proves the helpful "no workflow files"
 // error is preserved when there's nothing on disk and nothing to prune.
 func TestCheck_EmptyRepo_NoLockfile_Errors(t *testing.T) {
-	reg := &httpmock.Registry{}
-	defer reg.Verify(t)
+	for _, args := range [][]string{nil, {"--verify-local"}} {
+		t.Run(fmt.Sprint(args), func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
 
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
-	t.Chdir(dir)
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+			t.Chdir(dir)
 
-	_, _, err := runCommandWithHTTP(t, reg, "--json=valid,workflows")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no workflow files found")
+			_, _, err := runCommandWithHTTP(t, reg, append(args, "--json=valid,workflows")...)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "no workflow files found")
+		})
+	}
 }
 
 func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {

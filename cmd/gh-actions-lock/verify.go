@@ -38,7 +38,9 @@ func applyVerifyFlags(opts *checkOptions) {
 // entry — no network, no auth, never writes to disk.
 func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 	workflowsDir := os.Getenv("GH_ACTIONS_LOCK_WORKFLOWS_DIR")
-	paths, err := discoverWorkflowPaths(opts.workflowPaths, workflowsDir, false)
+	// As in newRun, a full scan may find no workflows when the last one was
+	// deleted; the lockfile still decides whether there's anything to check.
+	paths, err := discoverWorkflowPaths(opts.workflowPaths, workflowsDir, len(opts.workflowPaths) == 0)
 	if err != nil {
 		return err
 	}
@@ -56,6 +58,9 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 	}
 	if err != nil {
 		return fmt.Errorf("opening lockfile: %w", err)
+	}
+	if len(paths) == 0 && len(store.WorkflowKeys()) == 0 {
+		return noWorkflowsError(workflowsDir)
 	}
 	hostname := resolveHostname(opts.hostname)
 	if err := store.SetHostname(hostname); err != nil {
