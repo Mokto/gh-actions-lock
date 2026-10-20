@@ -63,12 +63,17 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 		return true
 	}
 	fullSHA := parserlock.IsFullSha(s.pin.Ref)
-	shared := s.pinnedBy != "" && f.Category == checks.UnreachablePin && fullSHA && !f.RefMissing
-	if shared && f.Dependency != nil {
-		f.Remediation = shaPinRemediation(s.pinnedBy, f.Dependency.NWO, s.pin)
-	}
 	c := f.Category
-	if m.acceptMoved && c == checks.UnreachablePin && fullSHA && !f.RefMissing && f.ParentNWO == "" && !shared {
+	// A composite holds the entry as its child, or shares it with a direct
+	// use; either way planning keeps the composite's recorded entry.
+	holder := f.ParentNWO
+	if holder == "" {
+		holder = s.pinnedBy
+	}
+	if c == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
+		f.Remediation = unreachableRemediation(holder, f.Dependency.NWO)
+	}
+	if m.acceptMoved && c == checks.UnreachablePin && fullSHA && !f.RefMissing && holder == "" {
 		f.Severity = checks.SeverityWarning
 		f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
 		return true

@@ -282,12 +282,14 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 	}
 }
 
-// shaPinRemediation is the next step for a pin whose recorded ref no longer
-// vouches for its commit. --accept-moved repairs a direct pin, but not a
-// composite's full-SHA child (see disposeParity): only its parent can change it.
-func shaPinRemediation(parent, nwo string, pin parserlock.Pin) string {
-	if parent != "" && parserlock.IsFullSha(pin.Ref) {
-		return fmt.Sprintf("upgrade or replace %s with a version whose pin of %s can be verified, or stop using it", parent, nwo)
+// unreachableRemediation is the next step for a pin whose recorded ref no
+// longer vouches for its commit. --accept-moved repairs only an entry the
+// workflow alone holds; one a composite holds, as its child or shared with
+// a direct use, keeps the composite's recorded entry (see disposeParity), so
+// only changing the composite helps.
+func unreachableRemediation(holder, nwo string) string {
+	if holder != "" {
+		return fmt.Sprintf("upgrade or replace %s with a version whose pin of %s can be verified, or stop using it", holder, nwo)
 	}
 	return checks.AcceptMovedRemediation
 }
@@ -411,13 +413,13 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 	case !st.CommitFound:
 		f.Category = checks.UnreachablePin
 		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, cmp.Or(pc.Head, ref.Ref), st.HeadOID) + via
-		f.Remediation = shaPinRemediation(f.ParentNWO, nwo, lp.Pin)
+		f.Remediation = unreachableRemediation(f.ParentNWO, nwo)
 	case pc.Head != "" && st.HeadOID == "":
 		f.Category = checks.UnreachablePin
 		f.Detail = fmt.Sprintf("ref %s is not a tag or branch of %s; the Actions backend will reject this pin%s", pc.Head, nwo, via)
 		f.RefGone = true
 		// A full-SHA `uses:` names no ref to repoint; the lock entry is wrong.
-		f.Remediation = shaPinRemediation(f.ParentNWO, nwo, lp.Pin)
+		f.Remediation = unreachableRemediation(f.ParentNWO, nwo)
 		if !parserlock.IsFullSha(lp.Pin.Ref) {
 			f.Remediation = "point `uses:` at a tag or branch that exists, then run `gh actions-lock`"
 			f.RefMissing = true

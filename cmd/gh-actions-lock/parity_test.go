@@ -1982,6 +1982,104 @@ func TestParity_AcceptMovedUnresolvableBlocks(t *testing.T) {
 	assert.Equal(t, string(wfBefore), string(wfAfter))
 }
 
+// TestParity_UnreachableChildNamesComposite: a composite's mutable child
+// whose recorded commit left its tag's history can't be repaired by any
+// mode, since planning keeps the composite's recorded entry. Whatever the
+// mode, the finding blocks and points at the composite, never at a flag that
+// can't fix it.
+func TestParity_UnreachableChildNamesComposite(t *testing.T) {
+	for name, args := range map[string][]string{
+		"default":      nil,
+		"relock":       {"--relock"},
+		"accept-moved": {"--accept-moved"},
+	} {
+		t.Run(name, func(t *testing.T) { testUnreachableChild(t, args) })
+	}
+}
+
+func testUnreachableChild(t *testing.T, args []string) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	root := "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			head := v
+			if nwo == "actions/checkout" {
+				head = parityTestMoved
+			}
+			data["a"+i] = map[string]any{
+				"nameWithOwner": nwo,
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": v},
+				"tag":           map[string]any{"oid": head},
+				"tagRef":        map[string]any{"oid": head},
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	repos := map[string]map[string]any{
+		"octo/root":        testRepoResponse("octo/root", rootSHA, root),
+		"actions/checkout": testRepoResponse("actions/checkout", parityTestMoved, nodeActionYAML),
+	}
+	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			if i, ok := strings.CutPrefix(k, "owner"); ok {
+				data["a"+i] = repos[v.(string)+"/"+body.Variables["name"+i].(string)]
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/root@v1
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@v4'\n" +
+		"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	p, err := runParity(t, reg, append(args, "--no-narrow", "--no-interactive", path)...)
+	require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
+	var child *format.Finding
+	for i, f := range p.Findings {
+		if f.Category == "unreachable-pin" && f.Severity == "error" {
+			child = &p.Findings[i]
+		}
+	}
+	require.NotNil(t, child, "%+v", p.Findings)
+	assert.Contains(t, child.Detail, "used by octo/root@v1")
+	assert.Equal(t, "upgrade or replace octo/root@v1 with a version whose pin of actions/checkout can be verified, or stop using it", child.Remediation)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
 // reposDown fails every request about the given owner/repos except the
 // parity query, which reports the pins themselves.
 type reposDown struct {
