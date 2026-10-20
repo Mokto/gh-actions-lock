@@ -73,6 +73,13 @@ func RefKey(nwo, ref string) string {
 	return FoldedKey(nwo, ref)
 }
 
+// RefKeyOf is RefKey for an owner/repo@ref string: use it to match a
+// reference as a manifest or workflow writes it against recorded keys.
+func RefKeyOf(key string) string {
+	nwo, ref, _ := strings.Cut(key, "@")
+	return RefKey(nwo, ref)
+}
+
 // FoldKey is FoldedKey for an owner/repo@ref string. Refs can contain "@";
 // owner/repo can't.
 func FoldKey(key string) string {

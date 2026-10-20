@@ -51,6 +51,9 @@ type graphTransport struct {
 	// parentUsesOld makes acme/parent use acme/old@v1, a node action whose
 	// repository was renamed to acme/new.
 	parentUsesOld bool
+	// childSHA overrides acme/child's commit, and parentUsesChildAt makes
+	// acme/parent use acme/child at that spelling of it.
+	childSHA, parentUsesChildAt string
 }
 
 func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -76,6 +79,9 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				if g.parentUsesOwnSub {
 					yml = "runs:\n  using: composite\n  steps:\n    - uses: $/sub\n"
 				}
+				if g.parentUsesChildAt != "" {
+					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/child@" + g.parentUsesChildAt + "\n"
+				}
 				if g.parentUsesOld {
 					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/old@v1\n"
 				}
@@ -96,6 +102,9 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					return httpmock.StatusResponse(http.StatusForbidden)(req)
 				}
 				sha = graphChildSHA
+				if g.childSHA != "" {
+					sha = g.childSHA
+				}
 				if g.movedChild {
 					sha = graphLeafSHA
 				}
@@ -726,6 +735,50 @@ jobs:
 	require.NoError(t, err, "%+v", p.Findings)
 	for _, f := range p.Findings {
 		assert.NotEqual(t, "error", f.Severity, "%+v", f)
+	}
+}
+
+// TestCompleteness_VerifyMatchesTransitiveFullSHAInAnyCase: a composite's
+// manifest can name a child by a full SHA cased differently from its
+// recorded key. --verify must match that edge and still check the child's
+// own descendants.
+func TestCompleteness_VerifyMatchesTransitiveFullSHAInAnyCase(t *testing.T) {
+	const child = "abcdef0123456789abcdef0123456789abcdef01"
+	for _, tt := range []struct {
+		name      string
+		eraseLeaf bool
+	}{
+		{name: "complete graph passes"},
+		{name: "erased descendant edge still blocks", eraseLeaf: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, graphWorkflow)
+			childUses := "\n    uses:\n      - 'acme/leaf@v3'"
+			if tt.eraseLeaf {
+				childUses = ""
+			}
+			lock := "version: 'v0.0.3'\nworkflows:\n  '.github/workflows/" + filepath.Base(path) + "':\n    - 'acme/parent@v1.0.0'\n" +
+				"dependencies:\n" +
+				"  'acme/parent@v1.0.0':\n    ref: 'v1.0.0'\n    commit: 'sha1-" + graphParentSHA + "'\n    owner_id: 1\n    repo_id: 1\n    uses:\n      - 'acme/child@" + child + "'\n" +
+				"  'acme/child@" + child + "':\n    ref: 'v2'\n    commit: 'sha1-" + child + "'\n    owner_id: 1\n    repo_id: 1" + childUses + "\n" +
+				"  'acme/leaf@v3':\n    ref: 'v3'\n    commit: 'sha1-" + graphLeafSHA + "'\n    owner_id: 1\n    repo_id: 1\n"
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+			transport := &graphTransport{childSHA: child, parentUsesChildAt: strings.ToUpper(child)}
+
+			p, err := runParity(t, transport, "--verify", path)
+			if !tt.eraseLeaf {
+				require.NoError(t, err, "%+v", p.Findings)
+				return
+			}
+			require.ErrorIs(t, err, errSilent)
+			var blocking []string
+			for _, f := range p.Findings {
+				if f.Severity == "error" {
+					blocking = append(blocking, f.Detail)
+				}
+			}
+			assert.Equal(t, []string{"locked manifest for acme/child@" + child + " uses acme/leaf@v3 but the lockfile omits that edge"}, blocking)
+		})
 	}
 }
 

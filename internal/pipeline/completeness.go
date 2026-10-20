@@ -19,6 +19,10 @@ import (
 func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report) error {
 	file := store.File()
 	deps := store.AllDeps()
+	entryKeys := make(map[string]string, len(file.Dependencies))
+	for key := range file.Dependencies {
+		entryKeys[dep.RefKeyOf(key)] = key
+	}
 	for i, pw := range parsed {
 		if isBlocked(pw) || report.Workflows[i].SkipCommit || !report.Workflows[i].IsValid() {
 			continue
@@ -56,16 +60,20 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 		wr := &report.Workflows[i]
 		// The recorded edges must include every edge discovered at the locked
 		// commits, even when a child exists elsewhere in the same lockfile.
+		// Discovery names entries as manifests spell them; match them to the
+		// recorded keys with dep.RefKey's rule, so a full SHA in another case
+		// neither fails a complete graph nor skips its entry's descendants.
 		for _, child := range slices.Sorted(maps.Keys(parents)) {
 			pp := parents[child]
 			for _, parent := range pp {
-				action, ok := file.Dependencies[dep.FoldKey(parent)]
+				parent = entryKeys[dep.RefKeyOf(parent)]
+				action, ok := file.Dependencies[parent]
 				if !ok {
 					continue
 				}
 				found := false
 				for _, use := range action.Uses {
-					if dep.FoldKey(use) == dep.FoldKey(child) {
+					if dep.RefKeyOf(use) == dep.RefKeyOf(child) {
 						found = true
 						break
 					}
