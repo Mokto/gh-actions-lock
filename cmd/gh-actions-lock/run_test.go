@@ -512,6 +512,29 @@ func TestCompleteness_VerifyChecksFullSHAKeyUnderItsOwnEntry(t *testing.T) {
 	assert.Equal(t, before, snapshotWorkflows(t))
 }
 
+// TestCompleteness_TerminalPointsDamagedGraphsAtRelock: a plain run can't
+// repair a damaged recorded graph, so read-only modes must not suggest one,
+// and must show the --relock remediation.
+func TestCompleteness_TerminalPointsDamagedGraphsAtRelock(t *testing.T) {
+	for _, tt := range []struct {
+		mode      string
+		plainHint string
+	}{
+		{mode: "--verify", plainHint: "Re-run without --verify"},
+		{mode: "--verify-local", plainHint: "Run without --verify-local"},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			path, file := generateGraph(t)
+			delete(file.Dependencies, "acme/child@v2")
+			writeGraph(t, file)
+			_, stderr, err := runCommandWithHTTP(t, &graphTransport{}, tt.mode, path)
+			require.ErrorIs(t, err, errSilent, stderr)
+			assert.Contains(t, stderr, "gh actions-lock --relock")
+			assert.NotContains(t, stderr, tt.plainHint)
+		})
+	}
+}
+
 func TestRun_ParitySSOGuidance(t *testing.T) {
 	const message = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
 	for _, mode := range []struct {

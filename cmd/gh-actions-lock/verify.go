@@ -76,7 +76,9 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 	}
 
 	if !valid {
-		if opts.jsonFields == "" {
+		// A damaged recorded graph shows its own --relock remediation; a
+		// plain run would block on it.
+		if opts.jsonFields == "" && !format.HasIncompleteLockfile(report) {
 			console.TermDetail("Run without --verify-local to resolve and pin missing actions and migrate `./…` refs to `$/…`.")
 		}
 		return errSilent
