@@ -76,10 +76,10 @@ overrides in the Dependabot compatibility review. No JSON field or lockfile
 schema change is required.
 
 Previously accepted locks can now fail to load (exit 2): every entry's `ref`
-must be non-empty, not a SHA, not `refs/`-qualified, and must match its key's
-ref unless the key uses a full SHA. Restore trusted lock metadata from version
-control or regenerate it from reviewed workflow refs; do not replace invalid
-metadata with guessed ref names.
+must be a backend-accepted short tag or branch name, not a SHA or `refs/`-qualified
+name, and must match its key's ref unless the key uses a full SHA. Restore
+trusted lock metadata from version control or regenerate it from reviewed
+workflow refs; do not replace invalid metadata with guessed ref names.
 
 Online validation rejects pins whose recorded ref is missing or no longer
 contains the commit. This history check includes exact version tags: a tag
@@ -95,14 +95,15 @@ The diagnostic identifies the entry and says verification was inconclusive,
 not that the lockfile is invalid. Cover this exit-code/severity change in
 Dependabot compatibility coordination. Offline `--verify-local` still makes
 no API or provenance claim.
-Restoring the trusted recorded ref or explicitly reviewing a different ref is
-required for a deleted ref; another ref containing the commit is not a fallback.
-`--relock --accept-moved` can deliberately select current commits from existing
-symbolic refs that lost the old commit; `--relock` alone still blocks that case.
-Neither can bypass an inconclusive check, a missing or ambiguous recorded ref,
-or an unreachable full-SHA key. Rewriting a full-SHA key to its recorded tag
-still requires that tag to point at the commit now; history alone does not
-justify changing its name.
+Normal runs and `--relock` reject a deleted recorded ref; another containing ref
+is not an implicit fallback. Explicit `--accept-moved` can select a verified
+current commit from an existing symbolic ref that lost the old commit. It can
+also repair a full-SHA key's recorded ref, including a deleted ref, but only
+through an independently verified accepted tag or branch containing the same
+commit; the full-SHA pin does not advance. Missing symbolic refs, ambiguous
+names, inconclusive checks and commits without accepted provenance still block.
+Rewriting a full-SHA key to its recorded tag still requires that tag to point at
+the commit now; history alone does not justify changing its name.
 
 Generation, relocking, and verification check tags before branches. If both
 names exist at different commits, the CLI emits a blocking `unreachable-pin`

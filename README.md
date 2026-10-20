@@ -137,10 +137,11 @@ those as well.
 For a full-SHA pin, `--accept-moved` can repair its recorded ref only if an
 accepted tag or branch still contains the same commit.
 
-A deleted recorded ref still blocks, including with `--relock --accept-moved`.
-Restore the trusted ref or deliberately select and review another ref. A branch
-force-push that removes the locked commit from its history also blocks a normal
-run; it is not enough that another ref still contains that commit.
+For a symbolic `uses:` key, a deleted recorded ref still blocks, even with
+`--relock --accept-moved`. Restore the trusted ref or deliberately select and
+review another ref. A branch force-push that removes the locked commit from its
+history also blocks a normal run; it is not enough that another ref still
+contains that commit.
 
 ### Release cooldown
 
