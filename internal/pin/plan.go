@@ -209,7 +209,8 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// Resolve live state for unrecorded refs only.
 	status("resolving " + wr.Path)
 	graph, resolveErr := opts.Resolver.ResolveGraph(ctx, unrecordedRefs)
-	deps, parentMap, flatErr := graph.Flatten()
+	discovered, parentMap, flatErr := graph.FlattenPlanned(resolve.Decisions{})
+	deps := entryDeps(discovered)
 	resolveErr = errors.Join(resolveErr, flatErr)
 	if resolveErr != nil {
 		// A resolved root is not pinnable when its transitive graph is incomplete.
@@ -234,9 +235,11 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	status("pinning " + wr.Path)
 	rewrites := make(map[string]string)
 	preservedDeps := make(map[int]bool)
-	declared := make([]string, len(deps))
+	// Narrowing and reverse lookup change only a dep's Ref, Tag and Branch,
+	// so a changed Ref is exactly a renamed entry.
+	declaredRef := make([]string, len(deps))
 	for i, d := range deps {
-		declared[i] = dep.FoldedKey(d.NWO, d.Ref)
+		declaredRef[i] = d.Ref
 	}
 
 	narrowDirectDeps(ctx, opts, deps, rewriteTracker, rewrites, preservedDeps)
@@ -252,25 +255,25 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// commit. Record that from the graph rather than editing entries: a
 	// composite that names the old ref, itself or through a sub-action,
 	// still needs it.
-	renames := make(map[string]string)
+	renames := make(map[resolve.EntryKey]string)
 	for i, d := range deps {
-		if dep.FoldedKey(d.NWO, d.Ref) != declared[i] {
-			renames[declared[i]] = d.Ref
+		if d.Ref != declaredRef[i] {
+			renames[discovered[i].Key] = d.Ref
 		}
 	}
 	// Deps that ReverseLookup couldn't resolve (orphaned commits, bare SHAs
 	// with no containing ref) become Unresolved entries rather than aborting.
-	skipKeys := make(map[string]bool, len(lookupIssues))
+	skipKeys := make(map[resolve.EntryKey]bool, len(lookupIssues))
 	for _, issue := range lookupIssues {
-		skipKeys[declared[issue.Index]] = true
+		skipKeys[discovered[issue.Index].Key] = true
 	}
 	// Planning's decisions go to the graph, which merges identities; editing
 	// its output by key instead loses what it merged.
-	decisions := resolve.Decisions{Roots: renames, Meta: make(map[string]resolve.RefMeta, len(deps))}
+	decisions := resolve.Decisions{Roots: renames, Meta: make(map[resolve.EntryKey]resolve.RefMeta, len(deps))}
 	for i, d := range deps {
-		decisions.Meta[declared[i]] = resolve.RefMeta{Tag: d.Tag, Branch: d.Branch}
+		decisions.Meta[discovered[i].Key] = resolve.RefMeta{Tag: d.Tag, Branch: d.Branch}
 	}
-	deps, parentMap, roots, err := graph.FlattenPlanned(decisions)
+	planned, parentMap, err := graph.FlattenPlanned(decisions)
 	if err != nil {
 		for _, ref := range unrecordedRefs {
 			entries = append(entries, Entry{
@@ -282,11 +285,12 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	}
 	// The graph knows which entries are workflow roots; matching the
 	// workflow's refs would also claim an entry kept for a manifest's name.
+	deps = entryDeps(planned)
 	var rootRefs []parserlock.ActionRef
-	for _, d := range deps {
-		if roots[d.Key()] {
-			owner, repo := d.OwnerRepo()
-			rootRefs = append(rootRefs, parserlock.ActionRef{Owner: owner, Repo: repo, Ref: d.Ref})
+	for _, e := range planned {
+		if e.Root {
+			owner, repo := e.Dep.OwnerRepo()
+			rootRefs = append(rootRefs, parserlock.ActionRef{Owner: owner, Repo: repo, Ref: e.Dep.Ref})
 		}
 	}
 	rootTracker = lockfile.NewDirectTracker(rootRefs, deps)
@@ -303,10 +307,10 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 			})
 		}
 		// Remove failed deps so they don't flow into pinning/commit.
-		filtered := deps[:0]
-		for _, d := range deps {
-			if !skipKeys[dep.FoldedKey(d.NWO, d.Ref)] {
-				filtered = append(filtered, d)
+		var filtered []dep.Dependency
+		for _, e := range planned {
+			if !skipKeys[e.Key] {
+				filtered = append(filtered, e.Dep)
 			}
 		}
 		deps = filtered
@@ -350,6 +354,15 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	entries = append(entries, informationalEntries(wr, opts)...)
 
 	return planResult{entries: entries, wplans: wplans}, nil
+}
+
+// entryDeps lists the graph entries' dependencies, in order.
+func entryDeps(entries []resolve.Entry) []dep.Dependency {
+	deps := make([]dep.Dependency, len(entries))
+	for i, e := range entries {
+		deps[i] = e.Dep
+	}
+	return deps
 }
 
 // transferRewrites moves each redirected root's `uses:` in this workflow

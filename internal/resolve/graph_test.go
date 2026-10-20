@@ -2,6 +2,11 @@ package resolve
 
 import (
 	"context"
+	"go/importer"
+	"go/token"
+	"go/types"
+	"reflect"
+	"strings"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -90,7 +95,8 @@ func TestGraphFlattenPlanned(t *testing.T) {
 			})
 			g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "v1"}})
 			require.NoError(t, err)
-			deps, parents, _, err := g.FlattenPlanned(Decisions{Roots: map[string]string{"o/action@v1": "v1.0.0"}})
+			entries, parents, err := g.FlattenPlanned(Decisions{Roots: map[EntryKey]string{entryKeyOf("o/action", "v1"): "v1.0.0"}})
+			deps := entryDepsOf(entries)
 			require.NoError(t, err)
 			var keys []string
 			for _, d := range deps {
@@ -120,7 +126,8 @@ func TestGraphRewritesBelongToTheReferrer(t *testing.T) {
 		})
 		g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "v1"}})
 		require.NoError(t, err)
-		deps, parents, _, err := g.FlattenPlanned(Decisions{Roots: map[string]string{"o/action@v1": "v1.0.0"}})
+		entries, parents, err := g.FlattenPlanned(Decisions{Roots: map[EntryKey]string{entryKeyOf("o/action", "v1"): "v1.0.0"}})
+		deps := entryDepsOf(entries)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"o/action@v1.0.0", "o/action@v1"}, depKeys(deps))
 		assert.Equal(t, dep.ParentMap{"o/action@v1": {"o/action@v1.0.0"}}, parents)
@@ -189,7 +196,7 @@ func TestGraphRejectsMergingDifferentTargets(t *testing.T) {
 				{Owner: "o", Repo: "a", Ref: "v2"}, {Owner: "o", Repo: "a", Ref: "v2.1.0"},
 			})
 			require.NoError(t, err)
-			_, _, _, err = g.FlattenPlanned(Decisions{Roots: map[string]string{"o/a@v2": "v2.1.0"}})
+			_, _, err = g.FlattenPlanned(Decisions{Roots: map[EntryKey]string{entryKeyOf("o/a", "v2"): "v2.1.0"}})
 			if tt.ok {
 				require.NoError(t, err)
 				return
@@ -197,4 +204,58 @@ func TestGraphRejectsMergingDifferentTargets(t *testing.T) {
 			require.ErrorContains(t, err, "o/a@v2.1.0 would record both")
 		})
 	}
+}
+
+func entryDepsOf(entries []Entry) []dep.Dependency {
+	deps := make([]dep.Dependency, len(entries))
+	for i, e := range entries {
+		deps[i] = e.Dep
+	}
+	return deps
+}
+
+// TestEntryKeyHasNoFactory proves graph entry keys can only come from the
+// graph's result: EntryKey has no exported field, and the only exported
+// function or method in this package that produces an EntryKey or an Entry
+// is (*Graph).FlattenPlanned. A caller can't wrap a workflow or recorded
+// spelling into one.
+func TestEntryKeyHasNoFactory(t *testing.T) {
+	ek := reflect.TypeFor[EntryKey]()
+	for i := range ek.NumField() {
+		assert.False(t, ek.Field(i).IsExported(), "EntryKey field %s is exported", ek.Field(i).Name)
+	}
+	assert.Zero(t, ek.NumMethod(), "EntryKey methods could convert to or from a spelling")
+
+	pkg, err := importer.ForCompiler(token.NewFileSet(), "source", nil).Import("github.com/github/gh-actions-lock/internal/resolve")
+	require.NoError(t, err)
+	produces := func(sig *types.Signature) bool {
+		for i := range sig.Results().Len() {
+			s := sig.Results().At(i).Type().String()
+			if strings.Contains(s, "resolve.EntryKey") || strings.Contains(s, "resolve.Entry") {
+				return true
+			}
+		}
+		return false
+	}
+	var producers []string
+	scope := pkg.Scope()
+	for _, name := range scope.Names() {
+		obj := scope.Lookup(name)
+		if !obj.Exported() {
+			continue
+		}
+		if fn, ok := obj.(*types.Func); ok && produces(fn.Type().(*types.Signature)) {
+			producers = append(producers, name)
+		}
+		if tn, ok := obj.(*types.TypeName); ok {
+			ms := types.NewMethodSet(types.NewPointer(tn.Type()))
+			for i := range ms.Len() {
+				m := ms.At(i).Obj()
+				if m.Exported() && produces(m.Type().(*types.Signature)) {
+					producers = append(producers, name+"."+m.Name())
+				}
+			}
+		}
+	}
+	assert.Equal(t, []string{"Graph.FlattenPlanned"}, producers)
 }

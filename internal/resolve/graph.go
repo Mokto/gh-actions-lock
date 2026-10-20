@@ -87,10 +87,10 @@ func (g *Graph) addEdge(parent, child parserlock.ActionRef, self bool) {
 // commits, e.g. a branch that advanced between fetching a composite and a
 // sub-action in the same repository. The lockfile entry would mix both.
 func (g *Graph) conflictingCommits() error {
-	commits := make(map[string]string, len(g.order))
+	commits := make(map[EntryKey]string, len(g.order))
 	for _, key := range g.order {
 		d := g.nodes[key].dep
-		fk := dep.FoldedKey(d.NWO, d.Ref)
+		fk := entryKeyOf(d.NWO, d.Ref)
 		if prev, ok := commits[fk]; ok && !strings.EqualFold(prev, d.SHA) {
 			return fmt.Errorf("%s resolved to both %s and %s in one run; retry", d.Key(), prev, d.SHA)
 		}
@@ -158,19 +158,54 @@ func (g *Graph) cycle() *UsesCycleError {
 // and the edges between them as child key → parent keys. An edge to an
 // action that didn't resolve keeps the name its parent's manifest uses.
 func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap, error) {
-	deps, parents, _, err := g.FlattenPlanned(Decisions{})
+	entries, parents, err := g.FlattenPlanned(Decisions{})
+	deps := make([]dep.Dependency, len(entries))
+	for i, e := range entries {
+		deps[i] = e.Dep
+	}
 	return deps, parents, err
 }
 
-// Decisions are planning's choices about the graph's entries, keyed by the
-// entry's dep.FoldedKey as discovered. The graph applies them while
-// flattening, so it stays the one place where identities are merged.
+// EntryKey identifies one lockfile entry the graph produced: owner/repo
+// folded, ref as the referrer declared it. Only the graph makes them, in
+// FlattenPlanned's result; callers compare them and hand them back in
+// Decisions, and can't build one from a spelling of their own.
+type EntryKey struct {
+	key string
+}
+
+// Entry is one lockfile entry the graph produced.
+type Entry struct {
+	Key EntryKey
+	Dep dep.Dependency
+	// Root reports a workflow root's entry; an entry kept for a manifest's
+	// name is not one.
+	Root bool
+}
+
+// entryKeyOf is the graph's entry identity (E1g). It compares spellings
+// within one graph only; see the construction notes on FlattenPlanned.
+func entryKeyOf(nwo, ref string) EntryKey {
+	return EntryKey{key: strings.ToLower(nwo) + "@" + ref}
+}
+
+// sameEntry reports whether two owner/repo@ref names this graph produced
+// share an entry. Refs can contain "@"; owner/repo can't.
+func sameEntry(a, b string) bool {
+	an, ar, _ := strings.Cut(a, "@")
+	bn, br, _ := strings.Cut(b, "@")
+	return entryKeyOf(an, ar) == entryKeyOf(bn, br)
+}
+
+// Decisions are planning's choices about entries the graph returned. The
+// graph applies them while flattening, so it stays the one place where
+// identities are merged.
 type Decisions struct {
 	// Roots maps a workflow root's entry to the ref to record it under, at
 	// the same commit: narrowing (v2 → v2.1.0) or reverse lookup.
-	Roots map[string]string
+	Roots map[EntryKey]string
 	// Meta is the tag and branch reverse lookup found for an entry's commit.
-	Meta map[string]RefMeta
+	Meta map[EntryKey]RefMeta
 }
 
 // RefMeta is a commit's tag and branch, as dep.Dependency records them.
@@ -189,7 +224,7 @@ type RefMeta struct {
 //
 // Two identities that land on one entry must be the same commit on the
 // same host, or the entry would record one and the edges of both.
-func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.ParentMap, roots map[string]bool, err error) {
+func (g *Graph) FlattenPlanned(d Decisions) (entries []Entry, parents dep.ParentMap, err error) {
 	// item is one lockfile identity of a node: the repository and ref its
 	// referrer names it by.
 	type item struct {
@@ -204,7 +239,7 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 		it := item{key: key, nwo: n.ref.NWO(), ref: n.ref.Ref}
 		if n.resolved {
 			it.nwo, it.ref = n.dep.NWO, n.dep.Ref
-			if newRef, ok := d.Roots[dep.FoldedKey(n.dep.NWO, n.dep.Ref)]; ok {
+			if newRef, ok := d.Roots[entryKeyOf(n.dep.NWO, n.dep.Ref)]; ok {
 				it.ref = newRef
 			}
 		}
@@ -243,7 +278,7 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 	depOf := func(it item) dep.Dependency {
 		n := g.nodes[it.key]
 		out := n.dep
-		if m, ok := d.Meta[dep.FoldedKey(n.dep.NWO, n.dep.Ref)]; ok {
+		if m, ok := d.Meta[entryKeyOf(n.dep.NWO, n.dep.Ref)]; ok {
 			out.Tag, out.Branch = m.Tag, m.Branch
 		}
 		out.NWO, out.Ref = it.nwo, it.ref
@@ -258,10 +293,11 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 		emitted = append(emitted, byKey[key]...)
 	}
 
-	rep := make(map[string]int)
+	var deps []dep.Dependency
+	rep := make(map[EntryKey]int)
 	for _, it := range emitted {
 		e := depOf(it)
-		fk := dep.FoldedKey(e.NWO, e.Ref)
+		fk := entryKeyOf(e.NWO, e.Ref)
 		i, ok := rep[fk]
 		if !ok {
 			rep[fk] = len(deps)
@@ -269,7 +305,7 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 			continue
 		}
 		if !strings.EqualFold(deps[i].SHA, e.SHA) || g.hostOf(deps[i]) != g.hostOf(e) {
-			return nil, nil, nil, fmt.Errorf("%s would record both %s and %s; retry", e.Key(), describeTarget(deps[i]), describeTarget(e))
+			return nil, nil, fmt.Errorf("%s would record both %s and %s; retry", e.Key(), describeTarget(deps[i]), describeTarget(e))
 		}
 		for _, ref := range e.OriginalRefs {
 			if !slices.Contains(deps[i].OriginalRefs, ref) {
@@ -278,13 +314,13 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 		}
 	}
 	name := func(it item) string {
-		if i, ok := rep[dep.FoldedKey(it.nwo, it.ref)]; ok {
+		if i, ok := rep[entryKeyOf(it.nwo, it.ref)]; ok {
 			return deps[i].Key()
 		}
 		return it.nwo + "@" + it.ref
 	}
 	parents = make(dep.ParentMap)
-	roots = make(map[string]bool, len(rootItems))
+	roots := make(map[string]bool, len(rootItems))
 	for it := range rootItems {
 		roots[name(it)] = true
 	}
@@ -293,13 +329,17 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 		for _, c := range children(it) {
 			ck := name(c)
 			// Sub-actions of one owner/repo@ref share its lockfile entry.
-			if dep.FoldKey(ck) == dep.FoldKey(pk) || slices.Contains(parents[ck], pk) {
+			if sameEntry(ck, pk) || slices.Contains(parents[ck], pk) {
 				continue
 			}
 			parents[ck] = append(parents[ck], pk)
 		}
 	}
-	return deps, parents, roots, nil
+	entries = make([]Entry, len(deps))
+	for i, d := range deps {
+		entries[i] = Entry{Key: entryKeyOf(d.NWO, d.Ref), Dep: d, Root: roots[d.Key()]}
+	}
+	return entries, parents, nil
 }
 
 // hostOf is d's host; empty means the resolver's own.
