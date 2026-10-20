@@ -37,7 +37,7 @@ func depToPin(d dep.Dependency) (parserlock.Pin, error) {
 // for pin: a short tag or branch name, never a SHA or a refs/ name, and the
 // key's own ref unless the key is a full SHA. The runner looks it up as
 // refs/tags/<ref>, then refs/heads/<ref>, and requires the locked commit in
-// its history. Mirrors validEntryRef in github/launch's lockfile resolver.
+// its history.
 func ValidEntryRef(pin parserlock.Pin, ref string) bool {
 	if ref == "" || isSHARef(ref) || strings.HasPrefix(ref, "refs/") {
 		return false

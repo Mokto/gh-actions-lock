@@ -327,7 +327,7 @@ func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
 
 // refs lists the full names p's Tag or Head is looked up as, in order: a
 // tag, then a branch. A refs/ name is prefixed too, so it never resolves.
-// Mirrors resolveRefToHead in github/launch's lockfile resolver.
+// This is the order the runner resolves a lock entry ref in.
 func (p PinCheck) refs() []string {
 	name := cmp.Or(p.Tag, p.Head)
 	if name == "" {
