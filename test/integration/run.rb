@@ -553,7 +553,7 @@ def checkout_parity(body)
     next unless (m = k.match(/\Aoid(\d+)\z/))
     i = m[1]
     data["a#{i}"] = { nameWithOwner: "actions/checkout", databaseId: 197_814_629,
-                      commit: { oid: vars[k] }, tag: { oid: vars[k] } }
+                      commit: { oid: vars[k] }, tag: { oid: vars[k] }, head: { oid: vars[k] } }
   end
   [200, { "Content-Type" => "application/json" }, JSON.generate({ data: data })]
 end
@@ -649,6 +649,12 @@ end
 # not listed here either use no stub or rely on catalog-level config.
 
 STUB_WIRING = {
+  verify_pinned_stub: ->(s) {
+    wire_checkout_success(s, "gho_fake_verify_token")
+  },
+  verify_json_combined: ->(s) {
+    wire_checkout_success(s, "gho_fake_verify_json_token")
+  },
   fresh_tag_warns_without_cooldown: ->(s) {
     wire_checkout_fresh(s, "gho_fake_fresh_warn_token")
   },

@@ -679,7 +679,7 @@ scenarios:
 
   - name: verify_pinned_stub
     category: output_modes
-    description: "--verify with stub server — pinned lockfile passes (inconclusive is non-blocking in read-only mode)"
+    description: "Real-binary --verify succeeds with reachable pins and available locked manifests"
     needs_stub: true
     tags: [stub]
     flags: ["--verify"]
@@ -1918,9 +1918,9 @@ scenarios:
         findings: []
         lockfile_version: v0.0.3
         valid: true
-  - name: dbot_transient_403_drops_pin
+  - name: dbot_inconclusive_ref_blocks
     category: dependabot
-    description: "SSO 403 on a previously-pinned action — pin retained, inconclusive parity warning, clean exit"
+    description: "Real-binary JSON/exit contract for an inconclusive recorded-ref check: fail closed and retain the lockfile; Go tests cover history-check logic"
     needs_stub: true
     tags: [stub]
     flags: ["--no-onboard", "--no-narrow", "--no-interactive", "--json=valid,findings"]
@@ -1931,16 +1931,18 @@ scenarios:
           actions: ["actions/checkout@v4"]
       lockfile_template: pinned_checkout
     expect:
-      exit: 0
+      exit: 1
       lockfile_deps_cover_direct: true
       stdout_is_json: true
       jq:
         - expr: '.valid'
-          equals: "true"
+          equals: "false"
         - expr: '.findings | length'
           equals: "1"
         - expr: '.findings[0].category'
           equals: 'reachability-unknown'
+        - expr: '.findings[0].severity'
+          equals: 'error'
 
       lockfile_contains:
         - "version: 'v0.0.2'"
