@@ -448,6 +448,8 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	}
 	if planErr != nil {
 		console.StopProgress()
+		// Nothing is written, so every deferred entry stays as recorded.
+		report.RestoreDeferred()
 		unresolved := replaceOffHistoryFindings(report, record.Unresolved())
 		if opts.jsonFields != "" {
 			if err := format.WriteJSON(out, report, record, false, opts.jsonFields, cliVersion(), store.File().Version, r.Hostname()); err != nil {
@@ -483,6 +485,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	// All or nothing: a run with errors it cannot fix writes nothing.
 	if runHasBlockingErrors(report, record, opts.acceptMoved) {
 		console.StopProgress()
+		report.RestoreDeferred()
 		if opts.jsonFields != "" {
 			if err := format.WriteJSON(out, report, record, false, opts.jsonFields, cliVersion(), store.File().Version, r.Hostname()); err != nil {
 				return err

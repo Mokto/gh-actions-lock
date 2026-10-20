@@ -2596,6 +2596,67 @@ jobs:
 	}
 }
 
+// TestParity_UnwrittenRunReportsDeferredFindings: --relock excused
+// checkout@v4's failed history check on the strength of a write, but the
+// run writes nothing: another workflow's pin can't be planned, or can't
+// be resolved at all. The recorded entry stays as it was, so its finding
+// must be reported.
+func TestParity_UnwrittenRunReportsDeferredFindings(t *testing.T) {
+	const orphan = "1111111111111111111111111111111111111111"
+	for name, other := range map[string]string{
+		// No tag or branch contains the commit: planning can't lock it.
+		"planning fails": "actions/cache@" + orphan,
+		// The ref doesn't exist: diagnosis blocks the workflow.
+		"resolution fails": "actions/cache@v9-missing",
+	} {
+		t.Run(name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			stubGraph(t, reg,
+				map[string]string{"actions/checkout": parityTestMoved},
+				map[string]string{"actions/checkout": parityTestMoved, "actions/cache": orphan},
+				nil)
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`), httpmock.StatusResponse(http.StatusServiceUnavailable))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/cache$`),
+				httpmock.JSONResponse(map[string]any{"full_name": "actions/cache", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/cache/tags`), httpmock.JSONResponse(httpmock.TagListResponse()))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/cache/releases`), httpmock.JSONResponse([]map[string]any{}))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/cache/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", parityTestMoved)))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/cache/compare/`),
+				httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+			httpmock.NoTagsNamed(reg, "actions", "cache")
+			useDefaultTransport(t, reg)
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+			otherPath := filepath.ToSlash(filepath.Join(".github", "workflows", "other.yml"))
+			require.NoError(t, os.WriteFile(otherPath, []byte("name: other\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: "+other+"\n"), 0o600))
+			lockBefore := readTempLockfilePins(t)
+
+			p, err := runParity(t, reg, "--relock", "--no-narrow", "--no-interactive", path, otherPath)
+			require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
+			var checkout []string
+			for _, f := range p.Findings {
+				if f.Dependency == "actions/checkout@v4" && f.Severity == "error" {
+					checkout = append(checkout, f.Detail)
+				}
+			}
+			require.NotEmpty(t, checkout, "%+v", p.Findings)
+			assert.Contains(t, checkout[0], "checking v4 history")
+			assert.Equal(t, lockBefore, readTempLockfilePins(t), "nothing is written")
+
+			_, stderr, err := runCommandWithHTTP(t, reg, "--relock", "--no-narrow", "--no-interactive", path, otherPath)
+			require.ErrorIs(t, err, errSilent)
+			assert.Contains(t, stderr, "could not check v4 history", "the terminal reports it too")
+		})
+	}
+}
+
 // TestParity_AuditRechecksWithoutBlockedWriters: workflow.yml's composite
 // child checkout@v4.2.1 left its tag's history; only other.yml's new direct
 // use rewrites it. But other.yml can't be written either: its own
