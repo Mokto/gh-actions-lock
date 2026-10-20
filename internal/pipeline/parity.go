@@ -39,7 +39,7 @@ import (
 //
 // Under the Dependabot proxy any inconclusive check is an error: the run
 // aborts so Dependabot retries rather than shipping an unverified lock.
-func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(*checks.Finding, parserlock.Pin) bool, verify bool) error {
+func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, mode parityMode) error {
 	gh := r.GHClient()
 	if gh == nil || store == nil {
 		return nil
@@ -155,20 +155,10 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			} else {
 				f.RecordedRef = o.lp.Action.Ref
 			}
-			if !ok && verify && tagMoved[i] {
+			if !ok && mode.verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
 			}
-			switch {
-			case ok && o.fresh && st.Err != nil:
-				f.Severity = checks.SeverityError
-				f.Remediation = "retry; nothing is written until the repository identity is confirmed"
-			// A history check fails closed: the commit is otherwise unproven.
-			case ok && pins[i].Head != "" && st.Err != nil && keep(&checks.Finding{Category: checks.UnreachablePin}, o.lp.Pin):
-				f.Severity = checks.SeverityError
-				f.Remediation = "retry; a pin is accepted only once its commit is traced to its tag or branch"
-			// keep filters recorded pins a relock is about to replace; a
-			// freshly resolved pin is what the run would write.
-			case !ok || !o.fresh && !keep(&f, o.lp.Pin):
+			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, head: pins[i].Head, inconclusive: st.Err != nil}) {
 				continue
 			}
 			wr := &report.Workflows[o.report]
@@ -253,7 +243,7 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 
 // shaPinRemediation is the next step for a pin whose recorded ref no longer
 // vouches for its commit. --accept-moved repairs a direct pin, but not a
-// composite's full-SHA child (see parityKeep): only its parent can change it.
+// composite's full-SHA child (see disposeParity): only its parent can change it.
 func shaPinRemediation(parent, nwo string, pin parserlock.Pin) string {
 	if parent != "" && parserlock.IsFullSha(pin.Ref) {
 		return fmt.Sprintf("upgrade or replace %s with a version whose pin of %s can be verified, or stop using it", parent, nwo)
