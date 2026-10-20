@@ -950,6 +950,7 @@ func TestParity_VerifyMutableRefHistory(t *testing.T) {
 					}))
 					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
 					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v4", live)))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/heads/v4$`), httpmock.StatusResponse(http.StatusNotFound))
 				} else {
 					reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 						"data": map[string]any{"a0": map[string]any{
@@ -962,6 +963,16 @@ func TestParity_VerifyMutableRefHistory(t *testing.T) {
 				}
 				for range 10 {
 					reg.Register(httpmock.REST("GET", compareURL), tt.compare)
+				}
+				if tt.want == "" {
+					if proxy {
+						reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+						reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.yml$`), httpmock.JSONResponse(map[string]any{
+							"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML)),
+						}))
+					} else {
+						registerNodeManifests(reg)
+					}
 				}
 				path := writeTempWorkflow(t, `
 name: ci
@@ -1026,6 +1037,15 @@ jobs:
 				}))
 			}
 			reg.Register(httpmock.REST("GET", compareURL), httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+			if proxy {
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/heads/v4$`), httpmock.StatusResponse(http.StatusNotFound))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.yml$`), httpmock.JSONResponse(map[string]any{
+					"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML)),
+				}))
+			} else {
+				registerNodeManifests(reg)
+			}
 			path := writeTempWorkflow(t, `
 name: ci
 on: push
