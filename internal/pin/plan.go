@@ -254,28 +254,13 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	for _, issue := range lookupIssues {
 		skipKeys[declared[issue.Index]] = true
 	}
-	// The planned deps carry what narrowing and reverse lookup learned (tag,
-	// branch); the graph adds the old refs composites still name, and edges.
-	planned := make(map[string]dep.Dependency, len(deps))
-	learned := make(map[string]dep.Dependency, len(renames))
+	// Planning's decisions go to the graph, which merges identities; editing
+	// its output by key instead loses what it merged.
+	decisions := resolve.Decisions{Roots: renames, Meta: make(map[string]resolve.RefMeta, len(deps))}
 	for i, d := range deps {
-		planned[dep.FoldedKey(d.NWO, d.Ref)] = d
-		if _, ok := renames[declared[i]]; ok {
-			learned[declared[i]] = d
-		}
+		decisions.Meta[declared[i]] = resolve.RefMeta{Tag: d.Tag, Branch: d.Branch}
 	}
-	deps, parentMap, roots := graph.FlattenRenamed(renames)
-	for i, d := range deps {
-		if p, ok := planned[dep.FoldedKey(d.NWO, d.Ref)]; ok {
-			deps[i] = p
-			continue
-		}
-		// A composite still names the root's old full SHA: record it with
-		// the tag or branch reverse lookup found for that commit.
-		if l, ok := learned[dep.FoldedKey(d.NWO, d.Ref)]; ok && parserlock.IsFullSha(d.Ref) && d.Tag == "" && d.Branch == "" {
-			deps[i].Tag, deps[i].Branch = l.Tag, l.Branch
-		}
-	}
+	deps, parentMap, roots := graph.FlattenPlanned(decisions)
 	// The graph knows which entries are workflow roots; matching the
 	// workflow's refs would also claim an entry kept for a manifest's name.
 	var rootRefs []parserlock.ActionRef

@@ -149,6 +149,8 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return httpmock.JSONResponse(httpmock.TagListResponse("v1.0.0", graphParentSHA, "v1", graphParentSHA))(req)
 		case "/repos/acme/child/branches":
 			return httpmock.JSONResponse(httpmock.BranchListResponse("main", graphChildSHA))(req)
+		case "/repos/acme/new/tags", "/repos/acme/old/tags":
+			return httpmock.JSONResponse(httpmock.TagListResponse("v1.0.0", graphLeafSHA, "v1", graphLeafSHA))(req)
 		case "/repos/acme/child/tags":
 			return httpmock.JSONResponse(httpmock.TagListResponse("v2.1.0", graphChildSHA, "v2", graphChildSHA))(req)
 		case "/repos/acme/parent/branches":
@@ -657,6 +659,27 @@ func TestCompleteness_RedirectKeepsCompositeNameOutOfWorkflowRoots(t *testing.T)
 	assert.Equal(t, []string{"acme/new@v1", "acme/parent@v1.0.0"}, file.Workflows[".github/workflows/"+filepath.Base(path)])
 	assert.Equal(t, []string{"acme/old@v1"}, file.Dependencies["acme/parent@v1.0.0"].Uses)
 	assert.Contains(t, file.Dependencies, "acme/old@v1")
+
+	_, stderr, err = runCommandWithHTTP(t, transport, "--verify", path)
+	require.NoError(t, err, stderr)
+}
+
+// TestCompleteness_RedirectNarrowedOntoAnotherRoot: a redirected root that
+// narrows onto an entry another root already uses keeps its redirect, so
+// the workflow's old name is still rewritten and covered.
+func TestCompleteness_RedirectNarrowedOntoAnotherRoot(t *testing.T) {
+	// Order matters to the bug: the root that loses the merge comes last.
+	workflow := strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/old@v1", 1) + "      - uses: acme/new@v1.0.0\n"
+	path := writeTempWorkflow(t, workflow)
+	transport := &graphTransport{}
+	_, stderr, err := runCommandWithHTTP(t, transport, path)
+	require.NoError(t, err, stderr)
+	wf, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(wf), "acme/old@", "the redirected name is rewritten")
+	file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/new@v1.0.0"}, file.Workflows[".github/workflows/"+filepath.Base(path)])
 
 	_, stderr, err = runCommandWithHTTP(t, transport, "--verify", path)
 	require.NoError(t, err, stderr)

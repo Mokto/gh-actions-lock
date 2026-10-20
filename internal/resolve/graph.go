@@ -156,13 +156,27 @@ func (g *Graph) cycle() *UsesCycleError {
 // and the edges between them as child key → parent keys. An edge to an
 // action that didn't resolve keeps the name its parent's manifest uses.
 func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap) {
-	deps, parents, _ := g.FlattenRenamed(nil)
+	deps, parents, _ := g.FlattenPlanned(Decisions{})
 	return deps, parents
 }
 
-// FlattenRenamed is Flatten with workflow roots recorded under other refs at
-// the same commit, as narrowing (v2 → v2.1.0) and reverse lookup choose.
-// renames maps a root's owner/repo@ref to its new ref.
+// Decisions are planning's choices about the graph's entries, keyed by the
+// entry's dep.FoldedKey as discovered. The graph applies them while
+// flattening, so it stays the one place where identities are merged.
+type Decisions struct {
+	// Roots maps a workflow root's entry to the ref to record it under, at
+	// the same commit: narrowing (v2 → v2.1.0) or reverse lookup.
+	Roots map[string]string
+	// Meta is the tag and branch reverse lookup found for an entry's commit.
+	Meta map[string]RefMeta
+}
+
+// RefMeta is a commit's tag and branch, as dep.Dependency records them.
+type RefMeta struct {
+	Tag, Branch string
+}
+
+// FlattenPlanned is Flatten with planning's decisions applied.
 //
 // A rewrite belongs to the referrer that can be rewritten: only a workflow
 // root takes a new ref or a redirect's canonical repository. A manifest's
@@ -170,7 +184,7 @@ func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap) {
 // becomes two entries rather than one renamed entry. `$/…` sub-actions follow
 // their parent. roots holds the Dependency.Key of each workflow root's
 // entry: an entry kept for a manifest's name is not one.
-func (g *Graph) FlattenRenamed(renames map[string]string) (deps []dep.Dependency, parents dep.ParentMap, roots map[string]bool) {
+func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.ParentMap, roots map[string]bool) {
 	// item is one lockfile identity of a node: the repository and ref its
 	// referrer names it by.
 	type item struct {
@@ -185,7 +199,7 @@ func (g *Graph) FlattenRenamed(renames map[string]string) (deps []dep.Dependency
 		it := item{key: key, nwo: n.ref.NWO(), ref: n.ref.Ref}
 		if n.resolved {
 			it.nwo, it.ref = n.dep.NWO, n.dep.Ref
-			if newRef, ok := renames[dep.FoldedKey(n.dep.NWO, n.dep.Ref)]; ok {
+			if newRef, ok := d.Roots[dep.FoldedKey(n.dep.NWO, n.dep.Ref)]; ok {
 				it.ref = newRef
 			}
 		}
@@ -222,13 +236,17 @@ func (g *Graph) FlattenRenamed(renames map[string]string) (deps []dep.Dependency
 	}
 
 	depOf := func(it item) dep.Dependency {
-		d := g.nodes[it.key].dep
-		d.NWO, d.Ref = it.nwo, it.ref
+		n := g.nodes[it.key]
+		out := n.dep
+		if m, ok := d.Meta[dep.FoldedKey(n.dep.NWO, n.dep.Ref)]; ok {
+			out.Tag, out.Branch = m.Tag, m.Branch
+		}
+		out.NWO, out.Ref = it.nwo, it.ref
 		if !rootItems[it] {
 			// Only a workflow root is rewritten to a redirect's target.
-			d.OriginalRefs = nil
+			out.OriginalRefs = nil
 		}
-		return d
+		return out
 	}
 	var emitted []item
 	for _, key := range g.order {
@@ -237,15 +255,15 @@ func (g *Graph) FlattenRenamed(renames map[string]string) (deps []dep.Dependency
 
 	rep := make(map[string]int)
 	for _, it := range emitted {
-		d := depOf(it)
-		fk := dep.FoldedKey(d.NWO, d.Ref)
+		e := depOf(it)
+		fk := dep.FoldedKey(e.NWO, e.Ref)
 		i, ok := rep[fk]
 		if !ok {
 			rep[fk] = len(deps)
-			deps = append(deps, d)
+			deps = append(deps, e)
 			continue
 		}
-		for _, ref := range d.OriginalRefs {
+		for _, ref := range e.OriginalRefs {
 			if !slices.Contains(deps[i].OriginalRefs, ref) {
 				deps[i].OriginalRefs = append(deps[i].OriginalRefs, ref)
 			}

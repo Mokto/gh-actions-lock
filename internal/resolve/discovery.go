@@ -125,7 +125,7 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 }
 
 // ResolveGraph is ResolveAllRecursive's graph, for callers that record
-// roots under other refs (see Graph.FlattenRenamed).
+// roots under other refs (see Graph.FlattenPlanned).
 func (r *Resolver) ResolveGraph(ctx context.Context, refs []parserlock.ActionRef) (*Graph, error) {
 	return r.resolveRecursive(ctx, refs, nil)
 }
