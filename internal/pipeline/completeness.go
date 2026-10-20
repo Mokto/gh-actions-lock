@@ -19,35 +19,13 @@ import (
 func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report) error {
 	file := store.File()
 	deps := store.AllDeps()
-	entryKeys := make(map[string]string, len(file.Dependencies))
-	for key := range file.Dependencies {
-		entryKeys[dep.RefKeyOf(key)] = key
-	}
+	refs := lockfile.NewRefIndex(file)
 	for i, pw := range parsed {
 		if isBlocked(pw) || report.Workflows[i].SkipCommit || !report.Workflows[i].IsValid() {
 			continue
 		}
 		recorded, _ := pw.PartitionRefs()
-		// A full-SHA root is checked under its own entry when one exists;
-		// otherwise under the entry whose commit it pins. Either way it
-		// takes that entry's spelling, so the walk finds the entry it names.
-		for j, ref := range recorded {
-			if !parserlock.IsFullSha(ref.Ref) {
-				continue
-			}
-			if i := slices.IndexFunc(pw.ExistingDeps, func(d dep.Dependency) bool {
-				return dep.RefKey(d.NWO, d.Ref) == dep.RefKey(ref.NWO(), ref.Ref)
-			}); i >= 0 {
-				recorded[j].Ref = pw.ExistingDeps[i].Ref
-				continue
-			}
-			for _, d := range pw.ExistingDeps {
-				if strings.EqualFold(d.NWO, ref.NWO()) && strings.EqualFold(d.SHA, ref.Ref) {
-					recorded[j].Ref = d.Ref
-					break
-				}
-			}
-		}
+		recorded = lockedRoots(recorded, pw.ExistingDeps)
 		_, parents, err := r.ResolveLockedRecursive(ctx, recorded, deps)
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -63,14 +41,11 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 		// Discovery names entries as manifests spell them; match them to the
 		// recorded keys with dep.RefKey's rule, so a full SHA in another case
 		// neither fails a complete graph nor skips its entry's descendants.
+		// A spelling that reaches several entries and none exactly checks
+		// each of them: their edges can differ.
 		for _, child := range slices.Sorted(maps.Keys(parents)) {
-			pp := parents[child]
-			for _, parent := range pp {
-				parent = entryKeys[dep.RefKeyOf(parent)]
-				action, ok := file.Dependencies[parent]
-				if !ok {
-					continue
-				}
+			for _, parent := range lockedParents(refs, parents[child]) {
+				action := file.Dependencies[parent]
 				found := false
 				for _, use := range action.Uses {
 					if dep.RefKeyOf(use) == dep.RefKeyOf(child) {
@@ -119,6 +94,67 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 		// are named by the missing-edge findings above.
 	}
 	return nil
+}
+
+// lockedRoots names each full-SHA root by the entries it reaches: its own
+// spelling when recorded, else every entry with its identity, so each
+// candidate's graph is walked. A full SHA with no such entry takes the first
+// entry whose commit it pins.
+func lockedRoots(roots []parserlock.ActionRef, existing []dep.Dependency) []parserlock.ActionRef {
+	var out []parserlock.ActionRef
+	for _, ref := range roots {
+		if !parserlock.IsFullSha(ref.Ref) {
+			out = append(out, ref)
+			continue
+		}
+		var spellings []string
+		for _, d := range existing {
+			if dep.RefKey(d.NWO, d.Ref) != dep.RefKey(ref.NWO(), ref.Ref) {
+				continue
+			}
+			if d.Ref == ref.Ref {
+				spellings = []string{d.Ref}
+				break
+			}
+			if !slices.Contains(spellings, d.Ref) {
+				spellings = append(spellings, d.Ref)
+			}
+		}
+		if len(spellings) == 0 {
+			for _, d := range existing {
+				if strings.EqualFold(d.NWO, ref.NWO()) && strings.EqualFold(d.SHA, ref.Ref) {
+					spellings = []string{d.Ref}
+					break
+				}
+			}
+		}
+		if len(spellings) == 0 {
+			out = append(out, ref)
+		}
+		slices.Sort(spellings)
+		for _, s := range spellings {
+			named := ref
+			named.Ref = s
+			out = append(out, named)
+		}
+	}
+	return out
+}
+
+// lockedParents maps discovered parents to the recorded entries whose edges
+// must cover the child: each parent's exact entry, else every entry with its
+// identity.
+func lockedParents(refs lockfile.RefIndex, parents []string) []string {
+	var out []string
+	for _, parent := range parents {
+		nwo, ref, _ := strings.Cut(parent, "@")
+		for _, k := range refs.Lookup(nwo, ref).Entries() {
+			if !slices.Contains(out, k) {
+				out = append(out, k)
+			}
+		}
+	}
+	return out
 }
 
 // onlyExplained reports whether every error in err already has a finding:

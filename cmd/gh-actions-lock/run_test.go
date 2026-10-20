@@ -850,6 +850,45 @@ func TestRun_AmbiguousSHASpellingRefusesWrite(t *testing.T) {
 	assert.Equal(t, []string{"acme/child@AbCdEf0123456789abcdef0123456789abcdef01", "acme/parent@v1.0.0"}, file.Workflows[".github/workflows/"+filepath.Base(path)])
 }
 
+// TestRun_VerifyChecksEveryAmbiguousSHASpelling: when a workflow's SHA
+// matches several recorded spellings and none exactly, --verify checks each
+// one's graph rather than whichever a map happens to return.
+func TestRun_VerifyChecksEveryAmbiguousSHASpelling(t *testing.T) {
+	const child = "abcdef0123456789abcdef0123456789abcdef01"
+	upper := strings.ToUpper(child)
+	for _, tt := range []struct {
+		name  string
+		erase string
+	}{
+		{name: "both complete passes"},
+		{name: "lowercase entry missing an edge blocks", erase: child},
+		{name: "uppercase entry missing an edge blocks", erase: upper},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/child@AbCdEf0123456789abcdef0123456789abcdef01\n")
+			shaSpellingLock(t, path, child, upper)
+			if tt.erase != "" {
+				lock := strings.Replace(readTempLockfilePins(t), "  'acme/child@"+tt.erase+"':\n    ref: 'v2'\n    commit: 'sha1-"+child+"'\n    owner_id: 1\n    repo_id: 1\n    uses:\n      - 'acme/leaf@v3'\n", "  'acme/child@"+tt.erase+"':\n    ref: 'v2'\n    commit: 'sha1-"+child+"'\n    owner_id: 1\n    repo_id: 1\n", 1)
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+			}
+
+			p, err := runParity(t, &graphTransport{childSHA: child, childOnMain: true}, "--verify", path)
+			var blocking []string
+			for _, f := range p.Findings {
+				if f.Severity == "error" {
+					blocking = append(blocking, f.Detail)
+				}
+			}
+			if tt.erase == "" {
+				require.NoError(t, err, "%v", blocking)
+				return
+			}
+			require.ErrorIs(t, err, errSilent)
+			assert.Equal(t, []string{"locked manifest for acme/child@" + tt.erase + " uses acme/leaf@v3 but the lockfile omits that edge"}, blocking)
+		})
+	}
+}
+
 func TestRun_ParitySSOGuidance(t *testing.T) {
 	const message = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
 	for _, mode := range []struct {

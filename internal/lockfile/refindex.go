@@ -62,3 +62,15 @@ func (x RefIndex) Lookup(nwo, ref string) RefMatch {
 	m.Candidates = slices.Clone(x.entries[dep.RefKey(nwo, ref)])
 	return m
 }
+
+// Entries are the dependency entries a reference reaches: its exact spelling
+// when that is an entry, else every candidate. Exact alone may be a dangling
+// root or edge, so it never decides when it isn't an entry. More than one
+// entry means no rule picks among them: the commit is the same, but their
+// recorded refs and edges can differ.
+func (m RefMatch) Entries() []string {
+	if m.Exact != "" && slices.Contains(m.Candidates, m.Exact) {
+		return []string{m.Exact}
+	}
+	return slices.Clone(m.Candidates)
+}
