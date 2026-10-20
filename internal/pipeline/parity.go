@@ -39,7 +39,7 @@ import (
 //
 // Under the Dependabot proxy any inconclusive check is an error: the run
 // aborts so Dependabot retries rather than shipping an unverified lock.
-func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(*checks.Finding, parserlock.Pin) bool, verify bool) error {
+func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, mode parityMode) error {
 	gh := r.GHClient()
 	if gh == nil || store == nil {
 		return nil
@@ -94,12 +94,30 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			_, ok := direct[strings.ToLower(p.Owner+"/"+p.Repo)+"@"+p.Ref]
 			return ok
 		}
-		for _, lp := range store.Closure(workflowfile.KeyFromPath(pw.Path), live) {
+		// Planning writes a recorded entry back verbatim unless one of
+		// these findings prunes it.
+		effects := map[string]checks.PruneEffect{}
+		for _, f := range report.Workflows[ri].Findings {
+			if checks.PrunesDependency(f, mode.acceptMoved, mode.relock) {
+				k := checks.PruneKey(f.Dependency.NWO, f.Dependency.Ref, f.Dependency.SHA)
+				// A dropped use leaves the key behind: it wins.
+				if e := checks.PruneEffectOf(f, mode.acceptMoved, mode.relock); effects[k] != checks.Dropped {
+					effects[k] = e
+				}
+			}
+		}
+		closure := store.Closure(workflowfile.KeyFromPath(pw.Path), live)
+		edges := compositeEdges(closure)
+		for _, lp := range closure {
 			ref := direct[strings.ToLower(lp.Pin.Owner+"/"+lp.Pin.Repo)+"@"+lp.Pin.Ref]
 			if lp.Parent != "" {
 				ref = parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref}
 			}
-			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref})
+			k := lp.Pin.String()
+			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref,
+				away:   plannedAway(lp, edges[k], effects[checks.PruneKey(lp.Pin.NWO, lp.Pin.Ref, lockedSHA(lp.Action.Commit))]),
+				heldBy: heldBy(lp, edges[k]),
+			})
 		}
 		if pw.Resolved {
 			continue
@@ -147,6 +165,15 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 		}
 	}
+	verified := map[string]bool{}
+	defer func() {
+		if report.Verified == nil {
+			report.Verified = map[string]bool{}
+		}
+		for k := range verified {
+			report.Verified[k] = true
+		}
+	}()
 	for i, st := range states {
 		for _, o := range owners[i] {
 			f, ok := parityFinding(o.pw, o.ref, o.lp, pins[i], st)
@@ -155,23 +182,28 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			} else {
 				f.RecordedRef = o.lp.Action.Ref
 			}
-			if !ok && verify && tagMoved[i] {
+			if !ok && mode.verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
 			}
-			switch {
-			case ok && o.fresh && st.Err != nil:
-				f.Severity = checks.SeverityError
-				f.Remediation = "retry; nothing is written until the repository identity is confirmed"
-			// A history check fails closed: the commit is otherwise unproven.
-			case ok && pins[i].Head != "" && st.Err != nil && keep(&checks.Finding{Category: checks.UnreachablePin}, o.lp.Pin):
-				f.Severity = checks.SeverityError
-				f.Remediation = "retry; a pin is accepted only once its commit is traced to its tag or branch"
-			// keep filters recorded pins a relock is about to replace; a
-			// freshly resolved pin is what the run would write.
-			case !ok || !o.fresh && !keep(&f, o.lp.Pin):
+			wr := &report.Workflows[o.report]
+			if !ok {
+				if o.fresh {
+					verified[checks.VerifiedKey(lockfile.EntryKey(o.lp.Pin), pins[i].SHA)] = true
+				}
 				continue
 			}
-			wr := &report.Workflows[o.report]
+			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
+			if verdict != verdictKeep {
+				wr.Deferred = append(wr.Deferred, checks.Deferred{
+					Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
+				})
+			}
+			if verdict == verdictExcuse {
+				continue
+			}
+			if o.fresh && f.Severity != checks.SeverityError {
+				verified[checks.VerifiedKey(lockfile.EntryKey(o.lp.Pin), pins[i].SHA)] = true
+			}
 			// Dependabot reads back only actions.lock, so a rewritten `uses:`
 			// would never ship; keep the pin under the name the workflow uses.
 			if f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning && o.lp.Parent == "" && !ghapi.DependabotProxy() {
@@ -193,6 +225,60 @@ type parityOwner struct {
 	lp     lockfile.LockedPin
 	ref    parserlock.ActionRef
 	fresh  bool
+	// away marks a recorded entry planning replaces or removes: see
+	// plannedAway.
+	away bool
+	// heldBy is the composite that keeps this entry as recorded when
+	// --accept-moved re-resolves the workflow's use: see heldBy.
+	heldBy string
+}
+
+// compositeEdges maps each pin a composite in the recorded closure lists in
+// its `uses:` to those composites. Keys are Pin.String.
+func compositeEdges(closure []lockfile.LockedPin) map[string][]lockfile.LockedPin {
+	out := map[string][]lockfile.LockedPin{}
+	for _, lp := range closure {
+		for _, child := range lp.Action.Uses {
+			if p, ok := parserlock.ParsePin(child); ok {
+				out[p.String()] = append(out[p.String()], lp)
+			}
+		}
+	}
+	return out
+}
+
+// plannedAway reports whether planning provably replaces or removes a
+// recorded entry, given what a finding makes it do with the workflow's use
+// (checks.PruneEffect). Planning prunes only the workflow's own pins, and
+// writing a workflow keeps every recorded edge, so an entry a composite
+// lists survives unless the workflow's use overwrites that very key: a
+// mutable ref re-resolved in place. A full-SHA use may be re-keyed by
+// narrowing, and a dropped use leaves the key behind. composites are the
+// recorded composites that list lp's key.
+func plannedAway(lp lockfile.LockedPin, composites []lockfile.LockedPin, effect checks.PruneEffect) bool {
+	if lp.Parent != "" {
+		return false
+	}
+	switch effect {
+	case checks.Reresolved:
+		return len(composites) == 0 || !parserlock.IsFullSha(lp.Pin.Ref)
+	case checks.Dropped:
+		return len(composites) == 0
+	}
+	return false
+}
+
+// heldBy is the composite (NWO@ref) that keeps a recorded entry as recorded
+// even when --accept-moved re-resolves the workflow's use of it, or "" when
+// that repairs it. Repair advice and the override both ask this.
+func heldBy(lp lockfile.LockedPin, composites []lockfile.LockedPin) string {
+	switch {
+	case plannedAway(lp, composites, checks.Reresolved):
+		return ""
+	case lp.Parent != "":
+		return lockParent(lp)
+	}
+	return composites[0].Pin.NWO + "@" + composites[0].Pin.Ref
 }
 
 // freshClosure returns a function yielding the closure of a workflow's
@@ -249,16 +335,6 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 		}
 		return out
 	}
-}
-
-// shaPinRemediation is the next step for a pin whose recorded ref no longer
-// vouches for its commit. --accept-moved repairs a direct pin, but not a
-// composite's full-SHA child (see parityKeep): only its parent can change it.
-func shaPinRemediation(parent, nwo string, pin parserlock.Pin) string {
-	if parent != "" && parserlock.IsFullSha(pin.Ref) {
-		return fmt.Sprintf("upgrade or replace %s with a version whose pin of %s can be verified, or stop using it", parent, nwo)
-	}
-	return checks.AcceptMovedRemediation
 }
 
 // briefCause is err for a terminal line: see ghapi.Brief.
@@ -380,13 +456,13 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 	case !st.CommitFound:
 		f.Category = checks.UnreachablePin
 		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, cmp.Or(pc.Head, ref.Ref), st.HeadOID) + via
-		f.Remediation = shaPinRemediation(f.ParentNWO, nwo, lp.Pin)
+		f.Remediation = checks.UnreachableRemediation(f.ParentNWO, nwo)
 	case pc.Head != "" && st.HeadOID == "":
 		f.Category = checks.UnreachablePin
 		f.Detail = fmt.Sprintf("ref %s is not a tag or branch of %s; the Actions backend will reject this pin%s", pc.Head, nwo, via)
 		f.RefGone = true
 		// A full-SHA `uses:` names no ref to repoint; the lock entry is wrong.
-		f.Remediation = shaPinRemediation(f.ParentNWO, nwo, lp.Pin)
+		f.Remediation = checks.UnreachableRemediation(f.ParentNWO, nwo)
 		if !parserlock.IsFullSha(lp.Pin.Ref) {
 			f.Remediation = "point `uses:` at a tag or branch that exists, then run `gh actions-lock`"
 			f.RefMissing = true

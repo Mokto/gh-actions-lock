@@ -450,7 +450,7 @@ func reverseLookupRewrites(ctx context.Context, opts PlanOptions, wr checks.Work
 
 // buildPinnedEntries emits an entry for every resolved dep, marking it Verified
 // when the lockfile already records the same SHA and Pinned otherwise. Deps
-// already emitted from inventory (by NWO:SHA) are skipped.
+// already emitted from inventory under the same key and commit are skipped.
 func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.Dependency, parentMap dep.ParentMap, directTracker lockfile.DirectTracker, inventorySHA map[string]bool) []Entry {
 	// Load existing lockfile state so re-runs are noops for unchanged deps.
 	existingSHA := make(map[string]string) // NWO@Ref -> SHA
@@ -466,8 +466,9 @@ func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.D
 	directKeys := directTracker.Keys(deps)
 	var out []Entry
 	for _, dep := range deps {
-		nwoSHA := strings.ToLower(dep.NWO) + ":" + strings.ToLower(dep.SHA)
-		if inventorySHA[nwoSHA] {
+		// Each key needs its own entry: a ref that moved onto a commit a
+		// sibling ref is locked at must still be written.
+		if inventorySHA[checks.PruneKey(dep.NWO, dep.Ref, dep.SHA)] {
 			continue // already emitted as Verified from inventory
 		}
 		depKey := dep.Key()
@@ -548,7 +549,7 @@ func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.A
 	for _, inv := range inventory {
 		nwo := strings.ToLower(inv.Dep.NWO)
 		byKey[nwo+"@"+inv.Dep.Ref] = true
-		shaSeen[nwo+":"+strings.ToLower(inv.Dep.SHA)] = true
+		shaSeen[checks.PruneKey(inv.Dep.NWO, inv.Dep.Ref, inv.Dep.SHA)] = true
 	}
 	for _, ref := range refs {
 		key := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref
@@ -559,35 +560,23 @@ func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.A
 	return unrecorded, shaSeen
 }
 
-// pruneStaleInventory drops inventory entries matching a stale finding (a pin
-// the workflow no longer references), so a fix-mode re-pin converges.
-// acceptMoved additionally prunes ref-moved and unreachable-pin deps; relock
-// prunes ref-moved deps only, so a benign branch/version advance can be
-// re-pinned without accepting a possibly-tampered unreachable pin. A
-// same-ID redirect is pruned so it re-resolves under the canonical name.
+// pruneStaleInventory drops inventory entries matching a pruning finding
+// (see checks.PrunesDependency), so a fix-mode re-pin converges.
 func pruneStaleInventory(inventory []checks.InventoryEntry, findings []checks.Finding, acceptMoved, relock bool) []checks.InventoryEntry {
 	stale := make(map[string]bool)
 	for _, f := range findings {
-		switch {
-		case f.Dependency == nil:
-			continue
-		case f.Category == checks.Stale,
-			f.Category == checks.UnreachablePin && acceptMoved,
-			f.Category == checks.RefMoved && (acceptMoved || relock),
-			f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning:
-		default:
+		if !checks.PrunesDependency(f, acceptMoved, relock) {
 			continue
 		}
 		d := f.Dependency
-		stale[strings.ToLower(d.NWO+"@"+d.Ref+":"+d.SHA)] = true
+		stale[checks.PruneKey(d.NWO, d.Ref, d.SHA)] = true
 	}
 	if len(stale) == 0 {
 		return inventory
 	}
 	out := make([]checks.InventoryEntry, 0, len(inventory))
 	for _, inv := range inventory {
-		key := strings.ToLower(inv.Dep.NWO + "@" + inv.Dep.Ref + ":" + inv.Dep.SHA)
-		if stale[key] {
+		if stale[checks.PruneKey(inv.Dep.NWO, inv.Dep.Ref, inv.Dep.SHA)] {
 			continue
 		}
 		out = append(out, inv)

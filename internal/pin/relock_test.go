@@ -74,6 +74,21 @@ func TestPruneStaleInventory_Relock(t *testing.T) {
 	}
 }
 
+// TestPruneStaleInventory_RefCase: refs are case-sensitive, so a stale
+// Main must not prune a live main at the same commit; owner/repo and the
+// commit still fold.
+func TestPruneStaleInventory_RefCase(t *testing.T) {
+	inventory := []checks.InventoryEntry{
+		inv("octo/a", "Main", "AAAA"),
+		inv("octo/a", "main", "aaaa"),
+	}
+	findings := []checks.Finding{movedFinding(checks.Stale, "Octo/A", "Main", "aaaa")}
+
+	got := pruneStaleInventory(inventory, findings, false, false)
+	require.Len(t, got, 1)
+	assert.Equal(t, "main", got[0].Dep.Ref)
+}
+
 // A moved *transitive* dep is pruned from inventory but is not a direct
 // ActionRef, so the per-dep trust fast path would silently keep its stale SHA.
 // Under --relock, planWorkflow must force the direct roots through recursive

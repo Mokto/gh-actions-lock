@@ -141,6 +141,18 @@ func checkOneRefMoved(ctx context.Context, pw ParsedWorkflow, ref parserlock.Act
 // can't trust: --relock refuses these, so the override must be explicit.
 const AcceptMovedRemediation = "verify it, then run `gh actions-lock --accept-moved`"
 
+// UnreachableRemediation is the next step for a pin whose recorded ref no
+// longer vouches for its commit. --accept-moved repairs only an entry the
+// workflow alone holds; one a composite holds keeps the composite's
+// recorded entry, so only changing that composite (holder, as NWO@ref)
+// helps.
+func UnreachableRemediation(holder, nwo string) string {
+	if holder != "" {
+		return fmt.Sprintf("upgrade or replace %s with a version whose pin of %s can be verified, or stop using it", holder, nwo)
+	}
+	return AcceptMovedRemediation
+}
+
 // NotInHistoryDetail describes a locked commit missing from upstream
 // history. It can't tell a force-push from a forged lockfile, so it names
 // both. live, when known, is where ref points now.

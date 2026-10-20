@@ -337,6 +337,11 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 
 	report := result.Report
 	valid := result.Valid
+	// A read-only run writes nothing, so a finding deferred on a write stands.
+	if opts.noFix {
+		report.RestoreDeferred()
+		valid = report.IsValid()
+	}
 
 	// Read-only modes never touch the lockfile, so surface stale entries as
 	// non-blocking info findings instead of pruning them. Fix mode reports
@@ -448,6 +453,8 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	}
 	if planErr != nil {
 		console.StopProgress()
+		// Nothing is written, so every deferred entry stays as recorded.
+		report.RestoreDeferred()
 		unresolved := replaceOffHistoryFindings(report, record.Unresolved())
 		if opts.jsonFields != "" {
 			if err := format.WriteJSON(out, report, record, false, opts.jsonFields, cliVersion(), store.File().Version, r.Hostname()); err != nil {
@@ -473,9 +480,17 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		return fmt.Errorf("planning pins: %w", planErr)
 	}
 
+	// Parity excused or accepted some findings on the strength of this
+	// write; any it doesn't bear out block it.
+	if err := pin.Audit(ctx, record, store, report, &pin.CommitOptions{SkipNewWorkflowEntries: noOnboardFlag(cmd)}); err != nil {
+		console.StopProgress()
+		return fmt.Errorf("checking the planned write: %w", err)
+	}
+
 	// All or nothing: a run with errors it cannot fix writes nothing.
 	if runHasBlockingErrors(report, record, opts.acceptMoved) {
 		console.StopProgress()
+		report.RestoreDeferred()
 		if opts.jsonFields != "" {
 			if err := format.WriteJSON(out, report, record, false, opts.jsonFields, cliVersion(), store.File().Version, r.Hostname()); err != nil {
 				return err

@@ -242,30 +242,3 @@ func TestCollectUnrecordedResolvable_NilExclude(t *testing.T) {
 	assert.Equal(t, refsAll, refsFiltered)
 	assert.Equal(t, depsAll, depsFiltered)
 }
-
-func TestParityKeep_AcceptMovedOnlyDirectFullSHAPins(t *testing.T) {
-	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
-	shaPin := parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: sha}
-	tests := []struct {
-		name        string
-		relock      bool
-		acceptMoved bool
-		parent      string
-		pin         parserlock.Pin
-		wantKeep    bool
-		wantWarn    bool
-	}{
-		{name: "accept-moved repairs a direct full-SHA pin", relock: true, acceptMoved: true, pin: shaPin, wantKeep: true, wantWarn: true},
-		{name: "accept-moved keeps a transitive full-SHA pin blocking", relock: true, acceptMoved: true, parent: "octo/composite@v1", pin: shaPin, wantKeep: true},
-		{name: "relock keeps a full-SHA pin blocking", relock: true, pin: shaPin, wantKeep: true},
-		{name: "relock drops a mutable pin it re-resolves", relock: true, pin: parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: "v4"}},
-		{name: "plain run keeps everything", pin: shaPin, wantKeep: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := checks.Finding{Category: checks.UnreachablePin, Severity: checks.SeverityError, ParentNWO: tt.parent}
-			assert.Equal(t, tt.wantKeep, parityKeep(tt.relock, tt.acceptMoved)(&f, tt.pin))
-			assert.Equal(t, tt.wantWarn, f.Severity == checks.SeverityWarning)
-		})
-	}
-}

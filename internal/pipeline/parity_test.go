@@ -235,3 +235,77 @@ func TestMovedTagFinding(t *testing.T) {
 		})
 	}
 }
+
+func TestCompositeEdges(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	pin := func(k string) parserlock.Pin {
+		p, ok := parserlock.ParsePin(k)
+		require.True(t, ok)
+		return p
+	}
+	closure := []lockfile.LockedPin{
+		{Pin: pin("octo/composite@v1"), Action: parserlock.Action{Uses: []string{"actions/checkout@" + sha}}},
+		{Pin: pin("actions/checkout@" + sha)},
+	}
+	edges := compositeEdges(closure)
+	require.Len(t, edges, 1)
+	require.Len(t, edges["actions/checkout@"+sha], 1, "a direct pin a composite also lists keeps that edge")
+	assert.Equal(t, "octo/composite@v1", edges["actions/checkout@"+sha][0].Pin.String())
+}
+
+func TestHeldBy(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	pin := func(k, parent string) lockfile.LockedPin {
+		p, ok := parserlock.ParsePin(k)
+		require.True(t, ok)
+		return lockfile.LockedPin{Pin: p, Parent: parent}
+	}
+	composite := []lockfile.LockedPin{pin("octo/root@v1", "")}
+	tests := []struct {
+		name       string
+		lp         lockfile.LockedPin
+		composites []lockfile.LockedPin
+		want       string
+	}{
+		{"a composite's child", pin("actions/checkout@v4", "octo/root@v1"), composite, "octo/root@v1"},
+		{"a full-SHA entry shared with a direct use", pin("actions/checkout@"+sha, ""), composite, "octo/root@v1"},
+		{"a mutable entry shared with a direct use is re-resolved in place", pin("actions/checkout@v4", ""), composite, ""},
+		{"a direct pin no composite lists", pin("actions/checkout@"+sha, ""), nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, heldBy(tt.lp, tt.composites))
+		})
+	}
+}
+
+func TestPlannedAway(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	pin := func(k, parent string) lockfile.LockedPin {
+		p, ok := parserlock.ParsePin(k)
+		require.True(t, ok)
+		return lockfile.LockedPin{Pin: p, Parent: parent}
+	}
+	composite := []lockfile.LockedPin{pin("octo/root@v1", "")}
+	tests := []struct {
+		name       string
+		lp         lockfile.LockedPin
+		composites []lockfile.LockedPin
+		effect     checks.PruneEffect
+		want       bool
+	}{
+		{"an unpruned entry is written back", pin("actions/checkout@v4", ""), nil, checks.NotPruned, false},
+		{"a re-resolved mutable pin is overwritten", pin("actions/checkout@v4", ""), nil, checks.Reresolved, true},
+		{"so is one a composite shares, under the same key", pin("actions/checkout@v4", ""), composite, checks.Reresolved, true},
+		{"a re-resolved full-SHA pin may be re-keyed", pin("actions/checkout@"+sha, ""), composite, checks.Reresolved, false},
+		{"a re-resolved full-SHA pin nothing else lists is replaced", pin("actions/checkout@"+sha, ""), nil, checks.Reresolved, true},
+		{"a dropped use nothing else lists is removed", pin("actions/checkout@v4", ""), nil, checks.Dropped, true},
+		{"a dropped use a composite lists leaves the entry", pin("actions/checkout@v4", ""), composite, checks.Dropped, false},
+		{"a composite's child is never pruned", pin("actions/checkout@v4", "octo/root@v1"), composite, checks.Reresolved, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, plannedAway(tt.lp, tt.composites, tt.effect))
+		})
+	}
+}

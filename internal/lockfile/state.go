@@ -47,6 +47,8 @@ type State struct {
 	idCache         map[string][2]int64
 	idSF            singleflight.Group
 	hostname        string
+	// preview marks a copy from Preview, which Save refuses.
+	preview bool
 }
 
 // ErrCorruptLockfile reports that a lockfile exists on disk but its contents
@@ -674,6 +676,9 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 // entries (pins referenced by no workflow). When the in-memory file is empty
 // after GC, the on-disk file is removed.
 func (s *State) Save() error {
+	if s.preview {
+		return errPreview
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneOrphans()

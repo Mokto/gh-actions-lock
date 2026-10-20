@@ -31,35 +31,18 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 	if copts != nil && copts.OnProgress != nil {
 		progress = copts.OnProgress
 	}
-	if copts != nil && copts.SkipNewWorkflowEntries {
-		workflows := rec.Workflows[:0]
-		for _, wp := range rec.Workflows {
-			if store.HasWorkflow(workflowfile.KeyFromPath(wp.Path)) {
-				workflows = append(workflows, wp)
-			}
-		}
-		rec.Workflows = workflows
-	}
+	rec.Workflows = committedWorkflows(rec, store, copts)
 	if err := validateRequiredRewrites(rec.Workflows); err != nil {
 		return err
 	}
 
 	// Phase 1: Update lockfile entries in memory. It runs before any file is
 	// rewritten, so an entry the lockfile refuses leaves every file as it was.
-	pinnedByWorkflow := groupPinnedByWorkflow(rec)
 	if len(rec.Workflows) > 0 {
 		progress("Updating lockfile")
 	}
-	for _, wp := range rec.Workflows {
-		wfPath := wp.Path
-		wfKey := workflowfile.KeyFromPath(wfPath)
-		deps := pinnedByWorkflow[wfPath]
-		parentMap := buildParentMap(rec, wfPath)
-		directKeys := buildDirectKeys(rec, wfPath)
-		deps = retainUnresolvablePins(rec, store, wfPath, deps, directKeys)
-		if err := store.Set(ctx, wfKey, deps, parentMap, directKeys); err != nil {
-			return fmt.Errorf("updating lockfile for %s: %w", wfPath, err)
-		}
+	if err := updateLockfile(ctx, rec, rec.Workflows, store); err != nil {
+		return err
 	}
 
 	// Phase 2: Rewrite workflow files (uses: line changes).
@@ -95,6 +78,37 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 		return fmt.Errorf("saving lockfile: %w", err)
 	}
 
+	return nil
+}
+
+// committedWorkflows are the planned workflows Commit writes.
+func committedWorkflows(rec *Record, store *lockfile.State, copts *CommitOptions) []WorkflowPlan {
+	if copts == nil || !copts.SkipNewWorkflowEntries {
+		return rec.Workflows
+	}
+	var workflows []WorkflowPlan
+	for _, wp := range rec.Workflows {
+		if store.HasWorkflow(workflowfile.KeyFromPath(wp.Path)) {
+			workflows = append(workflows, wp)
+		}
+	}
+	return workflows
+}
+
+// updateLockfile sets each planned workflow's entries in store.
+func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, store *lockfile.State) error {
+	pinnedByWorkflow := groupPinnedByWorkflow(rec)
+	for _, wp := range workflows {
+		wfPath := wp.Path
+		wfKey := workflowfile.KeyFromPath(wfPath)
+		deps := pinnedByWorkflow[wfPath]
+		parentMap := buildParentMap(rec, wfPath)
+		directKeys := buildDirectKeys(rec, wfPath)
+		deps = retainUnresolvablePins(rec, store, wfPath, deps, directKeys)
+		if err := store.Set(ctx, wfKey, deps, parentMap, directKeys); err != nil {
+			return fmt.Errorf("updating lockfile for %s: %w", wfPath, err)
+		}
+	}
 	return nil
 }
 
