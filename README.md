@@ -39,7 +39,7 @@ A full-directory run (`gh actions-lock` with no path arguments) also prunes lock
 
 Locked pins are sticky: a normal run only re-resolves refs the lockfile does
 not record yet. Every locked pin, including transitive ones, is re-checked the
-way the runner checks it at job start: the repository was not renamed or
+way the Actions backend resolver does: the repository was not renamed or
 transferred, the pinned commit still exists, and it is still in the history of
 the tag or branch the lockfile recorded. A failed check blocks the run.
 

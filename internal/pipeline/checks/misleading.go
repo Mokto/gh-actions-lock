@@ -140,7 +140,7 @@ func checkOneRefMoved(ctx context.Context, pw ParsedWorkflow, ref parserlock.Act
 	return f, true
 }
 
-// AcceptMovedRemediation is the single next step for a pin the runner
+// AcceptMovedRemediation is the single next step for a pin the Actions backend
 // can't trust: --relock refuses these, so the override must be explicit.
 const AcceptMovedRemediation = "verify it, then run `gh actions-lock --accept-moved`"
 

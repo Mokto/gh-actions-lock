@@ -453,7 +453,7 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 }
 
 // renderRedirects lists pins whose repository was renamed or transferred
-// but kept its repo ID. The runner follows the redirect, so it's a warning
+// but kept its repo ID. The Actions backend follows the redirect, so it's a warning
 // with the replacement `uses:` line. A fix run rewrites workflow refs and
 // reports that instead.
 func renderRedirects(out *ui.UI, report *checks.Report, willRemediate bool) {

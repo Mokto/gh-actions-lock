@@ -14,7 +14,7 @@ import (
 )
 
 // PinCheck is a locked dependency to re-check against the host, mirroring
-// what the runner verifies at job start.
+// what the Actions backend resolver verifies.
 type PinCheck struct {
 	Owner string
 	Repo  string
