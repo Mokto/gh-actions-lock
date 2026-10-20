@@ -1301,3 +1301,16 @@ func TestPrepareRefreshRejectsIncompleteOrConflictingPlans(t *testing.T) {
 		})
 	}
 }
+
+func TestHostConflicts(t *testing.T) {
+	file := parserlock.File{Dependencies: map[string]parserlock.Action{
+		"o/split@v1":  {Hostname: "github.com"},
+		"o/split@v2":  {},
+		"o/single@v1": {},
+		"o/single@v2": {Hostname: "tenant.ghe.com"},
+		"O/Public@v1": {Hostname: "github.com"},
+		"o/public@v2": {Hostname: "github.com"},
+	}}
+	s := &State{file: file, hostname: "tenant.ghe.com"}
+	assert.Equal(t, map[string][]string{"o/split": {"github.com", "tenant.ghe.com"}}, s.HostConflicts())
+}

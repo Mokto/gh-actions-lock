@@ -33,9 +33,22 @@ func (c *Client) PinHost(owner, repo, hostname string) error {
 	return nil
 }
 
+// BlockRepo makes every later lookup of owner/repo fail with reason instead
+// of asking any host: the lockfile records it on more than one, and asking
+// either would resolve it on a host it may not live on.
+func (c *Client) BlockRepo(owner, repo, reason string) {
+	if c.blocked == nil {
+		c.blocked = map[Repo]string{}
+	}
+	c.blocked[ForRepo(owner, repo)] = reason
+}
+
 // ForRepo selects a host once per repository. Only a repository-level 404
 // permits public fallback; missing refs, denied access and transport errors do not.
 func (c *Client) ForRepo(ctx context.Context, owner, repo string) (*Client, error) {
+	if reason, ok := c.blocked[ForRepo(owner, repo)]; ok {
+		return nil, fmt.Errorf("%s/%s: %s", owner, repo, reason)
+	}
 	if c.local == nil {
 		return c, nil
 	}

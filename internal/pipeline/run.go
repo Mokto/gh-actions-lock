@@ -147,6 +147,9 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			}
 		}
 	}
+	if opts.Store != nil {
+		refuseHostConflicts(parsed, opts.Store, report)
+	}
 	if !opts.Verify && !opts.CollapseSpellings && opts.Store != nil {
 		refuseAmbiguousSpellings(parsed, opts.Store, report)
 	}

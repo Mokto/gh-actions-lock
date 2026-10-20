@@ -35,6 +35,8 @@ type Client struct {
 	routes   syncmap.Map[Repo, *Client]
 	routeSF  singleflight.Group
 	pinned   map[Repo]string
+	// blocked holds repositories no host may be asked about, with why.
+	blocked map[Repo]string
 
 	// anonBaseURL overrides the base URL for anonymous REST fallback calls.
 	// Empty uses the default "https://api.<Hostname>". Set in tests.

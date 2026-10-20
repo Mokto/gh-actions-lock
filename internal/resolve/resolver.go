@@ -117,6 +117,12 @@ func New(hostname string, pool *pinpool.Pool, opts ...Option) (*Resolver, error)
 
 // --- Seeding (post-construction, deps come from lockfile loaded after resolver) ---
 
+// BlockRepo keeps every host from being asked about owner/repo: see
+// ghapi.Client.BlockRepo.
+func (r *Resolver) BlockRepo(owner, repo, reason string) {
+	r.gh.BlockRepo(owner, repo, reason)
+}
+
 // SeedHosts binds recorded repositories before caches or network work begin.
 func (r *Resolver) SeedHosts(deps []dep.Dependency) error {
 	for _, d := range deps {

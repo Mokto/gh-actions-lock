@@ -314,7 +314,12 @@ func (s *State) VerifyHosts(ctx context.Context, workflowKeys []string) error {
 		}
 	}
 	sort.Strings(keys)
+	// A repository recorded on two hosts is reported per workflow instead.
+	conflicts := s.hostConflicts()
 	for _, key := range keys {
+		if pin, ok := parserlock.ParsePin(key); ok && conflicts[strings.ToLower(pin.Owner+"/"+pin.Repo)] != nil {
+			continue
+		}
 		if s.meta == nil {
 			return fmt.Errorf("metadata resolver not configured")
 		}
@@ -717,6 +722,37 @@ func (s *State) AllDeps() []dep.Dependency {
 			d.SHA = action.Commit[idx+1:]
 		}
 		out = append(out, d)
+	}
+	return out
+}
+
+// HostConflicts maps each repository (lowercase owner/repo) recorded on
+// more than one host to those hosts, sorted. A repository lives on one
+// host, so its pins can't be resolved or verified without guessing.
+func (s *State) HostConflicts() map[string][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hostConflicts()
+}
+
+func (s *State) hostConflicts() map[string][]string {
+	hosts := map[string][]string{}
+	for raw, action := range s.file.Dependencies {
+		pin, ok := parserlock.ParsePin(raw)
+		if !ok {
+			continue
+		}
+		repo := strings.ToLower(pin.Owner + "/" + pin.Repo)
+		if h := s.hostOrHome(action.Hostname); !slices.Contains(hosts[repo], h) {
+			hosts[repo] = append(hosts[repo], h)
+		}
+	}
+	out := map[string][]string{}
+	for repo, hs := range hosts {
+		if len(hs) > 1 {
+			slices.Sort(hs)
+			out[repo] = hs
+		}
 	}
 	return out
 }

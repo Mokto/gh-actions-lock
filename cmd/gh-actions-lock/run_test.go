@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -1131,6 +1134,145 @@ func TestRun_RelockCollapseDiscardsAlternateMetadata(t *testing.T) {
 
 	_, stderr, err = runCommandWithHTTP(t, transport, "--verify")
 	require.NoError(t, err, stderr)
+}
+
+// hostFixture records acme/child at a full SHA on the selected tenant host
+// and, when conflict, also under another spelling on github.com. Requests
+// outside the injected transport fail.
+func hostFixture(t *testing.T, conflict bool) string {
+	t.Helper()
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	path := writeTempWorkflow(t, "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/child@"+sha+"\n")
+	t.Setenv("GH_HOST", "tenant.ghe.com")
+	old := http.DefaultTransport
+	http.DefaultTransport = denyTransport{}
+	t.Cleanup(func() { http.DefaultTransport = old })
+	entry := func(ref, host, uses string) string {
+		e := "  'acme/child@" + ref + "':\n    hostname: '" + host + "'\n    ref: 'v2'\n    commit: 'sha1-" + sha + "'\n    owner_id: 1\n    repo_id: 1\n"
+		if uses != "" {
+			e += "    uses:\n      - '" + uses + "'\n"
+		}
+		return e
+	}
+	lock := "version: 'v0.0.3'\nworkflows:\n  '" + path + "':\n    - 'acme/child@" + sha + "'\ndependencies:\n" +
+		entry(sha, "tenant.ghe.com", "acme/leaf@v3") +
+		"  'acme/leaf@v3':\n    hostname: 'tenant.ghe.com'\n    ref: 'v3'\n    commit: 'sha1-" + graphLeafSHA + "'\n    owner_id: 1\n    repo_id: 1\n"
+	if conflict {
+		lock += entry(strings.ToUpper(sha), "github.com", "")
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+	return path
+}
+
+type denyTransport struct{}
+
+func (denyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("unexpected request outside the fixture: %s", req.URL)
+}
+
+// TestRun_RepositoryOnTwoHostsBlocks: one repository recorded on two hosts
+// can't be resolved on either without guessing, so every mode reports a
+// blocking finding, no host is asked about it, and nothing is written for
+// any workflow, even one that doesn't use it. It is a diagnosis, not a tool
+// failure. A single host is fine.
+func TestRun_RepositoryOnTwoHostsBlocks(t *testing.T) {
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	for _, tt := range []struct {
+		name string
+		args []string
+		// other scans only a workflow that doesn't use the repository.
+		other bool
+	}{
+		{name: "plain", args: []string{"--no-narrow"}},
+		{name: "verify-local", args: []string{"--verify-local"}},
+		{name: "verify", args: []string{"--verify"}},
+		{name: "relock", args: []string{"--relock", "--no-narrow"}},
+		{name: "plain, another workflow only", args: []string{"--no-narrow"}, other: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := hostFixture(t, true)
+			other := filepath.Join(".github", "workflows", "other.yml")
+			require.NoError(t, os.WriteFile(other, []byte(graphWorkflow), 0o600))
+			before := snapshotWorkflows(t)
+			args := tt.args
+			want := path
+			if tt.other {
+				args = append(args, other)
+				want = filepath.ToSlash(other)
+			}
+
+			rt := &requestLog{rt: &graphTransport{childSHA: sha}}
+			p, err := runParity(t, rt, args...)
+			require.ErrorIs(t, err, errSilent)
+			assert.False(t, p.Valid)
+			hostFinding := slices.IndexFunc(p.Findings, func(f format.Finding) bool {
+				return f.Severity == "error" && f.Workflow == want && strings.Contains(f.Detail, "acme/child is recorded on github.com and tenant.ghe.com")
+			})
+			assert.NotEqual(t, -1, hostFinding, "%+v", p.Findings)
+			assert.Equal(t, before, snapshotWorkflows(t), "nothing is written")
+			assert.Empty(t, rt.about("child"), "no host is asked about acme/child")
+		})
+	}
+
+	t.Run("one host", func(t *testing.T) {
+		hostFixture(t, false)
+		transport := &graphTransport{childSHA: sha}
+		_, stderr, err := runCommandWithHTTP(t, transport, "--no-narrow")
+		require.NoError(t, err, stderr)
+		before := snapshotWorkflows(t)
+		for _, mode := range [][]string{{"--no-narrow"}, {"--verify-local"}, {"--verify"}} {
+			_, stderr, err := runCommandWithHTTP(t, transport, mode...)
+			require.NoError(t, err, "%v: %s", mode, stderr)
+			assert.Equal(t, before, snapshotWorkflows(t))
+		}
+	})
+}
+
+// requestLog records the repository names its requests ask about.
+type requestLog struct {
+	rt   http.RoundTripper
+	mu   sync.Mutex
+	seen []string
+}
+
+func (l *requestLog) RoundTrip(req *http.Request) (*http.Response, error) {
+	var names []string
+	if parts := strings.Split(req.URL.Path, "/"); len(parts) > 3 && parts[1] == "repos" {
+		names = append(names, parts[3])
+	}
+	if req.Body != nil {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		var gql struct {
+			Variables map[string]any `json:"variables"`
+		}
+		if json.Unmarshal(body, &gql) == nil {
+			for k, v := range gql.Variables {
+				if s, ok := v.(string); ok && strings.HasPrefix(k, "name") {
+					names = append(names, s)
+				}
+			}
+		}
+	}
+	l.mu.Lock()
+	l.seen = append(l.seen, names...)
+	l.mu.Unlock()
+	return l.rt.RoundTrip(req)
+}
+
+func (l *requestLog) about(repo string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, n := range l.seen {
+		if strings.EqualFold(n, repo) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func TestRun_ParitySSOGuidance(t *testing.T) {

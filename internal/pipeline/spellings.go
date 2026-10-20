@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -53,6 +54,60 @@ func refuseAmbiguousSpellings(parsed []checks.ParsedWorkflow, store *lockfile.St
 				Remediation:  "spell the commit one way in every workflow and composite, and keep only that entry in actions.lock",
 			})
 			wr.SkipCommit = true
+		}
+	}
+}
+
+// refuseHostConflicts blocks the run when the lockfile records a repository
+// on more than one host. A repository lives on one host, so its pins can't
+// be resolved or verified without guessing which, and every workflow's
+// write would keep the conflicting entries: each workflow that reaches it
+// gets a blocking finding, every other workflow too when none does, and no
+// workflow is written.
+func refuseHostConflicts(parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report) {
+	conflicts := store.HostConflicts()
+	if len(conflicts) == 0 {
+		return
+	}
+	finding := func(path, repo string) checks.Finding {
+		return checks.Finding{
+			WorkflowPath: path,
+			Category:     checks.NotPinned,
+			Severity:     checks.SeverityError,
+			Confidence:   checks.ConfidenceHigh,
+			Detail:       fmt.Sprintf("%s is recorded on %s; a repository lives on one host, so its pins can't be resolved or verified", repo, strings.Join(conflicts[repo], " and ")),
+			Remediation:  "keep only the entries for the host the repository lives on in actions.lock, then run `gh actions-lock`",
+		}
+	}
+	reachedAny := false
+	for i, pw := range parsed {
+		var reached []string
+		for _, ref := range pw.Refs {
+			reached = append(reached, ref.Owner+"/"+ref.Repo)
+		}
+		for _, lp := range store.Closure(workflowfile.KeyFromPath(pw.Path), func(parserlock.Pin, parserlock.Action) bool { return true }) {
+			reached = append(reached, lp.Pin.Owner+"/"+lp.Pin.Repo)
+		}
+		reported := map[string]bool{}
+		wr := &report.Workflows[i]
+		for _, nwo := range reached {
+			repo := strings.ToLower(nwo)
+			if conflicts[repo] == nil || reported[repo] {
+				continue
+			}
+			reported[repo] = true
+			reachedAny = true
+			wr.Findings = append(dropValid(wr.Findings), finding(pw.Path, repo))
+		}
+		wr.SkipCommit = true
+	}
+	if reachedAny {
+		return
+	}
+	for i, pw := range parsed {
+		wr := &report.Workflows[i]
+		for _, repo := range slices.Sorted(maps.Keys(conflicts)) {
+			wr.Findings = append(dropValid(wr.Findings), finding(pw.Path, repo))
 		}
 	}
 }

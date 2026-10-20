@@ -98,5 +98,7 @@ func VerifyLocalCoverage(parsed []checks.ParsedWorkflow, store *lockfile.State) 
 		results = append(results, wr)
 	}
 
-	return &checks.Report{Workflows: results}
+	report := &checks.Report{Workflows: results}
+	refuseHostConflicts(parsed, store, report)
+	return report
 }

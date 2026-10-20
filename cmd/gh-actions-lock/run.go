@@ -232,7 +232,21 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		return err
 	}
 	recorded := store.AllDeps()
-	if err := r.SeedHosts(recorded); err != nil {
+	// A repository recorded on two hosts is bound to neither, and no host is
+	// asked about it: diagnosis reports it as a blocking finding.
+	conflicts := store.HostConflicts()
+	for repo, hosts := range conflicts {
+		owner, name, _ := strings.Cut(repo, "/")
+		r.BlockRepo(owner, name, "recorded on "+strings.Join(hosts, " and ")+"; not resolved on either")
+	}
+	var hosted []dep.Dependency
+	for _, d := range recorded {
+		owner, repo := d.OwnerRepo()
+		if conflicts[strings.ToLower(owner+"/"+repo)] == nil {
+			hosted = append(hosted, d)
+		}
+	}
+	if err := r.SeedHosts(hosted); err != nil {
 		return err
 	}
 	scope := make([]string, len(paths))
