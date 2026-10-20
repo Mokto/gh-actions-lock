@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -187,13 +188,20 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	}
 
 	// Per-dep trust: recorded deps skip the network path.
-	unrecordedRefs, inventorySHA := partitionByInventory(inventory, wr.ActionRefs)
-	entries = verifiedEntries(inventory, wr.Path)
-
 	// Explicit refresh must rebuild the graph, not just entries with movement
 	// findings: absent children have no recorded SHA to compare.
+	var unrecordedRefs []parserlock.ActionRef
+	var inventorySHA map[string]bool
+	if !refresh {
+		var err error
+		unrecordedRefs, inventorySHA, err = partitionByInventory(inventory, wr.ActionRefs)
+		if err != nil {
+			return planResult{}, err
+		}
+		entries = verifiedEntries(inventory, wr.Path)
+	}
 	if refresh || len(unrecordedRefs) == 0 && repinMoved {
-		unrecordedRefs, inventorySHA = partitionByInventory(nil, wr.ActionRefs)
+		unrecordedRefs, inventorySHA, _ = partitionByInventory(nil, wr.ActionRefs)
 		entries = verifiedEntries(nil, wr.Path)
 	}
 
@@ -610,21 +618,42 @@ func informationalEntry(f checks.Finding, path string) Entry {
 // partitionByInventory splits refs into those with a matching inventory
 // entry (recorded) and those without (unrecorded). Returns the unrecorded
 // refs and an NWO:SHA index for deduplicating resolved deps later.
-func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.ActionRef) (unrecorded []parserlock.ActionRef, shaSeen map[string]bool) {
-	byKey := make(map[string]bool, len(inventory))
+//
+// Workflow text and recorded keys are different sources, so a ref reaches an
+// entry by reference identity: its exact spelling, else the only entry with
+// its identity. Several entries and no exact one is an error, because their
+// recorded refs and edges can differ and none is the one the workflow means.
+func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.ActionRef) (unrecorded []parserlock.ActionRef, shaSeen map[string]bool, err error) {
+	byID := make(map[string][]dep.Dependency, len(inventory))
 	shaSeen = make(map[string]bool, len(inventory))
 	for _, inv := range inventory {
-		nwo := strings.ToLower(inv.Dep.NWO)
-		byKey[nwo+"@"+inv.Dep.Ref] = true
+		id := dep.RefKey(inv.Dep.NWO, inv.Dep.Ref)
+		if !slices.ContainsFunc(byID[id], func(d dep.Dependency) bool { return sameSpelling(d, inv.Dep.NWO, inv.Dep.Ref) }) {
+			byID[id] = append(byID[id], inv.Dep)
+		}
 		shaSeen[checks.PruneKey(inv.Dep.NWO, inv.Dep.Ref, inv.Dep.SHA)] = true
 	}
 	for _, ref := range refs {
-		key := dep.FoldedKey(ref.Owner+"/"+ref.Repo, ref.Ref)
-		if !byKey[key] {
+		nwo := ref.Owner + "/" + ref.Repo
+		recorded := byID[dep.RefKey(nwo, ref.Ref)]
+		switch {
+		case len(recorded) == 0:
 			unrecorded = append(unrecorded, ref)
+		case len(recorded) > 1 && !slices.ContainsFunc(recorded, func(d dep.Dependency) bool { return sameSpelling(d, nwo, ref.Ref) }):
+			spellings := make([]string, len(recorded))
+			for i, d := range recorded {
+				spellings[i] = d.Key()
+			}
+			slices.Sort(spellings)
+			err = errors.Join(err, fmt.Errorf("%s@%s matches several recorded entries and none exactly (%s); change it to one of them or rerun with --relock", nwo, ref.Ref, strings.Join(spellings, ", ")))
 		}
 	}
-	return unrecorded, shaSeen
+	return unrecorded, shaSeen, err
+}
+
+// sameSpelling reports whether d is spelled nwo@ref, owner/repo folded.
+func sameSpelling(d dep.Dependency, nwo, ref string) bool {
+	return strings.EqualFold(d.NWO, nwo) && d.Ref == ref
 }
 
 // pruneStaleInventory drops inventory entries matching a pruning finding

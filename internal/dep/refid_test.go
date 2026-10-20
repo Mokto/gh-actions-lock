@@ -71,7 +71,6 @@ var pendingKeyCalls = map[string]int{
 	"internal/pin/plan.go:Plan:dep.FoldedKey":                             1,
 	"internal/pin/plan.go:actionRefKeys:dep.FoldedKey":                    1,
 	"internal/pin/plan.go:narrowVerifiedEntries:dep.FoldedKey":            1,
-	"internal/pin/plan.go:partitionByInventory:dep.FoldedKey":             1,
 	"internal/pin/plan.go:rejectPartialSelfActionRewrites:dep.FoldedKey":  1,
 	"internal/pin/plan.go:retainedLockTargets:lockfile.Pin.String":        1,
 	"internal/pipeline/parity.go:checkParity:lockfile.Pin.String":         2,

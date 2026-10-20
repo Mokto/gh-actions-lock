@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -54,6 +55,8 @@ type graphTransport struct {
 	// childSHA overrides acme/child's commit, and parentUsesChildAt makes
 	// acme/parent use acme/child at that spelling of it.
 	childSHA, parentUsesChildAt string
+	// childOnMain answers that acme/child's commit is in its main branch.
+	childOnMain bool
 }
 
 func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -147,6 +150,9 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return httpmock.JSONResponse(map[string]any{"data": data})(req)
 		}
 		return parityOK(req)
+	}
+	if g.childOnMain && strings.HasPrefix(req.URL.Path, "/repos/acme/child/compare/") {
+		return httpmock.JSONResponse(httpmock.CompareAncestorResponse(cmp.Or(g.childSHA, graphChildSHA)))(req)
 	}
 	if req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/repos/acme/") && strings.Contains(req.URL.Path, "/git/ref/tags/") {
 		// No branch here is shadowed by a same-named tag.
@@ -780,6 +786,68 @@ func TestCompleteness_VerifyMatchesTransitiveFullSHAInAnyCase(t *testing.T) {
 			assert.Equal(t, []string{"locked manifest for acme/child@" + child + " uses acme/leaf@v3 but the lockfile omits that edge"}, blocking)
 		})
 	}
+}
+
+// shaSpellingLock records acme/child at a full SHA under each of keys, as
+// roots of the workflow at path. Each key records ref v2 and the leaf edge.
+func shaSpellingLock(t *testing.T, path string, keys ...string) {
+	t.Helper()
+	var roots, deps strings.Builder
+	for _, k := range keys {
+		roots.WriteString("    - 'acme/child@" + k + "'\n")
+		deps.WriteString("  'acme/child@" + k + "':\n    ref: 'v2'\n    commit: 'sha1-" + strings.ToLower(k) + "'\n    owner_id: 1\n    repo_id: 1\n    uses:\n      - 'acme/leaf@v3'\n")
+	}
+	lock := "version: 'v0.0.3'\nworkflows:\n  '.github/workflows/" + filepath.Base(path) + "':\n" + roots.String() +
+		"dependencies:\n" + deps.String() +
+		"  'acme/leaf@v3':\n    ref: 'v3'\n    commit: 'sha1-" + graphLeafSHA + "'\n    owner_id: 1\n    repo_id: 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+}
+
+// TestRun_WorkflowSHASpellingReachesRecordedEntry: a full SHA names one
+// commit in any case, so a workflow planned for another reason reuses the
+// entry it already has under another spelling instead of resolving it again.
+func TestRun_WorkflowSHASpellingReachesRecordedEntry(t *testing.T) {
+	const child = "abcdef0123456789abcdef0123456789abcdef01"
+	for _, spelling := range []string{strings.ToUpper(child), child} {
+		t.Run(spelling[:6], func(t *testing.T) {
+			path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/child@"+spelling+"\n")
+			shaSpellingLock(t, path, child)
+
+			_, stderr, err := runCommandWithHTTP(t, &graphTransport{childSHA: child}, "--no-narrow", path)
+			require.NoError(t, err, stderr)
+			file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+			require.NoError(t, err)
+			assert.Equal(t, []string{"acme/child@" + child, "acme/parent@v1.0.0"}, file.Workflows[".github/workflows/"+filepath.Base(path)])
+			assert.Equal(t, "v2", file.Dependencies["acme/child@"+child].Ref)
+			assert.NotContains(t, file.Dependencies, "acme/child@"+strings.ToUpper(child))
+		})
+	}
+}
+
+// TestRun_AmbiguousSHASpellingRefusesWrite: when a workflow's SHA matches
+// several recorded spellings and none exactly, their refs and edges may
+// differ and no rule picks one, so nothing is written.
+func TestRun_AmbiguousSHASpellingRefusesWrite(t *testing.T) {
+	const child = "abcdef0123456789abcdef0123456789abcdef01"
+	upper := strings.ToUpper(child)
+	path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/child@AbCdEf0123456789abcdef0123456789abcdef01\n")
+	shaSpellingLock(t, path, child, upper)
+	before := readTempLockfilePins(t)
+	transport := &graphTransport{childSHA: child, childOnMain: true}
+
+	_, stderr, err := runCommandWithHTTP(t, transport, "--no-narrow", path)
+	require.Error(t, err)
+	assert.Contains(t, stderr, "acme/child@"+child)
+	assert.Contains(t, stderr, "acme/child@"+upper)
+	assert.Equal(t, before, readTempLockfilePins(t))
+
+	// --relock rebuilds from the workflow's own spelling, so nothing is
+	// ambiguous.
+	_, stderr, err = runCommandWithHTTP(t, transport, "--no-narrow", "--relock", path)
+	require.NoError(t, err, stderr)
+	file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/child@AbCdEf0123456789abcdef0123456789abcdef01", "acme/parent@v1.0.0"}, file.Workflows[".github/workflows/"+filepath.Base(path)])
 }
 
 func TestRun_ParitySSOGuidance(t *testing.T) {
