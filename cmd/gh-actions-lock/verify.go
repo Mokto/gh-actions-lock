@@ -108,25 +108,46 @@ func appendOwnSHAEntryFindings(report *checks.Report, store *lockfile.State, sca
 		if slices.ContainsFunc(e.Workflows, func(wf string) bool { return isScanned[wf] }) {
 			continue
 		}
-		pin, _ := parserlock.ParsePin(e.Key)
-		f := checks.Finding{
-			Category:    checks.NotPinned,
-			Severity:    checks.SeverityError,
-			Confidence:  checks.ConfidenceHigh,
-			Dependency:  &dep.Dependency{NWO: pin.NWO, Ref: pin.Ref, SHA: pin.Ref},
-			Remediation: "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from",
-		}
-		where := "used by no workflow"
-		switch {
-		case len(e.Workflows) > 0:
-			f.WorkflowPath = e.Workflows[0]
-			where = "in " + e.Workflows[0]
-		case len(e.Parents) > 0:
-			where = "used by " + e.Parents[0]
-		default:
+		f := ownSHAEntryFinding(e)
+		f.Severity = checks.SeverityError
+		f.Remediation = "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from"
+		if len(e.Workflows) == 0 && len(e.Parents) == 0 {
 			f.Remediation = "run `gh actions-lock` to drop it"
 		}
-		f.Detail = fmt.Sprintf("lock entry for %s, %s, records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", e.Key, where, parserlock.ShortSHA(pin.Ref))
 		report.RepoFindings = append(report.RepoFindings, f)
 	}
+}
+
+// appendUnselectedOwnSHAWarnings warns, after a fix run, about each entry
+// that still records its own SHA as its ref. A run repairs or blocks on
+// every such entry its workflows reach, so one left belongs to workflows
+// the run wasn't given and must not rewrite.
+func appendUnselectedOwnSHAWarnings(report *checks.Report, store *lockfile.State) {
+	for _, e := range store.OwnSHAEntries() {
+		f := ownSHAEntryFinding(e)
+		f.Severity = checks.SeverityWarning
+		f.Remediation = "run `gh actions-lock` without a path to repair it"
+		report.RepoFindings = append(report.RepoFindings, f)
+	}
+}
+
+// ownSHAEntryFinding describes e as a not-pinned finding, naming where it
+// sits; callers set the severity and remediation.
+func ownSHAEntryFinding(e lockfile.OwnSHAEntry) checks.Finding {
+	pin, _ := parserlock.ParsePin(e.Key)
+	f := checks.Finding{
+		Category:   checks.NotPinned,
+		Confidence: checks.ConfidenceHigh,
+		Dependency: &dep.Dependency{NWO: pin.NWO, Ref: pin.Ref, SHA: pin.Ref},
+	}
+	where := "used by no workflow"
+	switch {
+	case len(e.Workflows) > 0:
+		f.WorkflowPath = e.Workflows[0]
+		where = "in " + e.Workflows[0]
+	case len(e.Parents) > 0:
+		where = "used by " + e.Parents[0]
+	}
+	f.Detail = fmt.Sprintf("lock entry for %s, %s, records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", e.Key, where, parserlock.ShortSHA(pin.Ref))
+	return f
 }

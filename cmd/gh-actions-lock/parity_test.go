@@ -1580,6 +1580,72 @@ func TestSHARecordedRef_ChildFixRepairs(t *testing.T) {
 	}
 }
 
+// TestSHARecordedRef_ScopedFixWarns: a fix run given workflow paths warns
+// about an own-SHA entry of a workflow it didn't select, names the entry and
+// the full-scan repair, never claims every workflow is valid, still writes
+// the selected workflow and exits 0, and leaves the unselected workflow and
+// its entry untouched.
+func TestSHARecordedRef_ScopedFixWarns(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	for _, locked := range []bool{true, false} {
+		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}} {
+			t.Run(fmt.Sprintf("selected locked=%v/%s", locked, mode), func(t *testing.T) {
+				reg := &httpmock.Registry{}
+				for range 4 {
+					reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+						"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+					}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
+						httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+						httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", parityTestSHA)))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+				}
+				httpmock.NoTagsNamed(reg, "actions", "checkout")
+				isolateRunLogs(t)
+				ci := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+`)
+				other := filepath.Join(".github", "workflows", "other.yml")
+				otherBody := "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + parityTestSHA + "\n"
+				require.NoError(t, os.WriteFile(other, []byte(otherBody), 0o600))
+				otherLock := "    '.github/workflows/other.yml':\n        - 'actions/checkout@" + parityTestSHA + "'\n"
+				legacy := "    'actions/checkout@" + parityTestSHA + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+				lock := "version: 'v0.0.3'\nworkflows:\n" + otherLock + "dependencies:\n" + legacy
+				if locked {
+					lock = "version: 'v0.0.3'\nworkflows:\n" + otherLock +
+						"    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n" +
+						"dependencies:\n" + legacy +
+						"    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+				_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, append(args, "--no-interactive", ci)...)
+				require.NoError(t, err, stderr)
+				assert.Contains(t, stderr, "actions/checkout@"+parityTestSHA+", in .github/workflows/other.yml, records ref "+parserlock.ShortSHA(parityTestSHA))
+				assert.Contains(t, stderr, "run `gh actions-lock` without a path to repair it")
+				assert.NotRegexp(t, `All \d+ workflows? valid`, stderr)
+				gotOther, err := os.ReadFile(other)
+				require.NoError(t, err)
+				assert.Equal(t, otherBody, string(gotOther))
+				after := readTempLockfilePins(t)
+				assert.Contains(t, after, otherLock)
+				assert.Contains(t, after, legacy)
+				assert.Contains(t, after, "    'actions/checkout@v6.1.0':\n        ref: 'v6.1.0'\n")
+				assert.Contains(t, after, "    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n")
+			})
+		}
+	}
+}
+
 // TestParity_NonBranchRefRefused: a key whose ref is neither a tag nor a
 // branch resolves by rev-parse rules but the Actions backend resolver rejects
 // it, so no mode may write a lock for it, including --relock, which otherwise

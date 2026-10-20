@@ -147,6 +147,7 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 
 	renderFullScanWarnings(console, pinned)
 	renderCooldownFindings(console, report)
+	ownSHAWarnings := renderOwnSHAWarnings(console, report)
 	presentErrors := reportHasNonInvestigatedUnfixableErrors(report) ||
 		len(investigated) == 0 && reportHasUnfixableErrors(report, acceptMoved)
 	if !noNarrow {
@@ -171,7 +172,7 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	onboardingRefused := len(refusedLabels)
 	allClean := len(pinned) == 0 && len(investigated) == 0 && len(unresolvedEntries) == 0
 	hasUnfixable := reportHasUnfixableErrors(report, acceptMoved)
-	if allClean && !hasUnfixable && onboardingRefused == 0 {
+	if allClean && !hasUnfixable && onboardingRefused == 0 && !ownSHAWarnings {
 		console.TermBlank()
 		console.TermSuccess("All %d %s valid", total, ui.Pluralize(total, "workflow", "workflows"))
 		return nil
@@ -209,6 +210,22 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 		return errSilent
 	}
 	return nil
+}
+
+// renderOwnSHAWarnings shows each entry the run left recording its own SHA
+// as its ref (see appendUnselectedOwnSHAWarnings) and reports whether there
+// was one, since the run then can't call every workflow valid.
+func renderOwnSHAWarnings(console *ui.UI, report *checks.Report) bool {
+	found := false
+	for _, f := range report.RepoFindings {
+		if f.Category != checks.NotPinned || f.Severity != checks.SeverityWarning {
+			continue
+		}
+		found = true
+		console.TermWarn("%s", f.Detail)
+		console.TermDetail("  %s", f.Remediation)
+	}
+	return found
 }
 
 // renderCooldownFindings surfaces the fresh-tag nudge on the terminal in fix

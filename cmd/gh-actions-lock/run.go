@@ -525,6 +525,8 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		console.TermSuccess("Migrated %d local %s to `$/…`", migrated, ui.Pluralize(migrated, "action", "actions"))
 	}
 
+	appendUnselectedOwnSHAWarnings(report, store)
+
 	// Record the prune in the report so --json consumers see what was
 	// dropped. The terminal surface reports it via the pin summary instead.
 	if len(staleWorkflows) > 0 {
