@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -186,6 +187,51 @@ func TestParityFinding_FullSHAKey(t *testing.T) {
 			}
 			assert.False(t, f.RefMissing, "the workflow ref is a SHA; only the recorded ref is gone")
 			assert.NotEmpty(t, f.Remediation)
+		})
+	}
+}
+
+// TestMovedTagFinding: a moved-ahead tag warning names the composite that
+// pins the commit, and its advice must be something that follows the tag:
+// --relock re-resolves a tag `uses:`, but never changes a full-SHA one.
+func TestMovedTagFinding(t *testing.T) {
+	const (
+		sha  = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+		live = "d23441a49e5d9e4ba0dd8e0f0b5b86ff8ad2e2d5"
+	)
+	tests := []struct {
+		name       string
+		ref        string
+		parent     string
+		wantParent string
+		wantAdvice string
+	}{
+		{name: "direct tag pin", ref: "v6.1.0",
+			wantAdvice: "the Actions backend accepts this pin; run `gh actions-lock --relock` to lock the tag's current commit"},
+		{name: "transitive tag pin", ref: "v6.1.0", parent: "octo/composite@v1", wantParent: "octo/composite@v1",
+			wantAdvice: "the Actions backend accepts this pin; run `gh actions-lock --relock` to lock the tag's current commit"},
+		{name: "direct full-SHA pin", ref: sha,
+			wantAdvice: "the Actions backend accepts this pin; to follow the tag, change `uses:` to actions/checkout/sub@v6.1.0 and run `gh actions-lock`"},
+		{name: "transitive full-SHA pin", ref: sha, parent: "octo/composite@v1", wantParent: "octo/composite@v1",
+			wantAdvice: "the Actions backend accepts this pin; only upgrading octo/composite@v1 follows the tag"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lp := lockfile.LockedPin{
+				Pin:    parserlock.Pin{NWO: "actions/checkout", Owner: "actions", Repo: "checkout", Ref: tt.ref},
+				Action: parserlock.Action{Ref: "v6.1.0", Commit: "sha1-" + sha},
+				Parent: tt.parent,
+			}
+			ref := parserlock.ActionRef{Owner: "actions", Repo: "checkout", Path: "sub", Ref: tt.ref}
+			pc := ghapi.PinCheck{Owner: "actions", Repo: "checkout", SHA: sha, Head: "v6.1.0"}
+			f := movedTagFinding(checks.ParsedWorkflow{Path: ".github/workflows/ci.yml"}, ref, lp, pc, ghapi.PinState{CommitFound: true, HeadOID: live})
+			assert.Equal(t, checks.SeverityWarning, f.Severity)
+			assert.Equal(t, tt.wantParent, f.ParentNWO)
+			assert.Equal(t, tt.ref, f.Dependency.Ref)
+			assert.Equal(t, tt.wantAdvice, f.Remediation)
+			if tt.parent != "" {
+				assert.True(t, strings.HasSuffix(f.Detail, " (used by "+tt.parent+")"), f.Detail)
+			}
 		})
 	}
 }

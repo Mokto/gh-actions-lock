@@ -156,7 +156,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				f.RecordedRef = o.lp.Action.Ref
 			}
 			if !ok && verify && tagMoved[i] {
-				f, ok = movedTagFinding(o.pw, o.ref, pins[i], st), true
+				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
 			}
 			switch {
 			case ok && o.fresh && st.Err != nil:
@@ -281,21 +281,47 @@ func verbose(err error) string {
 
 // movedTagFinding warns that an exact-version tag moved ahead of its locked
 // commit. Tags can move and the Actions backend accepts the pin, so it never
-// blocks.
-func movedTagFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, pc ghapi.PinCheck, st ghapi.PinState) checks.Finding {
+// blocks. The advice must follow the tag: --relock re-resolves a tag
+// `uses:`, but leaves a full-SHA one, and only its parent changes a
+// composite's pin.
+func movedTagFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfile.LockedPin, pc ghapi.PinCheck, st ghapi.PinState) checks.Finding {
 	nwo := pc.Owner + "/" + pc.Repo
-	return checks.Finding{
+	f := checks.Finding{
 		WorkflowPath: pw.Path,
 		ActionRef:    &ref,
-		Dependency:   &dep.Dependency{NWO: nwo, Path: ref.Path, Ref: ref.Ref, SHA: pc.SHA},
+		Dependency:   &dep.Dependency{NWO: nwo, Path: ref.Path, Ref: lp.Pin.Ref, SHA: pc.SHA},
 		Category:     checks.RefMoved,
 		Severity:     checks.SeverityWarning,
 		Confidence:   checks.ConfidenceHigh,
 		ObservedSHA:  st.HeadOID,
 		TagMoved:     true,
+		ParentNWO:    lockParent(lp),
 		Detail:       fmt.Sprintf("tag %s now points at %s; locked commit %s is still in its history", pc.Head, parserlock.ShortSHA(st.HeadOID), parserlock.ShortSHA(pc.SHA)),
 		Remediation:  "the Actions backend accepts this pin; run `gh actions-lock --relock` to lock the tag's current commit",
 	}
+	if f.ParentNWO != "" {
+		f.Detail += fmt.Sprintf(" (used by %s)", f.ParentNWO)
+	}
+	if parserlock.IsFullSha(lp.Pin.Ref) {
+		uses := nwo
+		if ref.Path != "" {
+			uses += "/" + ref.Path
+		}
+		f.Remediation = fmt.Sprintf("the Actions backend accepts this pin; to follow the tag, change `uses:` to %s@%s and run `gh actions-lock`", uses, pc.Head)
+		if f.ParentNWO != "" {
+			f.Remediation = fmt.Sprintf("the Actions backend accepts this pin; only upgrading %s follows the tag", f.ParentNWO)
+		}
+	}
+	return f
+}
+
+// lockParent is the NWO@ref of the composite that pins lp, or "" for a
+// workflow's own pin.
+func lockParent(lp lockfile.LockedPin) string {
+	if parent, ok := parserlock.ParsePin(lp.Parent); ok {
+		return parent.NWO + "@" + parent.Ref
+	}
+	return ""
 }
 
 // freshEntryRef is the ref a fresh pin is checked against. A full-SHA key
@@ -317,11 +343,7 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		Severity:     checks.SeverityError,
 		Confidence:   checks.ConfidenceHigh,
 	}
-	if lp.Parent != "" {
-		if parent, ok := parserlock.ParsePin(lp.Parent); ok {
-			f.ParentNWO = parent.NWO + "@" + parent.Ref
-		}
-	}
+	f.ParentNWO = lockParent(lp)
 	via := ""
 	if f.ParentNWO != "" {
 		via = fmt.Sprintf(" (used by %s)", f.ParentNWO)
