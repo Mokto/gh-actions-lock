@@ -2236,6 +2236,59 @@ func testAcceptMovedGoneRef(t *testing.T, status string) {
 	assert.Contains(t, lock, "sha1-"+parityTestSHA)
 }
 
+// TestParity_AcceptMovedRepairLocksRewrittenPin: --accept-moved repairs a
+// full-SHA pin whose recorded ref is gone, and narrowing rewrites `uses:`
+// to the tag at that commit. Every rewritten `uses:` must have its own lock
+// entry, so the result verifies.
+func TestParity_AcceptMovedRepairLocksRewrittenPin(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			repo := map[string]any{"nameWithOwner": "actions/checkout", "databaseId": 1, "owner": map[string]any{"databaseId": 1}, "commit": map[string]any{"oid": v}}
+			if body.Variables["tagRef"+i] == "refs/tags/v7.0.0" {
+				repo["tag"], repo["tagRef"] = map[string]any{"oid": v}, map[string]any{"name": "v7.0.0"}
+			}
+			data["a"+i] = repo
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQL(`.`), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+	}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout$`),
+		httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v7.0.0", parityTestSHA)))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", parityTestMoved)))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/v7.0.0`),
+		httpmock.JSONResponse(map[string]any{"ref": "refs/tags/v7.0.0", "object": map[string]any{"sha": parityTestSHA, "type": "commit"}}))
+	path := writeFullSHAWorkflow(t, "v6-gone")
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-interactive", path)
+	lock := readTempLockfilePins(t)
+	require.NoError(t, err, "%s\n%s", stderr, lock)
+	wf, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(wf), "uses: actions/checkout@v7.0.0")
+	assert.Contains(t, lock, "- 'actions/checkout@v7.0.0'")
+	assert.Contains(t, lock, "'actions/checkout@v7.0.0':")
+	assert.NotContains(t, lock, "v6-gone")
+
+	_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
+	require.NoError(t, err, "the repaired workflow verifies: %s", stderr)
+}
+
 // TestParity_FullSHAKeyTitleMatchesCause: a full-SHA pin's recorded ref
 // that is gone is titled as a missing ref, and only a ref that exists but
 // lost the commit is titled as history.
