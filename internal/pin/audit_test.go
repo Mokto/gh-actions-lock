@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
@@ -42,16 +41,4 @@ func TestWritten(t *testing.T) {
 		})
 	}
 	assert.False(t, written(preview, nil, checks.Deferred{Key: "o/a@v1", Ref: "v1", Commit: a}), "a commit this run didn't verify proves nothing")
-}
-
-func TestReinstate(t *testing.T) {
-	d := &dep.Dependency{NWO: "o/a", Ref: "v1", SHA: "aaaa"}
-	wr := checks.WorkflowReport{Findings: []checks.Finding{
-		{Category: checks.UnreachablePin, Severity: checks.SeverityWarning, Dependency: d, Remediation: "accepted"},
-		{Category: checks.Valid, Severity: checks.SeverityOK},
-	}}
-	reinstate(&wr, checks.Finding{Category: checks.UnreachablePin, Severity: checks.SeverityError, Dependency: d})
-	require.Len(t, wr.Findings, 1, "the accepting warning and the valid marker go")
-	assert.Equal(t, checks.SeverityError, wr.Findings[0].Severity)
-	assert.True(t, wr.SkipCommit)
 }

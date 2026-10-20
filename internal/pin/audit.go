@@ -2,7 +2,6 @@ package pin
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -31,10 +30,6 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 	for i := range report.Workflows {
 		byPath[report.Workflows[i].Path] = &report.Workflows[i]
 	}
-	held := make([][]bool, len(report.Workflows))
-	for i, wr := range report.Workflows {
-		held[i] = make([]bool, len(wr.Deferred))
-	}
 	for {
 		var writers []WorkflowPlan
 		for _, wp := range committedWorkflows(rec, store, copts) {
@@ -51,12 +46,11 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 		for i := range report.Workflows {
 			wr := &report.Workflows[i]
 			for j, d := range wr.Deferred {
-				if held[i][j] || written(preview, report.Verified, d) {
+				if d.Restored || written(preview, report.Verified, d) {
 					continue
 				}
-				held[i][j] = true
 				was := wr.SkipCommit
-				reinstate(wr, d.Finding)
+				wr.Restore(j)
 				blocked = blocked || wr.SkipCommit && !was
 			}
 		}
@@ -80,34 +74,4 @@ func written(preview *lockfile.State, verified map[string]bool, d checks.Deferre
 	// commit (RefNamesCommit), so a new ref is a repair.
 	pin, ok := parserlock.ParsePin(d.Key)
 	return ok && parserlock.IsFullSha(pin.Ref) && a.Ref != d.Ref
-}
-
-// reinstate puts f back on wr, replacing the warning that accepted it.
-func reinstate(wr *checks.WorkflowReport, f checks.Finding) {
-	kept := wr.Findings[:0]
-	for _, g := range wr.Findings {
-		if g.Category == f.Category && g.Severity != checks.SeverityError && sameDependency(g, f) {
-			continue
-		}
-		kept = append(kept, g)
-	}
-	wr.Findings = kept
-	if f.Severity == checks.SeverityError {
-		wr.SkipCommit = true
-		valid := wr.Findings[:0]
-		for _, g := range wr.Findings {
-			if g.Category != checks.Valid {
-				valid = append(valid, g)
-			}
-		}
-		wr.Findings = valid
-	}
-	wr.Findings = append(wr.Findings, f)
-}
-
-func sameDependency(a, b checks.Finding) bool {
-	if a.Dependency == nil || b.Dependency == nil {
-		return false
-	}
-	return fmt.Sprint(a.Dependency.Key(), a.Dependency.SHA) == fmt.Sprint(b.Dependency.Key(), b.Dependency.SHA)
 }
