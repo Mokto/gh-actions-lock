@@ -93,25 +93,21 @@ func (c refCandidates) tagsAt(ctx context.Context, sha string, exhaustive bool) 
 	return names, nil
 }
 
-// BranchAtCommit returns branch when it can be recorded for sha and names
-// sha exactly: its head is sha. Repairing a full-SHA `uses:` to a branch
-// goes through it rather than reading the branch head directly.
-func (r *Resolver) BranchAtCommit(ctx context.Context, owner, repo, branch, sha string) (bool, error) {
-	return refCandidates{r: r, owner: owner, repo: repo}.branchAt(ctx, branch, sha)
+// RefNamesCommit reports whether `uses: owner/repo@name` would run exactly
+// sha: name is recordable and, looked up the way the Actions backend looks
+// it up (tag first, then branch), points at sha now. Repairing a full-SHA
+// `uses:` to a recorded ref goes through it, whether that ref was recorded
+// as a tag or a branch.
+func (r *Resolver) RefNamesCommit(ctx context.Context, owner, repo, name, sha string) (bool, error) {
+	return refCandidates{r: r, owner: owner, repo: repo}.namesCommit(ctx, name, sha)
 }
 
-// branchAt reports whether branch can be recorded for sha: a recordable
-// name, not shadowed by a same-named tag, whose head is sha.
-func (c refCandidates) branchAt(ctx context.Context, branch, sha string) (bool, error) {
-	if !ghapi.RecordableRefName(branch) {
+func (c refCandidates) namesCommit(ctx context.Context, name, sha string) (bool, error) {
+	if !ghapi.RecordableRefName(name) {
 		return false, nil
 	}
-	head, ok := c.r.GetBranchHead(ctx, c.owner, c.repo, branch)
-	if !ok || !strings.EqualFold(head.SHA, sha) {
-		return false, nil
-	}
-	isTag, err := c.r.gh.TagExists(ctx, c.owner, c.repo, branch)
-	return !isTag, err
+	t, err := c.r.gh.LookupRefName(ctx, c.owner, c.repo, name)
+	return err == nil && t.Kind != ghapi.NoRef && strings.EqualFold(t.Commit, sha), err
 }
 
 // containingBranch returns the first recordable branch containing sha in

@@ -1,6 +1,7 @@
 package pin
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -637,29 +638,17 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 			continue
 		}
 		if parserlock.IsFullSha(e.Ref) {
-			newRef := e.Tag
-			if newRef == "" && e.OnBranch != "" && opts.Resolver != nil {
-				// A containing branch cannot identify an older pinned commit.
-				owner, repo := splitNWO(e.NWO)
-				if ok, err := opts.Resolver.BranchAtCommit(ctx, owner, repo, e.OnBranch, e.SHA); err == nil && ok {
-					newRef = e.OnBranch
-				}
-			}
-			if newRef == "" {
+			// Rewriting `uses:` names the commit by its recorded ref, which is
+			// lock data, not proof (#174): the ref must resolve, as the
+			// backend resolves it (tag first), to exactly this commit now.
+			// A moved tag or a containing branch would name another commit.
+			newRef := cmp.Or(e.Tag, e.OnBranch)
+			if newRef == "" || opts.Resolver == nil || hasConflictingLockTarget(opts, e.NWO, newRef, e.SHA) {
 				continue
 			}
-			if parserlock.IsFullSha(newRef) || hasConflictingLockTarget(opts, e.NWO, newRef, e.SHA) {
+			owner, repo := splitNWO(e.NWO)
+			if ok, err := opts.Resolver.RefNamesCommit(ctx, owner, repo, newRef, e.SHA); err != nil || !ok {
 				continue
-			}
-			// Rewriting `uses:` names the commit by its tag, so the tag must
-			// point at it now: a moved tag would label a different commit,
-			// and the recorded tag is lock data, not proof (#174). Parity has
-			// already checked the commit is in the recorded ref's history.
-			if newRef == e.Tag {
-				owner, repo := splitNWO(e.NWO)
-				if t := opts.Tagger.LookupTag(ctx, owner, repo, newRef); t == nil || !t.MatchesSHA(e.SHA) {
-					continue
-				}
 			}
 			oldRef := e.Ref
 			for _, ref := range rewriteRefs {

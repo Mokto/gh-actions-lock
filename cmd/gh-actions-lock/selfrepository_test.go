@@ -18,7 +18,8 @@ type requestCountingTransport struct {
 	calls atomic.Int64
 	// parity answers parity queries without counting them.
 	parity bool
-	// tags, when set, answers tag and release listings (tag name to commit) without
+	// tags, when set, answers tag and release listings and exact ref lookups
+	// (tag name to commit) without
 	// counting them: a SHA repair must prove its tag peels to the commit.
 	tags map[string]string
 }
@@ -29,6 +30,13 @@ func (t *requestCountingTransport) RoundTrip(req *http.Request) (*http.Response,
 	}
 	if t.tags != nil && strings.HasSuffix(req.URL.Path, "/releases") {
 		return httpmock.JSONResponse([]any{})(req)
+	}
+	if _, name, ok := strings.Cut(req.URL.Path, "/git/ref/"); t.tags != nil && ok {
+		kind, name, _ := strings.Cut(name, "/")
+		if sha, found := t.tags[name]; found && kind == "tags" {
+			return httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/"+name, sha))(req)
+		}
+		return httpmock.StatusResponse(http.StatusNotFound)(req)
 	}
 	if t.tags != nil && strings.HasSuffix(req.URL.Path, "/tags") {
 		var list []any

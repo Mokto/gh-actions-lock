@@ -2,6 +2,7 @@ package pin
 
 import (
 	"context"
+	"regexp"
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -360,6 +361,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		tagger, _ := newTagger(t)
 		opts := PlanOptions{
 			Tagger:           tagger,
+			Resolver:         tagResolver(t, "actions", "checkout", "v4.2.1", sha),
 			prevImpreciseNWO: map[string]bool{"actions/checkout": true},
 		}
 
@@ -384,6 +386,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		}}
 		opts := PlanOptions{
 			Tagger:           tagger,
+			Resolver:         tagResolver(t, "actions", "checkout", "v4.2.1", sha),
 			prevImpreciseNWO: map[string]bool{"actions/checkout": true},
 		}
 
@@ -468,6 +471,25 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		assert.Empty(t, result.wplans[0].Rewrites)
 	})
 
+	t.Run("SHA metadata repairs to a non-semver tag at the commit", func(t *testing.T) {
+		tagger, reg := newTagger(t)
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/z-129$`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/z-129", sha)))
+		resolver, err := resolve.New("github.com", pinpool.New(2, nil), resolve.WithTransport(reg))
+		require.NoError(t, err)
+		report := fastPathReport(sha)
+		// A non-semver recorded ref is stored as a branch name.
+		report.Inventory[0].Dep.Branch = "z-129"
+		report.ActionRefs = []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}}
+
+		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger, Resolver: resolver}, func(string) {})
+		require.NoError(t, err)
+
+		require.Len(t, result.entries, 1)
+		assert.Equal(t, "z-129", result.entries[0].Ref)
+		assert.Equal(t, map[string]string{"actions/checkout@" + sha: "actions/checkout@z-129"}, result.wplans[0].Rewrites)
+	})
+
 	t.Run("repair preserves source NWO spelling", func(t *testing.T) {
 		tagger, _ := newTagger(t)
 		report := fastPathReport(sha)
@@ -478,7 +500,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 			Ref:   sha,
 		}}
 
-		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger}, func(string) {})
+		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger, Resolver: tagResolver(t, "actions", "checkout", "v4.2.1", sha)}, func(string) {})
 		require.NoError(t, err)
 
 		require.Len(t, result.entries, 1)
@@ -729,7 +751,8 @@ func TestNarrowVerifiedEntries_SHARepairRequiresTagAtCommit(t *testing.T) {
 				ActionRefs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}},
 			}
 
-			result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tag.NewListerForTest(t, reg)}, func(string) {})
+			opts := PlanOptions{Tagger: tag.NewListerForTest(t, reg), Resolver: tagResolver(t, "actions", "checkout", tt.tags...)}
+			result, err := planWorkflow(context.Background(), report, opts, func(string) {})
 			require.NoError(t, err)
 
 			require.Len(t, result.entries, 1)
@@ -774,8 +797,9 @@ func TestPlanRepairsOnlyTheSHAItsRecordedTagPeelsTo(t *testing.T) {
 			report(".github/workflows/second.yml", secondSHA),
 		},
 	}, PlanOptions{
-		Tagger: tag.NewListerForTest(t, reg),
-		Pool:   pinpool.New(2, nil),
+		Tagger:   tag.NewListerForTest(t, reg),
+		Resolver: tagResolver(t, "actions", "checkout", "v4.2.1", firstSHA),
+		Pool:     pinpool.New(2, nil),
 	})
 
 	require.NoError(t, err)
@@ -814,8 +838,9 @@ func TestPlanRejectsRepairConflictingWithSymbolicEntry(t *testing.T) {
 	_, err := Plan(context.Background(), &checks.Report{
 		Workflows: []checks.WorkflowReport{repair, symbolic},
 	}, PlanOptions{
-		Tagger: tag.NewListerForTest(t, reg),
-		Pool:   pinpool.New(2, nil),
+		Tagger:   tag.NewListerForTest(t, reg),
+		Resolver: tagResolver(t, "actions", "checkout", "v4.2.1", repairedSHA),
+		Pool:     pinpool.New(2, nil),
 	})
 
 	require.ErrorContains(t, err, "conflicting planned target actions/checkout@v4.2.1")
@@ -1174,4 +1199,19 @@ func keys(m map[string]Entry) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// tagResolver is a Resolver whose exact tag lookups answer from tags (name,
+// commit pairs); every other tag or branch name doesn't exist.
+func tagResolver(t *testing.T, owner, repo string, tags ...string) *resolve.Resolver {
+	t.Helper()
+	reg := &httpmock.Registry{}
+	for i := 0; i+1 < len(tags); i += 2 {
+		reg.RegisterReusable(httpmock.REST("GET", `(?i)repos/`+owner+`/`+repo+`/git/ref/tags/`+regexp.QuoteMeta(tags[i])+`$`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/"+tags[i], tags[i+1])))
+	}
+	reg.RegisterReusable(httpmock.REST("GET", `(?i)repos/`+owner+`/`+repo+`/git/ref/`), httpmock.StatusResponse(404))
+	r, err := resolve.New("github.com", pinpool.New(2, nil), resolve.WithTransport(reg))
+	require.NoError(t, err)
+	return r
 }
