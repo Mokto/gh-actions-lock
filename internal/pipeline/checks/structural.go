@@ -79,7 +79,7 @@ func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]
 	lockedSHA := make(map[string]bool, len(depPins))
 	for _, p := range depPins {
 		knownAction[nwoLower(p.Owner, p.Repo)] = true
-		lockedSHA[nwoLower(p.Owner, p.Repo)+"@"+strings.ToLower(p.SHA())] = true
+		lockedSHA[dep.RefKey(p.Owner+"/"+p.Repo, p.SHA())] = true
 	}
 	var out []Finding
 	for _, ref := range pw.Refs {
@@ -87,7 +87,7 @@ func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]
 			continue
 		}
 		if parserlock.IsFullSha(ref.Ref) {
-			if lockedSHA[nwoLower(ref.Owner, ref.Repo)+"@"+strings.ToLower(ref.Ref)] {
+			if lockedSHA[dep.RefKey(ref.Owner+"/"+ref.Repo, ref.Ref)] {
 				continue
 			}
 		} else if knownAction[nwoLower(ref.Owner, ref.Repo)] {

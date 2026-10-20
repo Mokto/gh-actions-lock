@@ -1,8 +1,6 @@
 package checks
 
 import (
-	"strings"
-
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 )
@@ -54,14 +52,13 @@ func (pw ParsedWorkflow) PartitionRefs() (recorded, unrecorded []parserlock.Acti
 	}
 	haveDep := make(map[string]bool, len(pw.ExistingDeps)*2)
 	for _, d := range pw.ExistingDeps {
-		nwo := strings.ToLower(d.NWO)
-		haveDep[nwo+"@"+d.Ref] = true
+		haveDep[dep.RefKey(d.NWO, d.Ref)] = true
 		if d.SHA != "" {
-			haveDep[nwo+"@"+strings.ToLower(d.SHA)] = true
+			haveDep[dep.RefKey(d.NWO, d.SHA)] = true
 		}
 	}
 	for _, r := range pw.Refs {
-		if haveDep[dep.FoldedKey(r.Owner+"/"+r.Repo, r.Ref)] {
+		if haveDep[dep.RefKey(r.Owner+"/"+r.Repo, r.Ref)] {
 			recorded = append(recorded, r)
 		} else {
 			unrecorded = append(unrecorded, r)
@@ -82,12 +79,11 @@ func (pw ParsedWorkflow) IsFullyRecorded() bool {
 func (pw ParsedWorkflow) RecordedDeps(recorded []parserlock.ActionRef) []dep.Dependency {
 	refKeys := make(map[string]bool, len(recorded))
 	for _, r := range recorded {
-		refKeys[dep.FoldedKey(r.Owner+"/"+r.Repo, r.Ref)] = true
+		refKeys[dep.RefKey(r.Owner+"/"+r.Repo, r.Ref)] = true
 	}
 	var out []dep.Dependency
 	for _, d := range pw.ExistingDeps {
-		nwo := strings.ToLower(d.NWO)
-		if refKeys[nwo+"@"+d.Ref] || refKeys[nwo+"@"+strings.ToLower(d.SHA)] {
+		if refKeys[dep.RefKey(d.NWO, d.Ref)] || d.SHA != "" && refKeys[dep.RefKey(d.NWO, d.SHA)] {
 			out = append(out, d)
 		}
 	}

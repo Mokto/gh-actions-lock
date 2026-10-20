@@ -62,6 +62,17 @@ func FoldedKey(nwo, ref string) string {
 	return strings.ToLower(nwo) + "@" + ref
 }
 
+// RefKey is FoldedKey for matching a `uses:` ref against recorded entries.
+// A full SHA names a commit, which git compares case-insensitively, so it is
+// folded too; a tag or branch name stays exact. Lockfile keys keep the case
+// they were written in, so look entries up by their own key, not this one.
+func RefKey(nwo, ref string) string {
+	if parserlock.IsFullSha(ref) {
+		ref = strings.ToLower(ref)
+	}
+	return FoldedKey(nwo, ref)
+}
+
 // FoldKey is FoldedKey for an owner/repo@ref string. Refs can contain "@";
 // owner/repo can't.
 func FoldKey(key string) string {

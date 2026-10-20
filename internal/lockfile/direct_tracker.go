@@ -1,8 +1,6 @@
 package lockfile
 
 import (
-	"strings"
-
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 )
@@ -47,10 +45,7 @@ func NewDirectTracker(refs []parserlock.ActionRef, deps []dep.Dependency) Direct
 // workflow's Actions/Checkout matches the resolver's case-folded
 // actions/checkout dep. Other refs stay case-sensitive like git.
 func directKey(nwo, ref string) string {
-	if parserlock.IsFullSha(ref) {
-		ref = strings.ToLower(ref)
-	}
-	return dep.FoldedKey(nwo, ref)
+	return dep.RefKey(nwo, ref)
 }
 
 // IsDirect reports whether the dep at index i is a workflow-direct use.
