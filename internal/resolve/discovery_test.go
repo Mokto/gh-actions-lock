@@ -228,15 +228,30 @@ func TestResolveRecursiveMixedCaseSiblingDoesNotCreateSelfEdge(t *testing.T) {
 	}
 }
 
-func TestResolveLockedRecursiveDoesNotFoldRefCasing(t *testing.T) {
+// TestResolveLockedRecursiveFoldsOnlyOwnerRepoCasing: a locked commit is
+// found whatever the owner/repo casing, but never under a differently cased
+// ref, which git treats as another ref.
+func TestResolveLockedRecursiveFoldsOnlyOwnerRepoCasing(t *testing.T) {
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	r := &Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}
-	_, _, err := r.ResolveLockedRecursive(context.Background(),
-		[]parserlock.ActionRef{{Owner: "O", Repo: "Action", Ref: "Main"}},
-		[]dep.Dependency{{NWO: "o/action", Ref: "main", SHA: sha}})
-	var missing *UnlockedRefError
-	require.ErrorAs(t, err, &missing)
-	assert.Equal(t, "Main", missing.Ref.Ref)
+	locked := []dep.Dependency{{NWO: "o/action", Ref: "main", SHA: sha}}
+	t.Run("owner/repo casing", func(t *testing.T) {
+		r := &Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}
+		r.lockedContentCache.Put(ghapi.ForActionRef("o", "action", "", sha), resolvedEntry{
+			dep:       dep.Dependency{NWO: "o/action", Ref: "main", SHA: sha},
+			actionYML: "runs:\n  using: node20\n",
+		})
+		_, _, err := r.ResolveLockedRecursive(context.Background(),
+			[]parserlock.ActionRef{{Owner: "O", Repo: "Action", Ref: "main"}}, locked)
+		require.NoError(t, err)
+	})
+	t.Run("ref casing", func(t *testing.T) {
+		r := &Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}
+		_, _, err := r.ResolveLockedRecursive(context.Background(),
+			[]parserlock.ActionRef{{Owner: "O", Repo: "Action", Ref: "Main"}}, locked)
+		var missing *UnlockedRefError
+		require.ErrorAs(t, err, &missing)
+		assert.Equal(t, "Main", missing.Ref.Ref)
+	})
 }
 
 func TestResolveAllRecursiveCanonicalizesParentCasing(t *testing.T) {
