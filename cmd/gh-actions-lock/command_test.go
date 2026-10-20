@@ -1314,25 +1314,64 @@ func TestCheckCommand_JSONLoadErrorIsInvalid(t *testing.T) {
 	assert.Equal(t, "error", payload.Findings[0].Severity)
 }
 
-func TestCheckCommand_LoadErrorFailsFixMode(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		args []string
+func TestCheckCommand_InvalidWorkflowIsBlockingFinding(t *testing.T) {
+	for _, fixture := range []struct {
+		name, workflow, detail string
 	}{
-		{name: "default"},
-		{name: "compatibility flag", args: []string{"--no-migrate-local-actions"}},
+		{
+			name:     "invalid YAML",
+			workflow: "name: [",
+			detail:   "parsing workflow YAML",
+		},
+		{
+			name:     "step expression beside local action",
+			workflow: "jobs:\n  build:\n    steps:\n      - uses: ${{ matrix.action }}\n      - uses: ./opaque\n",
+			detail:   "can't contain an expression",
+		},
+		{
+			name:     "job expression",
+			workflow: "jobs:\n  call:\n    uses: ${{ matrix.action }}\n",
+			detail:   "can't contain an expression",
+		},
+		{
+			name:     "malformed remote beside local action",
+			workflow: "jobs:\n  build:\n    steps:\n      - uses: owner/action@main:action.yml\n      - uses: ./opaque\n",
+			detail:   "is not an action reference the Actions backend accepts",
+		},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			reg := &httpmock.Registry{}
-			defer reg.Verify(t)
-
-			workflowPath := writeTempWorkflow(t, "name: [")
-			args := append(tt.args, workflowPath)
-			_, stderr, err := runCommandWithHTTP(t, reg, args...)
-			require.ErrorIs(t, err, errSilent)
-			assert.Contains(t, stderr, "failed to load workflow")
-			assert.NotContains(t, stderr, "All 1 workflow valid")
-		})
+		for _, mode := range []struct {
+			name string
+			args []string
+		}{
+			{name: "default"},
+			{name: "compatibility flag", args: []string{"--no-migrate-local-actions"}},
+			{name: "read only", args: []string{"--no-fix"}},
+			{name: "verify", args: []string{"--verify"}},
+			{name: "verify local", args: []string{"--verify-local"}},
+			{name: "relock", args: []string{"--relock"}},
+			{name: "accept moved", args: []string{"--accept-moved"}},
+		} {
+			t.Run(fixture.name+"/"+mode.name, func(t *testing.T) {
+				path := writeTempWorkflow(t, fixture.workflow)
+				before := snapshotWorkflows(t)
+				transport := &requestCountingTransport{}
+				args := append([]string{"--json=valid,findings"}, mode.args...)
+				stdout, _, err := runCommandWithHTTP(t, transport, append(args, path)...)
+				require.ErrorIs(t, err, errSilent, "invalid contents are findings, not tool failures")
+				var payload struct {
+					Valid    bool             `json:"valid"`
+					Findings []format.Finding `json:"findings"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
+				assert.False(t, payload.Valid)
+				require.Len(t, payload.Findings, 1)
+				assert.Equal(t, "not-pinned", payload.Findings[0].Category)
+				assert.Equal(t, "error", payload.Findings[0].Severity)
+				assert.Contains(t, payload.Findings[0].Detail, fixture.detail)
+				assert.Zero(t, transport.calls.Load())
+				assert.Equal(t, before, snapshotWorkflows(t))
+			})
+		}
 	}
 }
 

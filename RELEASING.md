@@ -76,3 +76,9 @@ remain outside lockfile coverage. The existing `local-action` finding is now
 informational and visible in JSON. Validate these severity and exit-code changes
 with Dependabot, including workflows that mix local actions with missing or
 rejected remote pins. `--no-migrate-local-actions` remains a compatibility no-op.
+
+Removing the migration pre-pass also makes invalid workflow contents, including
+expressions in `uses:`, blocking findings (exit 1) in write modes, matching
+read-only verification, instead of early tool failures (exit 2). They remain
+rejected, report `valid: false` in JSON, and write nothing; include this change
+in the Dependabot compatibility review.

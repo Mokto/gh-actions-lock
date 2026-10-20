@@ -418,7 +418,7 @@ scenarios:
 
   - name: expression_in_uses
     category: workflow_parsing
-    description: "Expression-based uses: (${{ }}) — illegal in Actions, fails to parse"
+    description: "Real binary rejects expression-based uses as a blocking invalid-workflow finding without a migration pre-pass"
     needs_stub: true
     tags: [stub]
     fixtures:
@@ -434,7 +434,7 @@ scenarios:
                   - uses: ${{ matrix.action }}
                   - uses: actions/checkout@v4
     expect:
-      exit: 2
+      exit: 1
       output_contains: ["can't contain an expression"]
 
   - name: docker_uses_warns
