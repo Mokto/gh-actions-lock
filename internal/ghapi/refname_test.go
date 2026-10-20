@@ -19,3 +19,23 @@ func TestValidRefName(t *testing.T) {
 		assert.False(t, ValidRefName(name), "%q", name)
 	}
 }
+
+func TestAcceptedRefName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"v6.1.0", true},
+		{"v6.1.0-1-g373d742f768e", false},
+		{"v1-g1234", false},
+		{"release-gABCD", false},
+		{"v1-gabc", true},  // three hex digits
+		{"v1-gxyz1", true}, // not hex
+		{"v1-G1234", true}, // uppercase G
+		{"v1-g1234-rc", true},
+		{"main~1", false},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, AcceptedRefName(tt.name), tt.name)
+	}
+}

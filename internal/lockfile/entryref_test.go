@@ -40,6 +40,10 @@ func TestValidEntryRef(t *testing.T) {
 		{"range", entryRefSHA, "a..b", false},
 		{"path in a ref", entryRefSHA, "refs:x", false},
 		{"revision syntax on a matching key", "main~1", "main~1", false},
+		{"describe name", entryRefSHA, "v6.1.0-1-g373d742f768e", false},
+		{"describe name on a matching key", "v1-g1234", "v1-g1234", false},
+		{"three hex digits is a plain name", entryRefSHA, "v1-gabc", true},
+		{"uppercase G is a plain name", entryRefSHA, "v1-G1234", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -63,6 +67,7 @@ func TestLoadState_InvalidEntryRefIsCorrupt(t *testing.T) {
 		{"qualified pull request ref", entryRefSHA, "refs/pull/1/head"},
 		{"tag key records a branch", "v4", "main"},
 		{"revision expression", entryRefSHA, "main~1"},
+		{"describe name", entryRefSHA, "v6.1.0-1-g373d742f768e"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

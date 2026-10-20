@@ -21,9 +21,9 @@ type PinCheck struct {
 	SHA   string
 	// Head, when set, is a ref whose current commit is reported as HeadOID
 	// so the caller can check SHA is still in its history. It is looked up
-	// only as refs/tags/<name>, then refs/heads/<name>, as the Actions
-	// backend resolver does: rev-parse rules would also accept a pull
-	// request head (pull/1/head).
+	// only as an existing refs/tags/<name>, then refs/heads/<name>, of
+	// exactly that name, as the Actions backend resolver does: rev-parse
+	// rules would also accept a pull request head (pull/1/head).
 	Head string
 }
 
@@ -147,8 +147,11 @@ func buildPinCheckQuery(pins []PinCheck) (string, map[string]any) {
 		if refs := p.refs(); refs != nil {
 			vars[fmt.Sprintf("tag%d", i)] = refs[0] + "^{commit}"
 			vars[fmt.Sprintf("head%d", i)] = refs[1] + "^{commit}"
-			fmt.Fprintf(&decl, ", $tag%d: String!, $head%d: String!", i, i)
+			vars[fmt.Sprintf("tagRef%d", i)] = refs[0]
+			vars[fmt.Sprintf("headRef%d", i)] = refs[1]
+			fmt.Fprintf(&decl, ", $tag%d: String!, $head%d: String!, $tagRef%d: String!, $headRef%d: String!", i, i, i, i)
 			fmt.Fprintf(&body, " tag: object(expression: $tag%d) { oid } head: object(expression: $head%d) { oid }", i, i)
+			fmt.Fprintf(&body, " tagRef: ref(qualifiedName: $tagRef%d) { name } headRef: ref(qualifiedName: $headRef%d) { name }", i, i)
 		}
 		body.WriteString(" }")
 	}
@@ -207,6 +210,8 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 			Head *struct {
 				OID string `json:"oid"`
 			} `json:"head"`
+			TagRef  *struct{} `json:"tagRef"`
+			HeadRef *struct{} `json:"headRef"`
 		}
 		if err := json.Unmarshal(raw, &repo); err != nil {
 			states[i].Err = fmt.Errorf("failed to parse: %w", err)
@@ -217,6 +222,14 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 			OwnerID:       repo.Owner.DatabaseID,
 			RepoID:        repo.DatabaseID,
 			CommitFound:   repo.Commit != nil && repo.Commit.OID != "",
+		}
+		// An expression peels the ref, but it would also evaluate a name that
+		// is no ref at all; only a ref that exists by that exact name counts.
+		if repo.TagRef == nil {
+			repo.Tag = nil
+		}
+		if repo.HeadRef == nil {
+			repo.Head = nil
 		}
 		var oid string
 		switch {
@@ -249,7 +262,7 @@ func aliasError(gqlErr *api.GraphQLError, alias string) error {
 		if len(item.Path) == 0 || item.Path[0] != alias {
 			continue
 		}
-		if item.Type == "NOT_FOUND" && len(item.Path) >= 2 && (item.Path[1] == "commit" || item.Path[1] == "tag" || item.Path[1] == "head") {
+		if item.Type == "NOT_FOUND" && len(item.Path) >= 2 && (item.Path[1] == "commit" || item.Path[1] == "tag" || item.Path[1] == "head" || item.Path[1] == "tagRef" || item.Path[1] == "headRef") {
 			continue
 		}
 		return errors.New(item.Message)
@@ -300,7 +313,7 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 // nor a branch.
 func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
 	for _, ref := range p.refs() {
-		sha, found, err := c.restCommit(ctx, p.Owner, p.Repo, ref)
+		sha, found, err := c.restRefCommit(ctx, p.Owner, p.Repo, ref)
 		if err != nil || found {
 			return sha, err
 		}
@@ -310,14 +323,42 @@ func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
 
 // refs lists the full names p's Head is looked up as, in order: a tag, then
 // a branch. A refs/ name is prefixed too, so it never resolves, and a name
-// that isn't a valid ref name is never looked up: the expression would
-// evaluate revision syntax such as main~1.
+// the Actions backend doesn't accept is never looked up.
 // This is the order the Actions backend resolver looks up a lock entry ref.
 func (p PinCheck) refs() []string {
-	if !ValidRefName(p.Head) {
+	if !AcceptedRefName(p.Head) {
 		return nil
 	}
 	return []string{"refs/tags/" + p.Head, "refs/heads/" + p.Head}
+}
+
+// restRefCommit returns the commit the exact ref qualified peels to.
+// commits/{ref} alone would also evaluate a name that is no ref, so the ref
+// must first exist by that name.
+func (c *Client) restRefCommit(ctx context.Context, owner, repo, qualified string) (string, bool, error) {
+	var raw json.RawMessage
+	path := fmt.Sprintf("repos/%s/%s/git/ref/%s", url.PathEscape(owner), url.PathEscape(repo), escapeBranchPath(strings.TrimPrefix(qualified, "refs/")))
+	found, err := c.restGet(ctx, owner, path, &raw)
+	if err != nil || !found {
+		return "", false, err
+	}
+	var ref struct {
+		Ref    string `json:"ref"`
+		Object struct {
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
+		} `json:"object"`
+	}
+	// A name that only prefixes other refs gets an array back.
+	if json.Unmarshal(raw, &ref) != nil || ref.Ref != qualified || ref.Object.SHA == "" {
+		return "", false, nil
+	}
+	if ref.Object.Type == "commit" {
+		return ref.Object.SHA, true, nil
+	}
+	// An annotated tag: the ref exists, and a ref is resolved before any
+	// other reading of the name, so commits/{ref} peels this one.
+	return c.restCommit(ctx, owner, repo, qualified)
 }
 
 func (c *Client) restCommit(ctx context.Context, owner, repo, ref string) (string, bool, error) {
@@ -325,20 +366,29 @@ func (c *Client) restCommit(ctx context.Context, owner, repo, ref string) (strin
 		SHA string `json:"sha"`
 	}
 	path := fmt.Sprintf("repos/%s/%s/commits/%s", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(ref))
+	found, err := c.restGet(ctx, owner, path, &commit)
+	if err != nil || !found {
+		return "", false, err
+	}
+	return commit.SHA, true, nil
+}
+
+// restGet reports found=false for a 404 or 422.
+func (c *Client) restGet(ctx context.Context, owner, path string, dest any) (bool, error) {
 	var err error
 	if c.restOnly {
-		err = c.anonGet(ctx, path, &commit)
+		err = c.anonGet(ctx, path, dest)
 	} else {
-		err = c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &commit)
+		err = c.rest.DoWithContext(ctx, http.MethodGet, path, nil, dest)
 		if err != nil && IsSAMLEnforcement(err) && c.SSOFallbackEligible(ctx, owner) {
-			err = c.anonGet(ctx, path, &commit)
+			err = c.anonGet(ctx, path, dest)
 		}
 	}
 	if code, _ := StatusCode(err); code == http.StatusNotFound || code == http.StatusUnprocessableEntity {
-		return "", false, nil
+		return false, nil
 	}
 	if err != nil {
-		return "", false, c.ssoErr(owner, err)
+		return false, c.ssoErr(owner, err)
 	}
-	return commit.SHA, true, nil
+	return true, nil
 }

@@ -59,3 +59,9 @@ func CompareAncestorResponse(mergeBaseSHA string) any {
 		"merge_base_commit": map[string]any{"sha": mergeBaseSHA},
 	}
 }
+
+// GitRefResponse is a git/ref body for the exact ref qualified (refs/tags/x
+// or refs/heads/x) pointing at a commit.
+func GitRefResponse(qualified, sha string) any {
+	return map[string]any{"ref": qualified, "object": map[string]any{"sha": sha, "type": "commit"}}
+}

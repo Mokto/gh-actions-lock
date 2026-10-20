@@ -212,9 +212,11 @@ func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 	return map[string]any{
 		"nameWithOwner": nameWithOwner,
 		// commit, tag and head answer the parity query from the same fixture.
-		"commit": map[string]any{"oid": oid},
-		"tag":    map[string]any{"oid": oid},
-		"head":   map[string]any{"oid": oid},
+		"commit":  map[string]any{"oid": oid},
+		"tag":     map[string]any{"oid": oid},
+		"tagRef":  map[string]any{"oid": oid},
+		"head":    map[string]any{"oid": oid},
+		"headRef": map[string]any{"oid": oid},
 		"object": map[string]any{
 			"oid": oid,
 			"file": map[string]any{
@@ -251,7 +253,9 @@ func parityOK(req *http.Request) (*http.Response, error) {
 			"nameWithOwner": owner + "/" + body.Variables[fmt.Sprintf("name%d", i)].(string),
 			"commit":        oid,
 			"tag":           oid,
+			"tagRef":        oid,
 			"head":          oid,
+			"headRef":       oid,
 		}
 	}
 	return httpmock.JSONResponse(map[string]any{"data": data})(req)

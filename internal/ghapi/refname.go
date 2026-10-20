@@ -1,6 +1,7 @@
 package ghapi
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -36,4 +37,13 @@ func ValidRefName(name string) bool {
 		}
 	}
 	return true
+}
+
+// describeSuffix matches the "-g<hex>" ending of a `git describe` name.
+var describeSuffix = regexp.MustCompile(`-g[0-9a-fA-F]{4,}$`)
+
+// AcceptedRefName reports whether name is a ref name the Actions backend
+// accepts: a valid ref name that isn't shaped like `git describe` output.
+func AcceptedRefName(name string) bool {
+	return ValidRefName(name) && !describeSuffix.MatchString(name)
 }

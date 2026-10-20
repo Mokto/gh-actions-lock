@@ -61,8 +61,10 @@ func proximaFixture(t *testing.T, publicStatus int) http.RoundTripper {
 			return httpmock.JSONResponse(map[string]any{"data": map[string]any{
 				"a0": testRepoResponse("tenant/internal", tenantSHA, composite),
 			}})(req)
-		case !tenant && (path == "/repos/actions/public/commits/v2" || path == "/repos/actions/public/commits/refs/tags/v2" || path == "/repos/actions/public/commits/"+publicSHA):
+		case !tenant && (path == "/repos/actions/public/commits/v2" || path == "/repos/actions/public/commits/"+publicSHA):
 			return httpmock.JSONResponse(map[string]any{"sha": publicSHA})(req)
+		case !tenant && path == "/repos/actions/public/git/ref/tags/v2":
+			return httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2", publicSHA))(req)
 		case !tenant && path == "/repos/actions/public/contents/action.yml":
 			assert.Equal(t, publicSHA, req.URL.Query().Get("ref"))
 			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(nodeActionYAML)), Request: req}, nil
@@ -195,6 +197,7 @@ func parityRepoID(req *http.Request, status int, repoID int) (*http.Response, er
 		"databaseId":    repoID,
 		"commit":        oid,
 		"tag":           oid,
+		"tagRef":        oid,
 	}}})(req)
 }
 

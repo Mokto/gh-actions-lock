@@ -54,16 +54,18 @@ gh actions-lock --verify
 ```
 
 Every mode checks each locked commit against the lockfile entry's `ref`, which
-is looked up only as a tag, then a branch, the way the Actions backend resolver
-does. Every pin, whether an exact tag (`v4.2.1`), a partial version (`v4`), a
-branch (`main`) or a full SHA (`uses: owner/repo@<sha>`), must have its commit
-in that ref's history, so a fork commit can't pass as upstream. Tags can move:
-the Actions backend accepts an exact tag that moved ahead of the commit, so
-runs allow it and `--verify` only warns. A `ref` the Actions backend resolver
-would reject makes the lockfile unreadable (exit 2): it must be a short tag or
-branch name, never a SHA or a `refs/` name, and it must equal the `uses:` ref
-unless that is a full SHA. A `uses:` ref that is neither a tag nor a branch,
-such as `pull/1/head`, is never locked.
+is looked up only as an existing tag, then branch, of exactly that name, the
+way the Actions backend resolver does. Every pin, whether an exact tag
+(`v4.2.1`), a partial version (`v4`), a branch (`main`) or a full SHA (`uses:
+owner/repo@<sha>`), must have its commit in that ref's history, so a fork
+commit can't pass as upstream. Tags can move: the Actions backend accepts an
+exact tag that moved ahead of the commit, so runs allow it and `--verify` only
+warns. A `ref` the Actions backend resolver would reject makes the lockfile
+unreadable (exit 2): it must be a short tag or branch name the backend accepts,
+never a SHA, a `refs/` name, revision syntax such as `main~1`, or a `git
+describe` name, and it must equal the `uses:` ref unless that is a full SHA. A
+`uses:` ref that is not such a tag or branch, such as `pull/1/head` or
+`main~1`, is never locked.
 `--verify-local` runs
 offline, never writes, and only checks that every ref has a lockfile entry,
 not that the entries are trustworthy; use `--verify` in CI for that.

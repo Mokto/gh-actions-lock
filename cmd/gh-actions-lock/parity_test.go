@@ -53,6 +53,7 @@ func transferParity(repoID int) httpmock.Responder {
 			"owner":         map[string]any{"databaseId": 42},
 			"commit":        map[string]any{"oid": parityTestSHA},
 			"tag":           map[string]any{"oid": parityTestSHA},
+			"tagRef":        map[string]any{"oid": parityTestSHA},
 		}},
 	})
 }
@@ -206,6 +207,7 @@ func TestParity_RepoIDMismatchSameNameBlocks(t *testing.T) {
 					"databaseId":    99,
 					"commit":        map[string]any{"oid": parityTestSHA},
 					"tag":           map[string]any{"oid": parityTestSHA},
+					"tagRef":        map[string]any{"oid": parityTestSHA},
 				}},
 			}))
 			path := writeTempWorkflow(t, `
@@ -292,6 +294,7 @@ func TestParity_MovedExactTagFollowsHistory(t *testing.T) {
 					"nameWithOwner": "actions/checkout",
 					"commit":        map[string]any{"oid": parityTestSHA},
 					"tag":           map[string]any{"oid": parityTestMoved},
+					"tagRef":        map[string]any{"oid": parityTestMoved},
 				}},
 			}))
 			reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
@@ -359,6 +362,7 @@ jobs:
 				"nameWithOwner": "actions/checkout",
 				"commit":        map[string]any{"oid": parityTestSHA},
 				"tag":           map[string]any{"oid": parityTestMoved},
+				"tagRef":        map[string]any{"oid": parityTestMoved},
 			}},
 		}))
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
@@ -382,6 +386,7 @@ func TestParity_DefaultRunPrintsParityFinding(t *testing.T) {
 			"nameWithOwner": "actions/checkout",
 			"commit":        map[string]any{"oid": parityTestSHA},
 			"tag":           map[string]any{"oid": parityTestMoved},
+			"tagRef":        map[string]any{"oid": parityTestMoved},
 		}},
 	}))
 	reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
@@ -438,10 +443,9 @@ func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 			"full_name": "actions/" + repo, "id": 1, "owner": map[string]any{"id": 1},
 		}))
 	}
-	commit := httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})
-	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4$`), commit)
-	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4\.2\.1$`), commit)
-	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/commits/refs/tags/v5$`), commit)
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v4", parityTestSHA)))
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4\.2\.1$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v4.2.1", parityTestSHA)))
+	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/git/ref/tags/v5$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v5", parityTestSHA)))
 	path := writeParityFixture(t)
 
 	p, err := runParity(t, ct, path)
@@ -752,8 +756,8 @@ func TestParity_DependabotProxyKeepsRenamedName(t *testing.T) {
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
 	}))
-	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/commits/refs/tags/v2\.2\.2$`),
-		httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/git/ref/tags/v2\.2\.2$`),
+		httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2.2.2", parityTestSHA)))
 	useDefaultTransport(t, reg)
 	path := writeTempWorkflow(t, transferWorkflow, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
 	wfBefore, err := os.ReadFile(path)
@@ -787,7 +791,7 @@ func TestParity_DependabotProxyFirstRunKeepsRenamedName(t *testing.T) {
 	}))
 	commit := httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/commits/v2\.2\.2$`), commit)
-	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/commits/refs/tags/v2\.2\.2$`), commit)
+	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/git/ref/tags/v2\.2\.2$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2.2.2", parityTestSHA)))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/contents/action\.yml$`), httpmock.StatusResponse(http.StatusNotFound))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/contents/action\.yaml$`), httpmock.StatusResponse(http.StatusNotFound))
 	useDefaultTransport(t, reg)
@@ -832,13 +836,14 @@ func TestParity_VerifyMutableRefHistory(t *testing.T) {
 						"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
 					}))
 					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
-					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4$`), httpmock.JSONResponse(map[string]any{"sha": live}))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v4", live)))
 				} else {
 					reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 						"data": map[string]any{"a0": map[string]any{
 							"nameWithOwner": "actions/checkout",
 							"commit":        map[string]any{"oid": parityTestSHA},
 							"tag":           map[string]any{"oid": live},
+							"tagRef":        map[string]any{"oid": live},
 						}},
 					}))
 				}
@@ -896,13 +901,14 @@ jobs:
 					"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
 				}))
 				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
-				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4$`), httpmock.JSONResponse(map[string]any{"sha": live}))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v4", live)))
 			} else {
 				reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 					"data": map[string]any{"a0": map[string]any{
 						"nameWithOwner": "actions/checkout",
 						"commit":        map[string]any{"oid": parityTestSHA},
 						"tag":           map[string]any{"oid": live},
+						"tagRef":        map[string]any{"oid": live},
 					}},
 				}))
 			}
@@ -948,14 +954,15 @@ func TestParity_VerifyMissingMutableRefBlocks(t *testing.T) {
 						"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
 					}))
 					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
-					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4$`), httpmock.StatusResponse(http.StatusNotFound))
-					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/heads/v4$`), httpmock.StatusResponse(http.StatusNotFound))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4$`), httpmock.StatusResponse(http.StatusNotFound))
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/heads/v4$`), httpmock.StatusResponse(http.StatusNotFound))
 				} else {
 					reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 						"data": map[string]any{"a0": map[string]any{
 							"nameWithOwner": "actions/checkout",
 							"commit":        map[string]any{"oid": parityTestSHA},
 							"head":          nil,
+							"headRef":       nil,
 						}},
 					}))
 				}
@@ -1021,6 +1028,7 @@ func TestParity_DefaultAndNoFixCheckMutableHistory(t *testing.T) {
 						"nameWithOwner": "actions/checkout",
 						"commit":        map[string]any{"oid": parityTestSHA},
 						"tag":           tt.tag,
+						"tagRef":        tt.tag,
 					}},
 				}))
 				if tt.compare != nil {
@@ -1067,9 +1075,9 @@ func TestParity_VerifyRefCaseSensitive(t *testing.T) {
 					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
 				}
 				for _, ref := range []string{"Main", "main"} {
-					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/`+ref+`$`), func(req *http.Request) (*http.Response, error) {
+					reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/`+ref+`$`), func(req *http.Request) (*http.Response, error) {
 						heads = append(heads, ref)
-						return httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})(req)
+						return httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/"+ref, parityTestSHA))(req)
 					})
 				}
 			} else {
@@ -1080,7 +1088,7 @@ func TestParity_VerifyRefCaseSensitive(t *testing.T) {
 							heads = append(heads, ref)
 						}
 					}
-					repo := map[string]any{"nameWithOwner": "actions/checkout", "commit": map[string]any{"oid": parityTestSHA}, "head": map[string]any{"oid": parityTestSHA}}
+					repo := map[string]any{"nameWithOwner": "actions/checkout", "commit": map[string]any{"oid": parityTestSHA}, "head": map[string]any{"oid": parityTestSHA}, "headRef": map[string]any{}}
 					return httpmock.JSONResponse(map[string]any{"data": map[string]any{"a0": repo, "a1": repo}})(req)
 				})
 			}
@@ -1119,13 +1127,14 @@ func TestParity_CancelDuringAncestryAborts(t *testing.T) {
 					"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
 				}))
 				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
-				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4$`), httpmock.JSONResponse(map[string]any{"sha": live}))
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v4", live)))
 			} else {
 				reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 					"data": map[string]any{"a0": map[string]any{
 						"nameWithOwner": "actions/checkout",
 						"commit":        map[string]any{"oid": parityTestSHA},
 						"head":          map[string]any{"oid": live},
+						"headRef":       map[string]any{"oid": live},
 					}},
 				}))
 			}
@@ -1219,7 +1228,9 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 							"databaseId":    1,
 							"commit":        map[string]any{"oid": parityTestSHA},
 							"tag":           tt.tag,
+							"tagRef":        tt.tag,
 							"head":          tt.head,
+							"headRef":       tt.head,
 						}},
 					})(req)
 				})
@@ -1250,6 +1261,7 @@ func TestParity_InvalidEntryRefIsParseError(t *testing.T) {
 		{"full-SHA key records the SHA", parityTestSHA, parityTestSHA},
 		{"full-SHA key records a qualified branch", parityTestSHA, "refs/heads/main"},
 		{"full-SHA key records revision syntax", parityTestSHA, "main~1"},
+		{"full-SHA key records a describe name", parityTestSHA, "v6.1.0-1-g373d742f768e"},
 	}
 	for _, tt := range tests {
 		for mode, args := range fullSHAModes {
@@ -1371,10 +1383,51 @@ jobs:
 	}
 }
 
-// TestParity_RevisionSyntaxRefRefused: `main~1` resolves by rev-parse rules
-// to the branch's parent, but it names no tag or branch. Parity never builds
-// a lookup expression from it, so nothing is locked.
+// TestParity_RevisionSyntaxRefRefused: a `uses:` ref the Actions backend
+// doesn't accept as a tag or branch name, such as `main~1` or a
+// `git describe` name, may still resolve by rev-parse rules. Parity never
+// builds a lookup expression from it, so nothing is locked, even when a tag
+// by that name exists.
 func TestParity_RevisionSyntaxRefRefused(t *testing.T) {
+	for _, ref := range []string{"main~1", "v6.1.0-1-g373d742f768e"} {
+		t.Run(ref, func(t *testing.T) { testRefusedRefName(t, ref) })
+		t.Run(ref+"/dependabot proxy", func(t *testing.T) {
+			t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+				"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+			}))
+			// Resolution still evaluates the name; parity must refuse it.
+			for range 3 {
+				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
+			}
+			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.yml$`), func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(nodeActionYAML)), Request: req}, nil
+			})
+			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/`), func(req *http.Request) (*http.Response, error) {
+				t.Errorf("a refused name must not be looked up: %s", req.URL.Path)
+				return httpmock.StatusResponse(http.StatusNotFound)(req)
+			})
+			useDefaultTransport(t, reg)
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+ref+`
+`)
+
+			_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
+			require.ErrorIs(t, err, errSilent, stderr)
+			assert.Contains(t, stderr, "is not a tag or branch of actions/checkout")
+			assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
+		})
+	}
+}
+
+func testRefusedRefName(t *testing.T, ref string) {
 	reg := &httpmock.Registry{}
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
 		var body struct {
@@ -1404,7 +1457,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@main~1
+      - uses: actions/checkout@`+ref+`
 `)
 
 	p, err := runParity(t, reg, "--no-narrow", "--no-interactive", path)
@@ -1416,7 +1469,7 @@ jobs:
 		}
 	}
 	require.Len(t, unreachable, 1, "%+v", p.Findings)
-	assert.Contains(t, unreachable[0], "ref main~1 is not a tag or branch of actions/checkout")
+	assert.Contains(t, unreachable[0], "ref "+ref+" is not a tag or branch of actions/checkout")
 	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
 }
 
@@ -1432,6 +1485,7 @@ func TestParity_RelockKeepsFreshPinFailures(t *testing.T) {
 			"databaseId":    1,
 			"commit":        map[string]any{"oid": parityTestSHA},
 			"tag":           map[string]any{"oid": parityTestMoved},
+			"tagRef":        map[string]any{"oid": parityTestMoved},
 		}},
 	}))
 	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{

@@ -554,7 +554,8 @@ def checkout_parity(body)
     next unless (m = k.match(/\Aoid(\d+)\z/))
     i = m[1]
     data["a#{i}"] = { nameWithOwner: "actions/checkout", databaseId: 197_814_629,
-                      commit: { oid: vars[k] }, tag: { oid: vars[k] }, head: { oid: vars[k] } }
+                      commit: { oid: vars[k] }, tag: { oid: vars[k] }, head: { oid: vars[k] },
+                      tagRef: {}, headRef: {} }
   end
   [200, { "Content-Type" => "application/json" }, JSON.generate({ data: data })]
 end
@@ -695,7 +696,10 @@ STUB_WIRING = {
     s.stub_server do |srv|
       # No POST handler: any GraphQL request fails the scenario.
       srv.on(:GET, /.*/) do |req|
-        if req.path.include?("/commits/")
+        if (m = req.path.match(%r{/git/ref/(tags/v4)$}))
+          [200, { "Content-Type" => "application/json" },
+           JSON.generate({ ref: "refs/#{m[1]}", object: { sha: fake_sha, type: "commit" } })]
+        elsif req.path.include?("/commits/")
           [200, { "Content-Type" => "application/json" },
            JSON.generate({ sha: fake_sha })]
         elsif req.path.include?("/contents/")
