@@ -26,8 +26,8 @@ type PinCheck struct {
 	// so the caller can check SHA is still in its history.
 	//
 	// Set at most one. Either is looked up only as refs/tags/<name>, then
-	// refs/heads/<name>, as the runner does: rev-parse rules would also
-	// accept a pull request head (pull/1/head).
+	// refs/heads/<name>, as the Actions backend resolver does: rev-parse
+	// rules would also accept a pull request head (pull/1/head).
 	Head string
 }
 
@@ -327,7 +327,7 @@ func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
 
 // refs lists the full names p's Tag or Head is looked up as, in order: a
 // tag, then a branch. A refs/ name is prefixed too, so it never resolves.
-// This is the order the runner resolves a lock entry ref in.
+// This is the order the Actions backend resolver looks up a lock entry ref.
 func (p PinCheck) refs() []string {
 	name := cmp.Or(p.Tag, p.Head)
 	if name == "" {

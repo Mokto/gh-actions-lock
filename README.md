@@ -54,14 +54,15 @@ gh actions-lock --verify
 ```
 
 Every mode checks each locked commit against the lockfile entry's `ref`, which
-is looked up only as a tag, then a branch, the way the runner does. An exact
-tag (`v4.2.1`) must still point at the commit. Any other pin, including a branch
-(`main`), a partial version (`v4`) or a full SHA (`uses: owner/repo@<sha>`),
-must have its commit in that ref's history, so a fork commit can't pass as
-upstream. A `ref` the runner would reject makes the lockfile unreadable (exit
-2): it must be a short tag or branch name, never a SHA or a `refs/` name, and
-it must equal the `uses:` ref unless that is a full SHA. A `uses:` ref that is
-neither a tag nor a branch, such as `pull/1/head`, is never locked.
+is looked up only as a tag, then a branch, the way the Actions backend resolver
+does. An exact tag (`v4.2.1`) must still point at the commit. Any other pin,
+including a branch (`main`), a partial version (`v4`) or a full SHA (`uses:
+owner/repo@<sha>`), must have its commit in that ref's history, so a fork
+commit can't pass as upstream. A `ref` the Actions backend resolver would
+reject makes the lockfile unreadable (exit 2): it must be a short tag or branch
+name, never a SHA or a `refs/` name, and it must equal the `uses:` ref unless
+that is a full SHA. A `uses:` ref that is neither a tag nor a branch, such as
+`pull/1/head`, is never locked.
 `--verify-local` runs
 offline, never writes, and only checks that every ref has a lockfile entry,
 not that the entries are trustworthy; use `--verify` in CI for that.

@@ -194,7 +194,7 @@ func TestCheckPins_RefLookup(t *testing.T) {
 		assert.Equal(t, "refs/heads/v1^{commit}", gotVars["head0"])
 		assert.Equal(t, paritySHA, states[0].HeadOID)
 		assert.Empty(t, states[0].TagOID)
-		assert.Equal(t, parityMoved, states[1].TagOID, "an exact ref falls back to a branch like the runner")
+		assert.Equal(t, parityMoved, states[1].TagOID, "an exact ref falls back to a branch like the Actions backend resolver")
 		assert.Empty(t, states[1].HeadOID)
 	})
 

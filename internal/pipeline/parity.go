@@ -164,11 +164,12 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	return nil
 }
 
-// parityTarget picks what a locked pin's commit is checked against: the
-// lock entry's ref, as the runner does, since a fork-network commit
-// resolves under the upstream name. An exact tag key must still peel to the
-// commit; any other key's commit must be in the ref's history. The lockfile
-// parser has already rejected an entry ref the runner would not accept.
+// parityTarget picks what a locked pin's commit is checked against: the lock
+// entry's ref, as the Actions backend resolver does, since a fork-network
+// commit resolves under the upstream name. An exact tag key must still peel
+// to the commit; any other key's commit must be in the ref's history. The
+// lockfile parser has already rejected an entry ref the Actions backend
+// resolver would not accept.
 func parityTarget(lp lockfile.LockedPin) (tag, head string) {
 	if checks.IsImmutableRef(lp.Pin.Ref) {
 		return lp.Action.Ref, ""
@@ -306,7 +307,7 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		}
 	case pc.Head != "" && st.HeadOID == "":
 		f.Category = checks.UnreachablePin
-		f.Detail = fmt.Sprintf("ref %s is not a tag or branch of %s; the runner will reject this pin%s", pc.Head, nwo, via)
+		f.Detail = fmt.Sprintf("ref %s is not a tag or branch of %s; the Actions backend will reject this pin%s", pc.Head, nwo, via)
 		// A full-SHA `uses:` names no ref to repoint; the lock entry is wrong.
 		f.Remediation = checks.AcceptMovedRemediation
 		if !parserlock.IsFullSha(lp.Pin.Ref) {

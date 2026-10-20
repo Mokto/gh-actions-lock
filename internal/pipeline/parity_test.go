@@ -197,7 +197,7 @@ func TestParityFinding_FullSHAKey(t *testing.T) {
 		{
 			name: "recorded ref missing", head: "does-not-exist",
 			state: ghapi.PinState{NameWithOwner: "actions/checkout", CommitFound: true}, want: checks.UnreachablePin,
-			wantDetail: "ref does-not-exist is not a tag or branch of actions/checkout; the runner will reject this pin",
+			wantDetail: "ref does-not-exist is not a tag or branch of actions/checkout; the Actions backend will reject this pin",
 		},
 		{name: "inconclusive stays a warning", head: "v6.1.0", state: ghapi.PinState{Err: errors.New("timeout")}, want: checks.ReachabilityUnknown},
 	}

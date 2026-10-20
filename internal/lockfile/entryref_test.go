@@ -42,8 +42,9 @@ func TestValidEntryRef(t *testing.T) {
 	}
 }
 
-// TestLoadState_InvalidEntryRefIsCorrupt: an entry whose ref the runner
-// would reject is a parse error, never a finding a fix run could launder.
+// TestLoadState_InvalidEntryRefIsCorrupt: an entry whose ref the Actions
+// backend resolver would reject is a parse error, never a finding a fix run
+// could launder.
 func TestLoadState_InvalidEntryRefIsCorrupt(t *testing.T) {
 	tests := []struct {
 		name string

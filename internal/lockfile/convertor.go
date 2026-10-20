@@ -33,11 +33,11 @@ func depToPin(d dep.Dependency) (parserlock.Pin, error) {
 	}, nil
 }
 
-// ValidEntryRef reports whether ref is a lock entry ref the runner accepts
-// for pin: a short tag or branch name, never a SHA or a refs/ name, and the
-// key's own ref unless the key is a full SHA. The runner looks it up as
-// refs/tags/<ref>, then refs/heads/<ref>, and requires the locked commit in
-// its history.
+// ValidEntryRef reports whether ref is a lock entry ref the Actions backend
+// resolver accepts for pin: a short tag or branch name, never a SHA or a
+// refs/ name, and the key's own ref unless the key is a full SHA. The
+// resolver looks it up as refs/tags/<ref>, then refs/heads/<ref>, and
+// requires the locked commit in its history.
 func ValidEntryRef(pin parserlock.Pin, ref string) bool {
 	if ref == "" || isSHARef(ref) || strings.HasPrefix(ref, "refs/") {
 		return false

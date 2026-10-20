@@ -848,9 +848,9 @@ jobs:
 	}
 }
 
-// TestParity_VerifyMissingMutableRefBlocks: under --verify a mutable ref
-// that is no longer a tag or branch is a definitive answer the runner rejects, so it
-// blocks rather than passing on the commit alone.
+// TestParity_VerifyMissingMutableRefBlocks: under --verify a mutable ref that
+// is no longer a tag or branch is a definitive answer the Actions backend
+// resolver rejects, so it blocks rather than passing on the commit alone.
 func TestParity_VerifyMissingMutableRefBlocks(t *testing.T) {
 	for _, proxy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
@@ -895,7 +895,7 @@ jobs:
 			require.Len(t, p.Findings, 1)
 			assert.Equal(t, "unreachable-pin", p.Findings[0].Category)
 			assert.Equal(t, "error", p.Findings[0].Severity)
-			assert.Equal(t, "ref v4 is not a tag or branch of actions/checkout; the runner will reject this pin", p.Findings[0].Detail)
+			assert.Equal(t, "ref v4 is not a tag or branch of actions/checkout; the Actions backend will reject this pin", p.Findings[0].Detail)
 			assert.Equal(t, "point `uses:` at a tag or branch that exists, then run `gh actions-lock`", p.Findings[0].Remediation)
 			assert.Empty(t, p.Findings[0].DocURL, "the hardening guide is unrelated to a missing ref")
 
@@ -903,7 +903,7 @@ jobs:
 			require.ErrorIs(t, err, errSilent)
 			term := stdout + stderr
 			assert.Contains(t, term, "Ref no longer exists actions/checkout@v4")
-			assert.Contains(t, term, "ref v4 is not a tag or branch of actions/checkout; the runner will reject this pin")
+			assert.Contains(t, term, "ref v4 is not a tag or branch of actions/checkout; the Actions backend will reject this pin")
 			assert.Contains(t, term, "point `uses:` at a tag or branch that exists, then run `gh actions-lock`")
 			assert.NotContains(t, term, "not in upstream history")
 			assert.NotContains(t, term, "/releases")
@@ -1155,10 +1155,10 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 	}
 }
 
-// TestParity_InvalidEntryRefIsParseError: an entry ref the runner would
-// reject makes the lockfile unreadable in every mode, with exit 2 and
-// nothing rewritten, so a fix run can't launder it into a `uses:` rewrite.
-// TestValidEntryRef covers the other rejected forms.
+// TestParity_InvalidEntryRefIsParseError: an entry ref the Actions backend
+// resolver would reject makes the lockfile unreadable in every mode, with
+// exit 2 and nothing rewritten, so a fix run can't launder it into a `uses:`
+// rewrite. TestValidEntryRef covers the other rejected forms.
 func TestParity_InvalidEntryRefIsParseError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1203,10 +1203,10 @@ jobs:
 }
 
 // TestParity_NonBranchRefRefused: a key whose ref is neither a tag nor a
-// branch resolves by rev-parse rules but the runner rejects it, so no mode
-// may write a lock for it, including --relock, which otherwise drops
-// findings that re-resolving would repair. An existing lock entry recording
-// a refs/ name is already unreadable.
+// branch resolves by rev-parse rules but the Actions backend resolver rejects
+// it, so no mode may write a lock for it, including --relock, which otherwise
+// drops findings that re-resolving would repair. An existing lock entry
+// recording a refs/ name is already unreadable.
 func TestParity_NonBranchRefRefused(t *testing.T) {
 	for _, ref := range []string{"pull/2/head", "refs/pull/2/head"} {
 		for _, locked := range []bool{false, true} {
