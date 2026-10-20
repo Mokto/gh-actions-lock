@@ -450,6 +450,25 @@ func TestCompleteness_UsesCycleWritesNothing(t *testing.T) {
 	assert.Equal(t, before, snapshotWorkflows(t))
 }
 
+// TestCompleteness_RelockWorkflowWithoutActionsReleasesSharedPins: a workflow
+// that dropped its last action is refreshed with the rest, so its old graph
+// can't block another workflow from advancing a pin they used to share.
+func TestCompleteness_RelockWorkflowWithoutActionsReleasesSharedPins(t *testing.T) {
+	path, file := generateGraph(t)
+	const other = ".github/workflows/other.yml"
+	require.NoError(t, os.WriteFile(other, []byte(graphWorkflow), 0o600))
+	file.Workflows[other] = []string{"acme/parent@v1.0.0"}
+	writeGraph(t, file)
+	require.NoError(t, os.WriteFile(path, []byte(strings.Replace(graphWorkflow, "uses: acme/parent@v1.0.0", "run: echo hi", 1)), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, &graphTransport{movedChild: true}, "--relock", "--no-narrow")
+	require.NoError(t, err, stderr)
+	file, err = parserlock.Parse([]byte(readTempLockfilePins(t)))
+	require.NoError(t, err)
+	assert.Equal(t, "sha1-"+graphLeafSHA, file.Dependencies["acme/child@v2"].Commit)
+	assert.Empty(t, file.Workflows[".github/workflows/ci.yml"])
+}
+
 func TestRun_ParitySSOGuidance(t *testing.T) {
 	const message = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
 	for _, mode := range []struct {
