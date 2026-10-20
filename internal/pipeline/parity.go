@@ -94,18 +94,11 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		}
 		recorded, _ := pw.PartitionRefs()
 		// rootRef is the workflow ref that still uses a recorded root, by
-		// the same rule as the stale check (lockfile.UsedRoot).
-		uses := make([]func(parserlock.Pin, string) bool, len(recorded))
-		for i, r := range recorded {
-			uses[i] = lockfile.UsedRoot([]parserlock.ActionRef{r})
-		}
+		// the same rule as the stale check (lockfile.RootUse): the use
+		// naming its key, else one naming its commit.
+		use := lockfile.RootUse(recorded)
 		rootRef := func(p parserlock.Pin, a parserlock.Action) (parserlock.ActionRef, bool) {
-			for i, used := range uses {
-				if used(p, a.Commit) {
-					return recorded[i], true
-				}
-			}
-			return parserlock.ActionRef{}, false
+			return use(p, a.Commit)
 		}
 		live := func(p parserlock.Pin, a parserlock.Action) bool {
 			_, ok := rootRef(p, a)

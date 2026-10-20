@@ -77,6 +77,28 @@ func TestParity_TransferredRepoWarns(t *testing.T) {
 	assert.Contains(t, stderr, "All 1 workflow valid")
 }
 
+// TestParity_TransferredRepoNamesTheKeyUse: a tag-keyed entry the workflow
+// also uses by its commit SHA, earlier in the file, is still checked as
+// the tag use, so the rename advice rewrites that use.
+func TestParity_TransferredRepoNamesTheKeyUse(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQL(`commit: object\(oid`), transferParity(1))
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: krzema12/github-actions-typing@`+parityTestSHA+`
+      - uses: krzema12/github-actions-typing@v2.2.2
+`, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
+
+	_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--verify", path)
+	require.NoError(t, err, stderr)
+	assert.Contains(t, stderr, "rewrite it as `uses: typesafegithub/github-actions-typing@v2.2.2`")
+}
+
 // TestParity_TransferredRepoRewrites: in fix mode a recorded same-ID
 // redirect moves `uses:` and the lockfile key to the canonical name.
 func TestParity_TransferredRepoRewrites(t *testing.T) {
