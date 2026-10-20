@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/spf13/cobra"
 )
@@ -42,7 +43,7 @@ func gateNoOnboard(report *checks.Report) []string {
 				continue
 			}
 			ar := f.ActionRef
-			refusedKeys[parserlock.IndexKey(ar.Owner, ar.Repo, ar.Ref)] = true
+			refusedKeys[dep.RefKey(ar.Owner+"/"+ar.Repo, ar.Ref)] = true
 			f.Category = checks.OnboardingRequired
 			f.Severity = checks.SeverityInfo
 			f.Detail = fmt.Sprintf("%s@%s has no lockfile entry; --no-onboard refuses to add new workflows or actions", ar.FullName(), ar.Ref)
@@ -54,7 +55,7 @@ func gateNoOnboard(report *checks.Report) []string {
 		}
 		kept := make([]parserlock.ActionRef, 0, len(wr.ActionRefs))
 		for _, ar := range wr.ActionRefs {
-			if refusedKeys[parserlock.IndexKey(ar.Owner, ar.Repo, ar.Ref)] {
+			if refusedKeys[dep.RefKey(ar.Owner+"/"+ar.Repo, ar.Ref)] {
 				continue
 			}
 			kept = append(kept, ar)

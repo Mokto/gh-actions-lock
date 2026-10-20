@@ -54,21 +54,6 @@ func (d Dependency) FullName() string {
 	return d.NWO
 }
 
-// FoldedKey is E1: owner/repo case-insensitive, ref exactly as written. It
-// compares spellings from one source only (see refid.go); comparing a
-// reference with one from another source must use RefKey. The remaining
-// callers are tracked by TestReferenceIdentityBoundary until they move.
-func FoldedKey(nwo, ref string) string {
-	return strings.ToLower(nwo) + "@" + ref
-}
-
-// FoldKey is FoldedKey for an owner/repo@ref string. Refs can contain "@";
-// owner/repo can't.
-func FoldKey(key string) string {
-	nwo, ref, _ := strings.Cut(key, "@")
-	return FoldedKey(nwo, ref)
-}
-
 // Key returns the dependency key for deduplication: NWO@Ref.
 func (d Dependency) Key() string {
 	return d.NWO + "@" + d.Ref

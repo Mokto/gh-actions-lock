@@ -177,6 +177,24 @@ func DedupRequests(refs []parserlock.ActionRef) []parserlock.ActionRef {
 	return out
 }
 
+// RefSet holds refs by the request the resolver makes for one owner/repo@ref:
+// owner/repo folded, ref exact, path ignored. It compares refs from one
+// source, such as a run's workflows; it is not reference identity.
+type RefSet struct{ refs map[ghapi.NWORef]bool }
+
+// Add records ref.
+func (s *RefSet) Add(ref parserlock.ActionRef) {
+	if s.refs == nil {
+		s.refs = make(map[ghapi.NWORef]bool)
+	}
+	s.refs[ghapi.ForNWORef(ref.Owner, ref.Repo, ref.Ref)] = true
+}
+
+// Has reports whether a ref with ref's owner/repo@ref was added.
+func (s RefSet) Has(ref parserlock.ActionRef) bool {
+	return s.refs[ghapi.ForNWORef(ref.Owner, ref.Repo, ref.Ref)]
+}
+
 // knownCommit returns the commit this run already holds for a sub-action's
 // owner/repo@ref, or "". Every path of one owner/repo@ref shares a lockfile
 // entry, so a sub-action is fetched at that commit: a sticky seed, which

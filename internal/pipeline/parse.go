@@ -117,24 +117,22 @@ func mergeStrings(groups ...[]string) []string {
 // across all parsed workflows. Use the returned slices to pre-warm the
 // resolver caches once before per-workflow diagnostics.
 func CollectResolvable(parsed []checks.ParsedWorkflow) ([]parserlock.ActionRef, []dep.Dependency) {
-	return collectResolvable(parsed, nil)
+	return collectResolvable(parsed, resolve.RefSet{})
 }
 
 // CollectUnrecordedResolvable is like CollectResolvable but excludes refs
-// whose NWO@Ref key appears in recordedKeys. Deps whose key is in
-// recordedKeys are also excluded. Use this when per-dep lockfile trust
-// has already seeded the resolver cache for recorded deps, so only
-// genuinely new refs need network resolution.
-func CollectUnrecordedResolvable(parsed []checks.ParsedWorkflow, recordedKeys map[string]bool) ([]parserlock.ActionRef, []dep.Dependency) {
-	return collectResolvable(parsed, recordedKeys)
+// and deps whose owner/repo@ref is in recorded. Use this when per-dep
+// lockfile trust has already seeded the resolver cache for recorded deps,
+// so only genuinely new refs need network resolution.
+func CollectUnrecordedResolvable(parsed []checks.ParsedWorkflow, recorded resolve.RefSet) ([]parserlock.ActionRef, []dep.Dependency) {
+	return collectResolvable(parsed, recorded)
 }
 
-func collectResolvable(parsed []checks.ParsedWorkflow, excludeKeys map[string]bool) ([]parserlock.ActionRef, []dep.Dependency) {
+func collectResolvable(parsed []checks.ParsedWorkflow, exclude resolve.RefSet) ([]parserlock.ActionRef, []dep.Dependency) {
 	var refs []parserlock.ActionRef
 	for _, pw := range parsed {
 		for _, ref := range pw.Refs {
-			nwoRef := dep.FoldedKey(ref.Owner+"/"+ref.Repo, ref.Ref)
-			if excludeKeys[nwoRef] {
+			if exclude.Has(ref) {
 				continue
 			}
 			refs = append(refs, ref)
@@ -146,7 +144,8 @@ func collectResolvable(parsed []checks.ParsedWorkflow, excludeKeys map[string]bo
 	for _, pw := range parsed {
 		for _, dep := range pw.ExistingDeps {
 			key := dep.Key()
-			if excludeKeys[key] || seenDep[key] {
+			owner, repo := dep.OwnerRepo()
+			if exclude.Has(parserlock.ActionRef{Owner: owner, Repo: repo, Ref: dep.Ref}) || seenDep[key] {
 				continue
 			}
 			seenDep[key] = true

@@ -3,7 +3,7 @@ package checks
 import (
 	"strings"
 
-	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/dep"
 )
 
 // PruneEffect is what planning does with a recorded entry a finding prunes
@@ -51,17 +51,10 @@ func PrunesDependency(f Finding, acceptMoved, relock bool) bool {
 	return PruneEffectOf(f, acceptMoved, relock) != NotPruned
 }
 
-// PruneKey is the identity planning prunes a recorded entry by: the
-// lockfile's canonical pin key, which folds owner/repo but keeps a ref's
-// case, since refs are case-sensitive, and the commit, folded. A full-SHA
-// ref names a commit, so it folds too.
+// PruneKey is the identity planning prunes a recorded entry by: reference
+// identity (dep.RefKey), which folds owner/repo and a full SHA but keeps
+// any other ref's case, since refs are case-sensitive, at the commit,
+// folded. Findings and entries come from different sources.
 func PruneKey(nwo, ref, sha string) string {
-	if parserlock.IsFullSha(ref) {
-		ref = strings.ToLower(ref)
-	}
-	key := nwo + "@" + ref
-	if p, ok := parserlock.ParsePin(key); ok {
-		key = p.String()
-	}
-	return key + ":" + strings.ToLower(sha)
+	return dep.RefKey(nwo, ref) + ":" + strings.ToLower(sha)
 }

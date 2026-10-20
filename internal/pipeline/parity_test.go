@@ -10,6 +10,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -124,7 +125,7 @@ func TestParityFinding(t *testing.T) {
 func TestFreshClosure_FullSHAInAnyCase(t *testing.T) {
 	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
 	pw := checks.ParsedWorkflow{Path: ".github/workflows/ci.yml", Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: strings.ToUpper(sha)}}}
-	got := freshClosure([]dep.Dependency{{NWO: "actions/checkout", Ref: sha, SHA: sha}}, nil)(pw, nil)
+	got := freshClosure([]dep.Dependency{{NWO: "actions/checkout", Ref: sha, SHA: sha}}, nil)(pw, resolve.RefSet{})
 	require.Len(t, got, 1)
 	assert.Equal(t, sha, got[0].lp.Pin.Ref)
 }
@@ -143,7 +144,7 @@ func TestFreshClosure_EntryRef(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pw := checks.ParsedWorkflow{Path: ".github/workflows/ci.yml", Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: tt.d.Ref}}}
-			got := freshClosure([]dep.Dependency{tt.d}, nil)(pw, nil)
+			got := freshClosure([]dep.Dependency{tt.d}, nil)(pw, resolve.RefSet{})
 			require.Len(t, got, 1)
 			assert.Equal(t, tt.want, got[0].lp.Action.Ref)
 		})
@@ -255,8 +256,8 @@ func TestCompositeEdges(t *testing.T) {
 		return p
 	}
 	closure := []lockfile.LockedPin{
-		{Pin: pin("octo/composite@v1"), Action: parserlock.Action{Uses: []string{"actions/checkout@" + sha}}},
-		{Pin: pin("actions/checkout@" + sha)},
+		{Key: "octo/composite@v1", Pin: pin("octo/composite@v1"), Action: parserlock.Action{Uses: []string{"actions/checkout@" + sha}}},
+		{Key: "actions/checkout@" + sha, Pin: pin("actions/checkout@" + sha)},
 	}
 	edges := compositeEdges(closure)
 	require.Len(t, edges, 1)

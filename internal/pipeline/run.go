@@ -64,7 +64,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	// so the recursive walk stops at them; their recorded closure is
 	// covered by the parity check below instead.
 	var seedDeps []dep.Dependency
-	recordedKeys := make(map[string]bool)
+	var recordedRefs resolve.RefSet
 	for i := range parsed {
 		// Structural blockers are terminal at diagnose time. Do not perform
 		// unrelated network work for a workflow the planner must reject.
@@ -88,7 +88,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			}
 		}
 		for _, rr := range recorded {
-			recordedKeys[dep.FoldedKey(rr.Owner+"/"+rr.Repo, rr.Ref)] = true
+			recordedRefs.Add(rr)
 		}
 	}
 	if r != nil && len(seedDeps) > 0 {
@@ -102,7 +102,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			unresolved = append(unresolved, pw)
 		}
 	}
-	refs, _ := CollectUnrecordedResolvable(unresolved, recordedKeys)
+	refs, _ := CollectUnrecordedResolvable(unresolved, recordedRefs)
 	var resolved []dep.Dependency
 	var parents map[string][]string
 
@@ -156,7 +156,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	if r != nil {
 		mode := parityMode{verify: opts.Verify, relock: opts.Relock, acceptMoved: opts.AcceptMoved}
 		endParity := prof.Phase("  parity check")
-		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, mode)
+		err := checkParity(ctx, r, parsed, opts.Store, report, recordedRefs, resolved, parents, mode)
 		endParity()
 		// A cancelled request surfaces as an inconclusive lookup; report the
 		// cancellation, not the failure it caused.

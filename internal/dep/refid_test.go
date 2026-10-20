@@ -52,46 +52,19 @@ var keyFactories = map[string][]string{
 	"(github.com/github/actions-lockfile/go/pkg/lockfile.Pin).String":   {"internal/lockfile"},
 	"github.com/github/gh-actions-lock/internal/ghapi.ForNWORef":        {"internal/ghapi", "internal/resolve"},
 	"github.com/github/gh-actions-lock/internal/ghapi.ForActionRef":     {"internal/ghapi", "internal/resolve"},
-	"github.com/github/gh-actions-lock/internal/dep.FoldedKey":          {"internal/dep"},
-	"github.com/github/gh-actions-lock/internal/dep.FoldKey":            {"internal/dep"},
-}
-
-// pendingKeyCalls counts the uses not yet moved behind an owner, keyed
-// "dir/file.go:function:factory". Moving each one changes behavior for some
-// input, so each moves in its own commit with a test. A count that no longer
-// matches fails the test, so the list can only shrink and a new use in a
-// pending function is still caught.
-var pendingKeyCalls = map[string]int{
-	"internal/pipeline/parity.go:compositeEdges:lockfile.Pin.String":      2,
-	"internal/pipeline/checks/prune.go:PruneKey:lockfile.Pin.String":      1,
-	"cmd/gh-actions-lock/onboard_gate.go:gateNoOnboard:lockfile.IndexKey": 2,
-	"internal/pipeline/parity.go:checkParity:lockfile.Pin.String":         1,
-	"internal/pipeline/parse.go:collectResolvable:dep.FoldedKey":          1,
-	"internal/pipeline/run.go:Run:dep.FoldedKey":                          1,
 }
 
 // TestReferenceIdentityBoundary fails when a package outside a key's owner
 // uses one of keyFactories. Calls through fmt's Stringer are display, not
 // keys, and aren't seen.
 func TestReferenceIdentityBoundary(t *testing.T) {
-	uses := keyFactoryUses(t)
-	for site, positions := range uses {
-		switch want, ok := pendingKeyCalls[site]; {
-		case !ok:
-			t.Errorf("%s builds a key outside its owner at %s; compare across sources with RefKey or lockfile.RefIndex", site, strings.Join(positions, ", "))
-		case len(positions) != want:
-			t.Errorf("%s has %d pending key uses, want %d, at %s; don't add uses, and lower the count when moving one", site, len(positions), want, strings.Join(positions, ", "))
-		}
-	}
-	for site := range pendingKeyCalls {
-		if _, ok := uses[site]; !ok {
-			t.Errorf("pending key call %s no longer exists; remove it from pendingKeyCalls", site)
-		}
+	for site, positions := range keyFactoryUses(t) {
+		t.Errorf("%s builds a key outside its owner at %s; compare across sources with RefKey or lockfile.RefIndex", site, strings.Join(positions, ", "))
 	}
 }
 
 // keyFactoryUses type-checks every non-test package in the module and
-// returns its disallowed key factory uses, keyed like pendingKeyCalls.
+// returns its disallowed key factory uses, keyed "dir/file.go:function:factory".
 func keyFactoryUses(t *testing.T) map[string][]string {
 	t.Helper()
 	root, module := moduleRoot(t)
@@ -165,7 +138,7 @@ func declName(decl ast.Decl) string {
 }
 
 // shortName renders a factory as its package name plus identifier, e.g.
-// dep.FoldedKey or lockfile.Pin.String.
+// ghapi.ForNWORef or lockfile.Pin.String.
 func shortName(fn *types.Func) string {
 	if recv := fn.Signature().Recv(); recv != nil {
 		named := recv.Type()

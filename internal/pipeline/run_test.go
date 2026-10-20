@@ -6,6 +6,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -204,12 +205,11 @@ func TestCollectUnrecordedResolvable(t *testing.T) {
 		},
 	}
 
-	recordedKeys := map[string]bool{
-		"actions/checkout@v4": true,
-		"actions/setup-go@v5": true,
-	}
+	var recorded resolve.RefSet
+	recorded.Add(ref("actions", "checkout", "", "v4"))
+	recorded.Add(ref("Actions", "Setup-Go", "", "v5"))
 
-	refs, deps := CollectUnrecordedResolvable(parsed, recordedKeys)
+	refs, deps := CollectUnrecordedResolvable(parsed, recorded)
 
 	// Only the unrecorded ref should be collected.
 	assert.Len(t, refs, 1)
@@ -234,10 +234,10 @@ func TestCollectUnrecordedResolvable_NilExclude(t *testing.T) {
 		},
 	}
 
-	// With nil recordedKeys, CollectResolvable and CollectUnrecordedResolvable
+	// With no recorded refs, CollectResolvable and CollectUnrecordedResolvable
 	// should return the same results.
 	refsAll, depsAll := CollectResolvable(parsed)
-	refsFiltered, depsFiltered := CollectUnrecordedResolvable(parsed, nil)
+	refsFiltered, depsFiltered := CollectUnrecordedResolvable(parsed, resolve.RefSet{})
 
 	assert.Equal(t, refsAll, refsFiltered)
 	assert.Equal(t, depsAll, depsFiltered)
