@@ -2018,6 +2018,36 @@ func TestSHARecordedRef_InconclusiveIdentityBlocks(t *testing.T) {
 	assert.Equal(t, lock, readTempLockfilePins(t))
 }
 
+// TestSHARecordedRef_CoveredByAnyUseBlocks: an own-SHA entry the workflow
+// uses by its SHA in other letter case still fails read-only modes. (A
+// full-SHA key whose commit differs from it never loads, so no other use
+// can cover such an entry.)
+func TestSHARecordedRef_CoveredByAnyUseBlocks(t *testing.T) {
+	for _, tt := range []struct{ name, key, commit, use string }{
+		{"uppercase use", parityTestSHA, parityTestSHA, strings.ToUpper(parityTestSHA)},
+	} {
+		for _, mode := range []string{"--verify-local", "--verify", "--no-fix"} {
+			t.Run(tt.name+"/"+mode, func(t *testing.T) {
+				wf := writeTempWorkflow(t, "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"+tt.use+"\n")
+				key := "actions/checkout@" + tt.key
+				lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - '" + key + "'\n" +
+					"dependencies:\n    '" + key + "':\n        ref: '" + tt.key + "'\n        commit: 'sha1-" + tt.commit + "'\n        owner_id: 1\n        repo_id: 1\n"
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+				p, err := runParity(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive", wf)
+				require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
+				assert.False(t, p.Valid)
+				var found bool
+				for _, f := range p.Findings {
+					found = found || f.Severity == "error" && strings.Contains(f.Detail, key) && strings.Contains(f.Detail, "a commit SHA rather than the tag or branch")
+				}
+				assert.True(t, found, "findings: %+v", p.Findings)
+				assert.Equal(t, lock, readTempLockfilePins(t))
+			})
+		}
+	}
+}
+
 // TestSHARecordedRef_ScopedFixWarns: a fix run given workflow paths warns
 // about an own-SHA entry of a workflow it didn't select, names the entry and
 // the full-scan repair, never claims every workflow is valid, still writes

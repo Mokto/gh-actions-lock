@@ -15,7 +15,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
@@ -24,7 +23,6 @@ import (
 	"github.com/github/gh-actions-lock/internal/pipeline"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/ui"
-	"github.com/github/gh-actions-lock/internal/workflowfile"
 )
 
 // applyVerifyFlags expands --verify into its constituent flags. Called at the
@@ -66,7 +64,7 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 
 	parsed := pipeline.ParseAll(paths, store)
 	report := pipeline.VerifyLocalCoverage(parsed, store)
-	appendOwnSHAEntryFindings(report, store, paths)
+	appendOwnSHAEntryFindings(report, store)
 	valid := report.IsValid()
 
 	if opts.jsonFields != "" {
@@ -93,19 +91,27 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 }
 
 // appendOwnSHAEntryFindings reports, for a read-only run, each entry that
-// records its own SHA as its ref and that no scanned workflow lists itself
-// (those get a workflow finding): one listed only by workflows the run
-// didn't scan (not selected, or deleted), one reached only through another
-// entry's `uses:`, or one nothing reaches. The Actions backend rejects the
+// records its own SHA as its ref and that no workflow finding already
+// blocks on: one listed only by workflows the run didn't scan (not
+// selected, or deleted), one reached only through another entry's `uses:`,
+// or one nothing reaches. The Actions backend rejects the
 // pin, so the run fails rather than passing; only a full-scan fix run may
 // re-record or drop it.
-func appendOwnSHAEntryFindings(report *checks.Report, store *lockfile.State, scanned []string) {
-	isScanned := map[string]bool{}
-	for _, p := range scanned {
-		isScanned[workflowfile.KeyFromPath(p)] = true
+func appendOwnSHAEntryFindings(report *checks.Report, store *lockfile.State) {
+	// An entry is reported once: here only if no workflow finding already
+	// blocks on it.
+	covered := map[string]bool{}
+	for _, wr := range report.Workflows {
+		for _, f := range wr.Findings {
+			if f.Severity != checks.SeverityError || f.Dependency == nil {
+				continue
+			}
+			owner, repo := f.Dependency.OwnerRepo()
+			covered[lockfile.EntryKey(parserlock.Pin{Owner: owner, Repo: repo, Ref: f.Dependency.Ref})] = true
+		}
 	}
 	for _, e := range store.OwnSHAEntries() {
-		if slices.ContainsFunc(e.Workflows, func(wf string) bool { return isScanned[wf] }) {
+		if covered[e.Key] {
 			continue
 		}
 		f := ownSHAEntryFinding(e)

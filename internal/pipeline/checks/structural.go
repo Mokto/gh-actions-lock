@@ -71,25 +71,23 @@ func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]
 // re-resolve the entry and record the tag or branch the commit came from
 // (see lockfile.RecordsOwnSHA).
 func checkSHARecordedRef(pw ParsedWorkflow, wfEntry []string, deps map[string]parserlock.Action) []Finding {
-	bad := map[string]string{}
+	use := lockfile.RootUse(pw.Refs)
+	var out []Finding
 	for _, raw := range wfEntry {
 		pin, ok := parserlock.ParsePin(raw)
-		if action, found := deps[raw]; ok && found && lockfile.RecordsOwnSHA(pin, action.Ref) {
-			bad[pin.IndexKey()] = raw
+		action, found := deps[raw]
+		if !ok || !found || !lockfile.RecordsOwnSHA(pin, action.Ref) {
+			continue
 		}
-	}
-	var out []Finding
-	for _, ref := range pw.Refs {
-		key := parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)
-		raw, ok := bad[key]
+		ref, ok := use(pin, action.Commit)
 		if !ok {
 			continue
 		}
-		delete(bad, key)
 		f := newRefFinding(pw, ref, NotPinned, SeverityError, ConfidenceHigh)
-		f.Detail = fmt.Sprintf("lock entry for %s records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", raw, parserlock.ShortSHA(deps[raw].Ref))
+		f.Detail = fmt.Sprintf("lock entry for %s records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", raw, parserlock.ShortSHA(action.Ref))
 		f.Remediation = "run `gh actions-lock` to record the tag or branch this commit came from"
-		f.Dependency = synthDep(ref, lockedPin{Commit: deps[raw].Commit}.SHA())
+		// The finding is about the entry, which the use may name by commit.
+		f.Dependency = synthDep(parserlock.ActionRef{Owner: ref.Owner, Repo: ref.Repo, Path: ref.Path, Ref: pin.Ref}, lockedPin{Commit: action.Commit}.SHA())
 		f.Reresolve = true
 		// The entry exists, so --no-onboard must not treat this as onboarding.
 		f.TrackedAction = true
