@@ -1557,7 +1557,7 @@ func TestSHARecordedRef_ChildFixRepairs(t *testing.T) {
 						require.NoError(t, err)
 						assert.NotContains(t, string(body), "refs/tags/"+parityTestSHA, "a recorded commit SHA is never looked up as a ref")
 						req.Body = io.NopCloser(strings.NewReader(string(body)))
-						return parityOK(req)
+						return parityOKWithIDs(map[string]int{"checkout": 1, "cache": 2})(req)
 					})
 				}
 				for _, repo := range []string{"checkout", "cache"} {
@@ -1798,6 +1798,9 @@ func TestSHARecordedRef_StaleRootRepairs(t *testing.T) {
 				base = "cccccccccccccccccccccccccccccccccccccccc"
 			}
 			reg := &httpmock.Registry{}
+			for range 3 {
+				reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOKWithIDs(map[string]int{"checkout": 1, "cache": 1, "setup-go": 1}))
+			}
 			for _, repo := range []string{"checkout", "cache", "setup-go"} {
 				for range 4 {
 					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
@@ -1871,6 +1874,7 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 		{"root replacement/unrepairable", false, true, ""},
 		{"onboarding/replaced repository", true, false, "replaced"},
 		{"onboarding/unconfirmed identity", true, false, "inconclusive"},
+		{"onboarding/missing repository ID", true, false, "no id"},
 	} {
 		repairable := tt.repairable
 		t.Run(tt.name, func(t *testing.T) {
@@ -1894,14 +1898,16 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 						}
 						name := body.Variables[fmt.Sprintf("name%d", i)].(string)
 						_, hasHead := body.Variables[fmt.Sprintf("head%d", i)]
-						id := 1
+						var id any = 1
 						if name == "cache" && !hasHead {
 							candidateChecks++
-							if tt.identity == "inconclusive" {
+							switch tt.identity {
+							case "inconclusive":
 								continue
-							}
-							if tt.identity == "replaced" {
+							case "replaced":
 								id = 999
+							case "no id":
+								id = nil
 							}
 						}
 						oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}

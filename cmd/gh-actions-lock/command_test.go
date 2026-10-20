@@ -263,6 +263,28 @@ func parityOK(req *http.Request) (*http.Response, error) {
 	return httpmock.JSONResponse(map[string]any{"data": data})(req)
 }
 
+// parityOKWithIDs answers like parityOK, with each repository's databaseId
+// taken from ids (by repository name), as the API returns it; a repair
+// candidate's identity proof needs it.
+func parityOKWithIDs(ids map[string]int) httpmock.Responder {
+	return func(req *http.Request) (*http.Response, error) {
+		resp, err := parityOK(req)
+		if err != nil {
+			return nil, err
+		}
+		var body map[string]map[string]map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		for _, repo := range body["data"] {
+			nwo, _ := repo["nameWithOwner"].(string)
+			_, name, _ := strings.Cut(nwo, "/")
+			repo["databaseId"] = ids[name]
+		}
+		return httpmock.JSONResponse(body)(req)
+	}
+}
+
 // parityFallback answers parity queries the test did not stub as intact,
 // since fresh pins fail closed on an inconclusive check.
 type parityFallback struct{ rt http.RoundTripper }

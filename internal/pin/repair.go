@@ -109,12 +109,20 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 // repository still answers to its name with the recorded repo ID and has the
 // recorded commit. No other check in the run need have reached a candidate
 // (a composite reused from the lock carries no manifest), so a repair is
-// admitted only on this proof. It returns why each failed candidate can't be
-// repaired; a check that can't finish fails closed.
+// admitted only on this proof. It returns why each candidate that isn't
+// proven can't be repaired: anything short of a matching repo ID on both
+// sides and a found commit, including no API client, fails closed.
 func proveIdentity(ctx context.Context, resolver *resolve.Resolver, preview *lockfile.State, keys []string) map[string]string {
-	gh := resolver.GHClient()
-	if len(keys) == 0 || gh == nil {
+	if len(keys) == 0 {
 		return nil
+	}
+	failed := make(map[string]string, len(keys))
+	gh := resolver.GHClient()
+	if gh == nil {
+		for _, key := range keys {
+			failed[key] = "no API client to confirm its repository"
+		}
+		return failed
 	}
 	checks := make([]ghapi.PinCheck, len(keys))
 	recorded := make([]parserlock.Action, len(keys))
@@ -124,7 +132,6 @@ func proveIdentity(ctx context.Context, resolver *resolve.Resolver, preview *loc
 		_, sha, _ := strings.Cut(recorded[i].Commit, "-")
 		checks[i] = ghapi.PinCheck{Owner: pin.Owner, Repo: pin.Repo, SHA: sha}
 	}
-	failed := map[string]string{}
 	for i, st := range gh.CheckPins(ctx, checks) {
 		nwo := checks[i].Owner + "/" + checks[i].Repo
 		switch {
@@ -132,7 +139,11 @@ func proveIdentity(ctx context.Context, resolver *resolve.Resolver, preview *loc
 			failed[keys[i]] = fmt.Sprintf("could not confirm %s is the repository locked: %s", nwo, ghapi.Brief(st.Err))
 		case st.RepoMissing:
 			failed[keys[i]] = fmt.Sprintf("%s is missing or not visible to this token", nwo)
-		case recorded[i].RepoID != 0 && st.RepoID != 0 && st.RepoID != recorded[i].RepoID:
+		case recorded[i].RepoID == 0:
+			failed[keys[i]] = fmt.Sprintf("the lockfile records no repo ID for %s to confirm", nwo)
+		case st.RepoID == 0:
+			failed[keys[i]] = fmt.Sprintf("could not confirm %s is the repository locked: no repo ID returned", nwo)
+		case st.RepoID != recorded[i].RepoID:
 			failed[keys[i]] = fmt.Sprintf("%s now resolves to a different repository than the one locked (repo ID %d, locked %d)", nwo, st.RepoID, recorded[i].RepoID)
 		case !st.CommitFound:
 			failed[keys[i]] = fmt.Sprintf("commit %s is not in %s", parserlock.ShortSHA(checks[i].SHA), nwo)
