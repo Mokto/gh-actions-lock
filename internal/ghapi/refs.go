@@ -62,6 +62,10 @@ type RefTarget struct {
 // a lock entry ref: refs/tags/<name>, then refs/heads/<name>, by exact name.
 // A name the backend doesn't accept is never looked up.
 func (c *Client) LookupRefName(ctx context.Context, owner, repo, name string) (RefTarget, error) {
+	c, err := c.ForRepo(ctx, owner, repo)
+	if err != nil {
+		return RefTarget{}, err
+	}
 	for i, qualified := range refNames(name) {
 		commit, exists, err := c.exactRef(ctx, owner, repo, qualified)
 		if err != nil {

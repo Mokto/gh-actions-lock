@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -170,4 +171,38 @@ func TestProximaPartialGraphQLErrorDoesNotSucceed(t *testing.T) {
 	require.Len(t, result, 1)
 	require.ErrorContains(t, result[0].Err, "content access denied")
 	assert.Empty(t, result[0].CommitOID)
+}
+
+// TestProximaRoutesEveryRepoMethod: on a tenant client every exported method
+// that takes a repository must select its host first; the routing client has
+// no REST client of its own. Any new method is covered automatically.
+func TestProximaRoutesEveryRepoMethod(t *testing.T) {
+	ctxType := reflect.TypeFor[context.Context]()
+	typ := reflect.TypeFor[*Client]()
+	for i := range typ.NumMethod() {
+		m := typ.Method(i)
+		ft := m.Type
+		// (receiver, ctx, owner, repo, ...)
+		if ft.NumIn() < 4 || ft.In(1) != ctxType || ft.In(2).Kind() != reflect.String || ft.In(3).Kind() != reflect.String || m.Name == "ForRepo" {
+			continue
+		}
+		t.Run(m.Name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.RegisterReusable(hostRequest("api.tenant.ghe.com", `repos/o/r$`), httpmock.JSONResponse(map[string]any{"id": 2, "owner": map[string]any{"id": 1}}))
+			c, err := New("tenant.ghe.com", WithClientTransport(reg))
+			require.NoError(t, err)
+			args := []reflect.Value{reflect.ValueOf(c), reflect.ValueOf(context.Background()), reflect.ValueOf("o"), reflect.ValueOf("r")}
+			for j := 4; j < ft.NumIn(); j++ {
+				v := reflect.New(ft.In(j)).Elem()
+				if v.Kind() == reflect.String {
+					v.SetString("v1")
+				}
+				args = append(args, v)
+			}
+			assert.NotPanics(t, func() { m.Func.Call(args) })
+			for _, req := range reg.Requests {
+				assert.Equal(t, "api.tenant.ghe.com", req.URL.Host, req.URL.String())
+			}
+		})
+	}
 }

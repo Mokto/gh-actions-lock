@@ -665,3 +665,22 @@ func TestRefNamesCommit(t *testing.T) {
 		})
 	}
 }
+
+// TestRefNamesCommit_TenantHost: SHA-pin repair on a tenant host looks the
+// recorded ref up on the repository's selected host.
+func TestRefNamesCommit_TenantHost(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+	onTenant := func(path string) httpmock.Matcher {
+		return func(req *http.Request) bool {
+			return req.URL.Host == "api.tenant.ghe.com" && httpmock.REST("GET", path)(req)
+		}
+	}
+	reg.Register(onTenant(`repos/o/r$`), httpmock.JSONResponse(map[string]any{"id": 2, "owner": map[string]any{"id": 1}}))
+	reg.Register(onTenant(`repos/o/r/git/ref/tags/z-1$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/z-1", "abc")))
+	r, err := New("tenant.ghe.com", pinpool.New(2, nil), WithTransport(reg))
+	require.NoError(t, err)
+	ok, err := r.RefNamesCommit(context.Background(), "o", "r", "z-1", "abc")
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
