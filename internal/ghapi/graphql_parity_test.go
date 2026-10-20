@@ -41,10 +41,10 @@ func TestCheckPins_GraphQLParsesEachState(t *testing.T) {
 	}`, func(q string, v map[string]any) { gotQuery, gotVars = q, v }))
 
 	states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{
-		{Owner: "actions", Repo: "checkout", SHA: paritySHA, Tag: "v4.2.1"},
+		{Owner: "actions", Repo: "checkout", SHA: paritySHA, Head: "v4.2.1"},
 		{Owner: "krzema12", Repo: "github-actions-typing", SHA: paritySHA},
 		{Owner: "octo", Repo: "gone", SHA: paritySHA},
-		{Owner: "octo", Repo: "retag", SHA: paritySHA, Tag: "v1.0.0"},
+		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: "v1.0.0"},
 		{Owner: "octo", Repo: "deleted", SHA: paritySHA},
 	})
 	require.Len(t, states, 5)
@@ -54,13 +54,13 @@ func TestCheckPins_GraphQLParsesEachState(t *testing.T) {
 	assert.Equal(t, "refs/heads/v4.2.1^{commit}", gotVars["head0"])
 	assert.NotContains(t, gotVars, "tag1", "a pin with no ref looks none up")
 
-	assert.Equal(t, PinState{NameWithOwner: "actions/checkout", OwnerID: 1, RepoID: 2, CommitFound: true, TagOID: paritySHA}, states[0])
+	assert.Equal(t, PinState{NameWithOwner: "actions/checkout", OwnerID: 1, RepoID: 2, CommitFound: true, HeadOID: paritySHA}, states[0])
 	assert.Equal(t, "typesafegithub/github-actions-typing", states[1].NameWithOwner)
 	assert.True(t, states[1].CommitFound)
 	assert.NoError(t, states[2].Err)
 	assert.False(t, states[2].CommitFound)
 	assert.True(t, states[3].CommitFound)
-	assert.Equal(t, parityMoved, states[3].TagOID)
+	assert.Equal(t, parityMoved, states[3].HeadOID)
 	assert.NoError(t, states[4].Err)
 	assert.True(t, states[4].RepoMissing, "a NOT_FOUND repository is a verdict the runner shares")
 	assert.False(t, states[4].ViaFallback)
@@ -132,8 +132,8 @@ func TestCheckPins_RESTOnly(t *testing.T) {
 	c.anonHTTP = &http.Client{Transport: reg}
 	states := c.CheckPins(context.Background(), []PinCheck{
 		{Owner: "krzema12", Repo: "github-actions-typing", SHA: paritySHA},
-		{Owner: "octo", Repo: "retag", SHA: paritySHA, Tag: "v1.0.0"},
-		{Owner: "octo", Repo: "retag", SHA: paritySHA, Tag: "v2.0.0"},
+		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: "v1.0.0"},
+		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: "v2.0.0"},
 		{Owner: "octo", Repo: "retag", SHA: parityMoved},
 		{Owner: "octo", Repo: "deleted", SHA: paritySHA},
 	})
@@ -141,8 +141,8 @@ func TestCheckPins_RESTOnly(t *testing.T) {
 		require.NoError(t, s.Err)
 	}
 	assert.Equal(t, PinState{NameWithOwner: "typesafegithub/github-actions-typing", OwnerID: 4, RepoID: 3, CommitFound: true}, states[0])
-	assert.Equal(t, PinState{NameWithOwner: "octo/retag", CommitFound: true, TagOID: parityMoved}, states[1], "a moved tag is not a missing commit")
-	assert.Equal(t, PinState{NameWithOwner: "octo/retag", CommitFound: true, TagOID: paritySHA}, states[2])
+	assert.Equal(t, PinState{NameWithOwner: "octo/retag", CommitFound: true, HeadOID: parityMoved}, states[1], "a moved tag is not a missing commit")
+	assert.Equal(t, PinState{NameWithOwner: "octo/retag", CommitFound: true, HeadOID: paritySHA}, states[2])
 	assert.False(t, states[3].CommitFound)
 	assert.Equal(t, PinState{RepoMissing: true, ViaFallback: true}, states[4])
 	for _, req := range reg.Requests {
@@ -158,7 +158,6 @@ func TestPinCheckRefs(t *testing.T) {
 	}{
 		{name: "no ref", pc: PinCheck{}},
 		{name: "head tries tag then branch", pc: PinCheck{Head: "main"}, want: []string{"refs/tags/main", "refs/heads/main"}},
-		{name: "exact tag tries tag then branch", pc: PinCheck{Tag: "v1.0.0"}, want: []string{"refs/tags/v1.0.0", "refs/heads/v1.0.0"}},
 		{name: "a full ref name is never used as-is", pc: PinCheck{Head: "refs/tags/v1"}, want: []string{"refs/tags/refs/tags/v1", "refs/heads/refs/tags/v1"}},
 		{name: "a pull request ref is not a tag or branch", pc: PinCheck{Head: "pull/1/head"}, want: []string{"refs/tags/pull/1/head", "refs/heads/pull/1/head"}},
 	}
@@ -184,7 +183,7 @@ func TestCheckPins_RefLookup(t *testing.T) {
 
 		states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{
 			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1"},
-			{Owner: "o", Repo: "r", SHA: paritySHA, Tag: "v1.0.0"},
+			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1.0.0"},
 		})
 		require.NoError(t, states[0].Err)
 		require.NoError(t, states[1].Err)
@@ -193,9 +192,7 @@ func TestCheckPins_RefLookup(t *testing.T) {
 		assert.Equal(t, "refs/tags/v1^{commit}", gotVars["tag0"])
 		assert.Equal(t, "refs/heads/v1^{commit}", gotVars["head0"])
 		assert.Equal(t, paritySHA, states[0].HeadOID)
-		assert.Empty(t, states[0].TagOID)
-		assert.Equal(t, parityMoved, states[1].TagOID, "an exact ref falls back to a branch like the Actions backend resolver")
-		assert.Empty(t, states[1].HeadOID)
+		assert.Equal(t, parityMoved, states[1].HeadOID, "a ref falls back to a branch like the Actions backend resolver")
 	})
 
 	t.Run("rest falls back from tag to branch", func(t *testing.T) {

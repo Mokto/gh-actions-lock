@@ -651,10 +651,10 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 			if parserlock.IsFullSha(newRef) || hasConflictingLockTarget(opts, e.NWO, newRef, e.SHA) {
 				continue
 			}
-			// The recorded tag is lock data, not proof (#174): rewriting to
-			// a tag that doesn't peel to the commit would put a fork commit
-			// behind a benign-looking `uses:`. Parity has already checked a
-			// recorded branch contains it.
+			// Rewriting `uses:` names the commit by its tag, so the tag must
+			// point at it now: a moved tag would label a different commit,
+			// and the recorded tag is lock data, not proof (#174). Parity has
+			// already checked the commit is in the recorded ref's history.
 			if newRef == e.Tag {
 				owner, repo := splitNWO(e.NWO)
 				if t := opts.Tagger.LookupTag(ctx, owner, repo, newRef); t == nil || !t.MatchesSHA(e.SHA) {

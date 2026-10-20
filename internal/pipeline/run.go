@@ -142,7 +142,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			}
 		}
 		endParity := prof.Phase("  parity check")
-		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep)
+		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep, opts.Verify)
 		endParity()
 		// A cancelled request surfaces as an inconclusive lookup; report the
 		// cancellation, not the failure it caused.

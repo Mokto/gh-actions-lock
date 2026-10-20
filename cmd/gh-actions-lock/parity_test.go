@@ -266,17 +266,37 @@ func TestParity_RelockReclaimedNameKeepsLock(t *testing.T) {
 	assert.NotContains(t, lock, parityTestMoved, "the reclaimed repo's commit must not be written")
 }
 
-func TestParity_MovedExactTagBlocks(t *testing.T) {
-	reg := &httpmock.Registry{}
-	defer reg.Verify(t)
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": map[string]any{
-			"nameWithOwner": "actions/checkout",
-			"commit":        map[string]any{"oid": parityTestSHA},
-			"tag":           map[string]any{"oid": parityTestMoved},
-		}},
-	}))
-	path := writeTempWorkflow(t, `
+// TestParity_MovedExactTagFollowsHistory: tags move, and the Actions
+// backend accepts a pin whose commit is still in the tag's history. --verify
+// warns about it; no mode blocks. A tag that lost the commit blocks.
+func TestParity_MovedExactTagFollowsHistory(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		base   string
+		args   []string
+		want   string
+		block  bool
+	}{
+		{"moved ahead warns under verify", "ahead", parityTestSHA, []string{"--verify"}, "ref-moved", false},
+		{"moved ahead passes a default run", "ahead", parityTestSHA, []string{"--no-onboard", "--no-narrow", "--no-interactive"}, "", false},
+		{"lost commit blocks verify", "diverged", "cccccccccccccccccccccccccccccccccccccccc", []string{"--verify"}, "unreachable-pin", true},
+		{"lost commit blocks a default run", "diverged", "cccccccccccccccccccccccccccccccccccccccc", []string{"--no-onboard", "--no-narrow", "--no-interactive"}, "unreachable-pin", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": map[string]any{
+					"nameWithOwner": "actions/checkout",
+					"commit":        map[string]any{"oid": parityTestSHA},
+					"tag":           map[string]any{"oid": parityTestMoved},
+				}},
+			}))
+			reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
+				httpmock.JSONResponse(map[string]any{"status": tt.status, "merge_base_commit": map[string]any{"sha": tt.base}}))
+			path := writeTempWorkflow(t, `
 name: ci
 on: push
 jobs:
@@ -285,11 +305,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.1
 `, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
-
-	p, err := runParity(t, reg, "--verify", path)
-	require.ErrorIs(t, err, errSilent)
-	require.Len(t, p.Findings, 1)
-	assert.Equal(t, "unreachable-pin", p.Findings[0].Category)
+			p, err := runParity(t, reg, append(tt.args, path)...)
+			lock := readTempLockfilePins(t)
+			assert.Contains(t, lock, "sha1-"+parityTestSHA)
+			assert.NotContains(t, lock, parityTestMoved, "the lock keeps its commit")
+			if tt.want == "" {
+				require.NoError(t, err)
+				assert.True(t, p.Valid)
+				assert.Empty(t, p.Findings)
+				return
+			}
+			require.Len(t, p.Findings, 1, "%+v", p.Findings)
+			assert.Equal(t, tt.want, p.Findings[0].Category)
+			if !tt.block {
+				require.NoError(t, err)
+				assert.True(t, p.Valid)
+				assert.Equal(t, "warning", p.Findings[0].Severity)
+				assert.Equal(t, "tag v4.2.1 now points at bbbbbbbbbbbb; locked commit 9ddf35b71a48 is still in its history", p.Findings[0].Detail)
+				return
+			}
+			require.ErrorIs(t, err, errSilent)
+			assert.False(t, p.Valid)
+			assert.Equal(t, "error", p.Findings[0].Severity)
+		})
+	}
 }
 
 // TestParity_DefaultRunPrintsParityFinding: parity findings have no pin
@@ -304,6 +343,8 @@ func TestParity_DefaultRunPrintsParityFinding(t *testing.T) {
 			"tag":           map[string]any{"oid": parityTestMoved},
 		}},
 	}))
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": parityTestMoved}}))
 	path := writeTempWorkflow(t, `
 name: ci
 on: push
@@ -316,7 +357,7 @@ jobs:
 
 	_, stderr, err := runCommandWithHTTP(t, reg, path)
 	require.ErrorIs(t, err, errSilent)
-	assert.Contains(t, stderr, "tag v4.2.1 now points at bbbbbbb")
+	assert.Contains(t, stderr, "is not in actions/checkout's history")
 }
 
 // TestParity_UnchangedRerunRequestCount guards API kindness: an unchanged
@@ -339,8 +380,8 @@ func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 }
 
 // TestParity_UnchangedRerunRequestCountRESTOnly covers the Dependabot proxy
-// path: one repos/{owner}/{repo} call per unique repository, one commits
-// call per exact tag, and two per mutable ref (the commit, then the ref).
+// path: one repos/{owner}/{repo} call per unique repository plus one commits
+// call per ref that still points at its locked commit.
 func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 	reg := &httpmock.Registry{}
@@ -357,17 +398,15 @@ func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 		}))
 	}
 	commit := httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})
-	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), commit)
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4$`), commit)
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/refs/tags/v4\.2\.1$`), commit)
-	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/commits/`+parityTestSHA+`$`), commit)
 	reg.Register(httpmock.REST("GET", `^/repos/actions/setup-go/commits/refs/tags/v5$`), commit)
 	path := writeParityFixture(t)
 
 	p, err := runParity(t, ct, path)
 	require.NoError(t, err)
 	assert.True(t, p.Valid, "%+v", p.Findings)
-	assert.Equal(t, 7, ct.n, "2 repos + 1 exact tag + 2 mutable refs x 2: %v", ct.urls)
+	assert.Equal(t, 5, ct.n, "2 repos + 3 pins: %v", ct.urls)
 }
 
 // countingTransport counts every request, matched or not.
@@ -644,7 +683,9 @@ jobs:
 	}
 }
 
-func TestParity_InconclusiveWarnsWithoutProxy(t *testing.T) {
+// TestParity_InconclusiveBlocksWithoutProxy: a ref check that can't finish
+// fails closed, exact tags included; only the proxy turns it into a retry.
+func TestParity_InconclusiveBlocksWithoutProxy(t *testing.T) {
 	reg := &httpmock.Registry{}
 	path := writeTempWorkflow(t, `
 name: ci
@@ -657,7 +698,7 @@ jobs:
 `, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 
 	_, stderr, err := runCommandWithHTTP(t, parityDown{reg}, "--verify", path)
-	require.NoError(t, err, stderr)
+	require.ErrorIs(t, err, errSilent, stderr)
 	assert.Contains(t, stderr, "could not verify locked actions/checkout")
 }
 

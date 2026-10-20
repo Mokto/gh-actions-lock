@@ -19,13 +19,9 @@ func TestParityFinding(t *testing.T) {
 		other = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	)
 	pin := func(ref string) ghapi.PinCheck {
-		pc := ghapi.PinCheck{Owner: "krzema12", Repo: "github-actions-typing", SHA: sha}
-		if checks.IsImmutableRef(ref) {
-			pc.Tag = ref
-		}
-		return pc
+		return ghapi.PinCheck{Owner: "krzema12", Repo: "github-actions-typing", SHA: sha, Head: ref}
 	}
-	intact := ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", OwnerID: 1, RepoID: 2, CommitFound: true, TagOID: sha}
+	intact := ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", OwnerID: 1, RepoID: 2, CommitFound: true, HeadOID: sha}
 
 	tests := []struct {
 		name        string
@@ -39,34 +35,34 @@ func TestParityFinding(t *testing.T) {
 		wantObserve string
 	}{
 		{name: "intact exact tag", ref: "v2.2.2", state: intact},
-		{name: "intact mutable ref", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true}},
-		{name: "case-only name difference is not a move", ref: "v2", state: ghapi.PinState{NameWithOwner: "Krzema12/GitHub-Actions-Typing", CommitFound: true}},
+		{name: "intact mutable ref", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true, HeadOID: sha}},
+		{name: "case-only name difference is not a move", ref: "v2", state: ghapi.PinState{NameWithOwner: "Krzema12/GitHub-Actions-Typing", CommitFound: true, HeadOID: sha}},
 		{
 			name: "transferred repository names the new location", ref: "v2.2.2",
-			state: ghapi.PinState{NameWithOwner: "typesafegithub/github-actions-typing", CommitFound: true, TagOID: sha},
+			state: ghapi.PinState{NameWithOwner: "typesafegithub/github-actions-typing", CommitFound: true, HeadOID: sha},
 			want:  checks.RepoRenamed, wantWarn: true,
 			wantRemedy: "run `gh actions-lock` to rewrite it as `uses: typesafegithub/github-actions-typing@v2.2.2`",
 		},
 		{
 			name: "transferred transitive dependency points at its parent", ref: "v2", parent: "octo/composite@v1",
-			state: ghapi.PinState{NameWithOwner: "typesafegithub/github-actions-typing", CommitFound: true},
+			state: ghapi.PinState{NameWithOwner: "typesafegithub/github-actions-typing", CommitFound: true, HeadOID: sha},
 			want:  checks.RepoRenamed, wantWarn: true,
 			wantRemedy: "upgrade octo/composite@v1 to a version that uses typesafegithub/github-actions-typing",
 		},
 		{
 			name: "transfer keeps the repo ID and is a warning", ref: "v2.2.2",
-			state: ghapi.PinState{NameWithOwner: "typesafegithub/github-actions-typing", OwnerID: 77, RepoID: 2, CommitFound: true, TagOID: sha},
+			state: ghapi.PinState{NameWithOwner: "typesafegithub/github-actions-typing", OwnerID: 77, RepoID: 2, CommitFound: true, HeadOID: sha},
 			want:  checks.RepoRenamed, wantWarn: true,
 		},
-		{name: "owner ID change alone is not identity", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", OwnerID: 77, RepoID: 2, CommitFound: true}},
-		{name: "repo ID changed", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", OwnerID: 1, RepoID: 99, CommitFound: true}, want: checks.RepoReplaced},
+		{name: "owner ID change alone is not identity", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", OwnerID: 77, RepoID: 2, CommitFound: true, HeadOID: sha}},
+		{name: "repo ID changed", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", OwnerID: 1, RepoID: 99, CommitFound: true, HeadOID: sha}, want: checks.RepoReplaced},
 		{
 			name: "replaced transitive dependency points at its parent", ref: "v2", parent: "octo/composite@v1",
-			state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", RepoID: 99, CommitFound: true}, want: checks.RepoReplaced,
+			state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", RepoID: 99, CommitFound: true, HeadOID: sha}, want: checks.RepoReplaced,
 			wantDetail: "krzema12/github-actions-typing (used by octo/composite@v1) now resolves to a different repository than the one locked (repo ID 99, locked 2)",
 			wantRemedy: "do not trust it: the locked repository was deleted and its name taken over, possibly by an attacker. Stop using octo/composite@v1 or upgrade it to a version that doesn't use krzema12/github-actions-typing",
 		},
-		{name: "redirect to a different repo ID blocks", ref: "v2", state: ghapi.PinState{NameWithOwner: "mallory/github-actions-typing", RepoID: 99, CommitFound: true}, want: checks.RepoReplaced},
+		{name: "redirect to a different repo ID blocks", ref: "v2", state: ghapi.PinState{NameWithOwner: "mallory/github-actions-typing", RepoID: 99, CommitFound: true, HeadOID: sha}, want: checks.RepoReplaced},
 		{
 			name: "missing repository leads with relock", ref: "v2", state: ghapi.PinState{RepoMissing: true}, want: checks.RepoUnavailable,
 			wantDetail: "krzema12/github-actions-typing is missing or not visible to this token",
@@ -76,20 +72,18 @@ func TestParityFinding(t *testing.T) {
 			name: "missing repository on fallback leads with access", ref: "v2", state: ghapi.PinState{RepoMissing: true, ViaFallback: true}, want: checks.RepoUnavailable,
 			wantRemedy: "if it's private or internal, use a token that can read it or authorize SSO for krzema12; if the repository moved or was deleted, update `uses:` and run `gh actions-lock`",
 		},
-		{name: "missing ID is not a change", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true}},
+		{name: "missing ID is not a change", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true, HeadOID: sha}},
 		{name: "commit gone", ref: "v2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing"}, want: checks.UnreachablePin},
 		{
-			name: "commit gone names both causes and the tag's target", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", TagOID: other}, want: checks.UnreachablePin,
+			name: "commit gone names both causes and the tag's target", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", HeadOID: other}, want: checks.UnreachablePin,
 			wantDetail: "locked commit aaaaaaaaaaaa is not in krzema12/github-actions-typing's history: it was force-pushed away, or the lockfile was edited; v2.2.2 currently points at bbbbbbbbbbbb",
 			wantRemedy: "verify it, then run `gh actions-lock --accept-moved`",
 		},
-		{
-			name: "exact tag moved points at accept-moved", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true, TagOID: other}, want: checks.UnreachablePin, wantObserve: other,
-			wantRemedy: "release tags should not move; verify it, then run `gh actions-lock --accept-moved`",
-		},
+		// Tags move: a moved exact tag is left to the history check like any ref.
+		{name: "moved exact tag is not a finding by itself", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true, HeadOID: other}},
 		{
 			name: "deleted tag asks for a new ref", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true}, want: checks.UnreachablePin,
-			wantRemedy: "point `uses:` at a tag that exists, then run `gh actions-lock`",
+			wantRemedy: "point `uses:` at a tag or branch that exists, then run `gh actions-lock`",
 		},
 		{name: "network error is inconclusive", ref: "v2", state: ghapi.PinState{Err: errors.New("timeout")}, want: checks.ReachabilityUnknown},
 	}
@@ -116,36 +110,6 @@ func TestParityFinding(t *testing.T) {
 				assert.Equal(t, tt.wantRemedy, f.Remediation)
 			}
 			assert.Equal(t, tt.wantObserve, f.ObservedSHA)
-		})
-	}
-}
-
-// TestParityTarget is #174: a full-SHA key names no ref, so the lock
-// entry's recorded ref is what the commit must be reachable from, in every
-// mode. Existence alone passes for any fork-network commit.
-func TestParityTarget(t *testing.T) {
-	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
-	tests := []struct {
-		name     string
-		key, ref string
-		wantTag  string
-		wantHead string
-	}{
-		{name: "exact tag key must still peel to the commit", key: "v6.1.0", ref: "v6.1.0", wantTag: "v6.1.0"},
-		{name: "mutable key checks history", key: "v6", ref: "v6", wantHead: "v6"},
-		{name: "branch key checks history", key: "main", ref: "main", wantHead: "main"},
-		{name: "SHA key checks recorded tag", key: sha, ref: "v6.1.0", wantHead: "v6.1.0"},
-		{name: "SHA key checks recorded branch", key: sha, ref: "releases/v4", wantHead: "releases/v4"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			lp := lockfile.LockedPin{
-				Pin:    parserlock.Pin{NWO: "actions/checkout", Owner: "actions", Repo: "checkout", Ref: tt.key},
-				Action: parserlock.Action{Ref: tt.ref, Commit: "sha1-" + sha},
-			}
-			tag, head := parityTarget(lp)
-			assert.Equal(t, tt.wantTag, tag, "tag")
-			assert.Equal(t, tt.wantHead, head, "head")
 		})
 	}
 }

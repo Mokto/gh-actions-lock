@@ -1,7 +1,6 @@
 package ghapi
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,14 +19,11 @@ type PinCheck struct {
 	Owner string
 	Repo  string
 	SHA   string
-	// Tag, when set, must still peel to SHA; its commit is TagOID.
-	Tag string
 	// Head, when set, is a ref whose current commit is reported as HeadOID
-	// so the caller can check SHA is still in its history.
-	//
-	// Set at most one. Either is looked up only as refs/tags/<name>, then
-	// refs/heads/<name>, as the Actions backend resolver does: rev-parse
-	// rules would also accept a pull request head (pull/1/head).
+	// so the caller can check SHA is still in its history. It is looked up
+	// only as refs/tags/<name>, then refs/heads/<name>, as the Actions
+	// backend resolver does: rev-parse rules would also accept a pull
+	// request head (pull/1/head).
 	Head string
 }
 
@@ -43,8 +39,6 @@ type PinState struct {
 	// where a missing token or SSO grant is the likelier cause.
 	ViaFallback bool
 	CommitFound bool
-	// TagOID is the commit Tag peels to; empty when the tag is gone.
-	TagOID string
 	// HeadOID is the commit Head peels to; empty when the ref is gone.
 	HeadOID string
 	Err     error
@@ -55,7 +49,7 @@ type PinState struct {
 const pinCheckBatchSize = 50
 
 // CheckPins reports, per pin, the repository's canonical name and IDs,
-// whether the pinned commit exists, and where Tag points. It does not walk
+// whether the pinned commit exists, and where Head points. It does not walk
 // action.yml: a pinned commit fixes the dependencies it declares.
 func (c *Client) CheckPins(ctx context.Context, pins []PinCheck) []PinState {
 	if len(pins) == 0 {
@@ -231,11 +225,7 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 		case repo.Head != nil:
 			oid = repo.Head.OID
 		}
-		if p.Tag != "" {
-			states[i].TagOID = oid
-		} else {
-			states[i].HeadOID = oid
-		}
+		states[i].HeadOID = oid
 	}
 	return states
 }
@@ -268,9 +258,9 @@ func aliasError(gqlErr *api.GraphQLError, alias string) error {
 }
 
 // checkPinsREST costs one repos/{owner}/{repo} call per unique repo plus one
-// commits call per intact pin: the Tag when one is set (a match proves the
-// commit exists), otherwise the SHA. A Head costs one more commits call. A
-// ref that is a branch rather than a tag costs one extra call.
+// commits call per intact pin: the Head when one is set (a match proves the
+// commit exists), otherwise the SHA. A Head that moved costs one more
+// commits call, and a branch rather than a tag one more again.
 func (c *Client) checkPinsREST(ctx context.Context, pins []PinCheck) []PinState {
 	states := make([]PinState, len(pins))
 	for i, p := range pins {
@@ -288,27 +278,20 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 		return PinState{Err: err}
 	}
 	s := PinState{NameWithOwner: meta.FullName, OwnerID: meta.OwnerID, RepoID: meta.RepoID}
-	if p.Tag != "" {
-		sha, err := c.restRef(ctx, p)
-		if err != nil {
+	if p.Head != "" {
+		if s.HeadOID, err = c.restRef(ctx, p); err != nil {
 			return PinState{Err: err}
 		}
-		s.TagOID = sha
-		if strings.EqualFold(sha, p.SHA) {
+		if strings.EqualFold(s.HeadOID, p.SHA) {
 			s.CommitFound = true
 			return s
 		}
 	}
-	// No tag, or the tag moved: look the commit up on its own so a moved
-	// tag isn't misreported as a missing commit.
+	// No ref, or the ref moved: look the commit up on its own so a moved
+	// ref isn't misreported as a missing commit.
 	_, s.CommitFound, err = c.restCommit(ctx, p.Owner, p.Repo, p.SHA)
 	if err != nil {
 		return PinState{Err: err}
-	}
-	if p.Head != "" && s.CommitFound {
-		if s.HeadOID, err = c.restRef(ctx, p); err != nil {
-			return PinState{Err: err}
-		}
 	}
 	return s
 }
@@ -325,15 +308,14 @@ func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
 	return "", nil
 }
 
-// refs lists the full names p's Tag or Head is looked up as, in order: a
-// tag, then a branch. A refs/ name is prefixed too, so it never resolves.
+// refs lists the full names p's Head is looked up as, in order: a tag, then
+// a branch. A refs/ name is prefixed too, so it never resolves.
 // This is the order the Actions backend resolver looks up a lock entry ref.
 func (p PinCheck) refs() []string {
-	name := cmp.Or(p.Tag, p.Head)
-	if name == "" {
+	if p.Head == "" {
 		return nil
 	}
-	return []string{"refs/tags/" + name, "refs/heads/" + name}
+	return []string{"refs/tags/" + p.Head, "refs/heads/" + p.Head}
 }
 
 func (c *Client) restCommit(ctx context.Context, owner, repo, ref string) (string, bool, error) {

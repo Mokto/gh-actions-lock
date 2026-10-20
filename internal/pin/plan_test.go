@@ -720,7 +720,9 @@ func TestNarrowVerifiedEntries_SHARepairRequiresTagAtCommit(t *testing.T) {
 
 // TestPlanRepairsOnlyTheSHAItsRecordedTagPeelsTo covers two workflows that
 // record the same tag for different SHAs. Before #174 both were repaired to
-// the tag and conflicted; now only the SHA the tag peels to is rewritten.
+// the tag and conflicted (#167). A repair names the commit by its tag, so
+// only the SHA the tag points at now is rewritten, even if the tag's history
+// contains the other.
 func TestPlanRepairsOnlyTheSHAItsRecordedTagPeelsTo(t *testing.T) {
 	const firstSHA = "abc1230000000000000000000000000000000000"
 	const secondSHA = "def4560000000000000000000000000000000000"
