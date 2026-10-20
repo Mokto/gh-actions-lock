@@ -62,8 +62,8 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 		}
 	}
 
-	// Phase 1: Update lockfile entries in memory. It runs before any file is
-	// rewritten, so an entry the lockfile refuses leaves every file as it was.
+	// Phase 1: Update lockfile entries in memory for each scanned workflow,
+	// and check the result is writable before any file changes.
 	if len(rec.Workflows) > 0 {
 		progress("Updating lockfile")
 	}
@@ -77,6 +77,9 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 		if err := store.Set(ctx, wfKey, deps, parentMap, directKeys); err != nil {
 			return fmt.Errorf("updating lockfile for %s: %w", wfPath, err)
 		}
+	}
+	if err := store.Validate(); err != nil {
+		return err
 	}
 
 	// Phase 2: Rewrite workflow files (uses: line changes).
