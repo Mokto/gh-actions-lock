@@ -257,13 +257,23 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// The planned deps carry what narrowing and reverse lookup learned (tag,
 	// branch); the graph adds the old refs composites still name, and edges.
 	planned := make(map[string]dep.Dependency, len(deps))
-	for _, d := range deps {
+	learned := make(map[string]dep.Dependency, len(renames))
+	for i, d := range deps {
 		planned[dep.FoldedKey(d.NWO, d.Ref)] = d
+		if _, ok := renames[declared[i]]; ok {
+			learned[declared[i]] = d
+		}
 	}
 	deps, parentMap = graph.FlattenRenamed(renames)
 	for i, d := range deps {
 		if p, ok := planned[dep.FoldedKey(d.NWO, d.Ref)]; ok {
 			deps[i] = p
+			continue
+		}
+		// A composite still names the root's old full SHA: record it with
+		// the tag or branch reverse lookup found for that commit.
+		if l, ok := learned[dep.FoldedKey(d.NWO, d.Ref)]; ok && parserlock.IsFullSha(d.Ref) && d.Tag == "" && d.Branch == "" {
+			deps[i].Tag, deps[i].Branch = l.Tag, l.Branch
 		}
 	}
 	rootRefs := make([]parserlock.ActionRef, len(unrecordedRefs))
