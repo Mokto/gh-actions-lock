@@ -56,13 +56,29 @@ type paritySubject struct {
 // mutable ref at its current commit, or records a tag or branch that
 // contains a full-SHA key's commit, or fails. An entry a composite holds (see heldBy) gets no override, and
 // its advice names the composite.
-func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
+// parityVerdict is what disposeParity decides for a finding.
+type parityVerdict int
+
+const (
+	// verdictKeep reports the finding as it stands.
+	verdictKeep parityVerdict = iota
+	// verdictExcuse drops the finding: the run should replace or remove its
+	// recorded entry.
+	verdictExcuse
+	// verdictAccept reports the finding as an accepted warning: the run
+	// should repair its recorded entry.
+	verdictAccept
+)
+
+// disposeParity returns the verdict for f, and the finding as it would block
+// were its entry left as recorded; for verdictKeep that is f itself.
+func disposeParity(m parityMode, f *checks.Finding, s paritySubject) (parityVerdict, checks.Finding) {
 	if s.fresh {
 		if s.inconclusive {
 			f.Severity = checks.SeverityError
 			f.Remediation = "retry; nothing is written until the repository identity is confirmed"
 		}
-		return true
+		return verdictKeep, *f
 	}
 	fullSHA := parserlock.IsFullSha(s.pin.Ref)
 	c := f.Category
@@ -72,23 +88,26 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 	// The kept warning itself makes planning re-resolve the entry
 	// (checks.PruneEffect), which heldBy says repairs it.
 	if m.acceptMoved && c == checks.UnreachablePin && !f.RefMissing && s.heldBy == "" {
+		blocking := *f
 		f.Severity = checks.SeverityWarning
 		f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
 		if !fullSHA {
 			f.Remediation = fmt.Sprintf("accepted: --accept-moved locks %s at its current commit", s.pin.Ref)
 		}
-		return true
+		return verdictAccept, blocking
 	}
 	excused := m.relock && s.away
 	// A history check fails closed: the commit is otherwise unproven.
-	if s.inconclusive && s.head != "" && (!excused || fullSHA) {
+	if s.inconclusive && s.head != "" {
 		f.Severity = checks.SeverityError
 		f.Remediation = "retry; a pin is accepted only once its commit is traced to its tag or branch"
-		return true
+		if !excused || fullSHA {
+			return verdictKeep, *f
+		}
 	}
-	if !excused {
-		return true
+	if excused && !(c == checks.RepoRenamed || c == checks.RepoReplaced || c == checks.RepoUnavailable ||
+		c == checks.UnreachablePin && (fullSHA || f.RefMissing)) {
+		return verdictExcuse, *f
 	}
-	return c == checks.RepoRenamed || c == checks.RepoReplaced || c == checks.RepoUnavailable ||
-		c == checks.UnreachablePin && (fullSHA || f.RefMissing)
+	return verdictKeep, *f
 }

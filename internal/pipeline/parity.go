@@ -165,6 +165,15 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 		}
 	}
+	verified := map[string]bool{}
+	defer func() {
+		if report.Verified == nil {
+			report.Verified = map[string]bool{}
+		}
+		for k := range verified {
+			report.Verified[k] = true
+		}
+	}()
 	for i, st := range states {
 		for _, o := range owners[i] {
 			f, ok := parityFinding(o.pw, o.ref, o.lp, pins[i], st)
@@ -176,10 +185,25 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if !ok && mode.verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
 			}
-			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil}) {
+			wr := &report.Workflows[o.report]
+			if !ok {
+				if o.fresh {
+					verified[checks.VerifiedKey(o.lp.Pin.Canonical().String(), pins[i].SHA)] = true
+				}
 				continue
 			}
-			wr := &report.Workflows[o.report]
+			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
+			if verdict != verdictKeep {
+				wr.Deferred = append(wr.Deferred, checks.Deferred{
+					Key: o.lp.Pin.Canonical().String(), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
+				})
+			}
+			if verdict == verdictExcuse {
+				continue
+			}
+			if o.fresh && f.Severity != checks.SeverityError {
+				verified[checks.VerifiedKey(o.lp.Pin.Canonical().String(), pins[i].SHA)] = true
+			}
 			// Dependabot reads back only actions.lock, so a rewritten `uses:`
 			// would never ship; keep the pin under the name the workflow uses.
 			if f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning && o.lp.Parent == "" && !ghapi.DependabotProxy() {

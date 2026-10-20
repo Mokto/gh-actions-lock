@@ -113,6 +113,9 @@ type WorkflowReport struct {
 	Inventory []InventoryEntry
 	// ParseWarnings from ExtractActionRefs (e.g. malformed uses: lines).
 	ParseWarnings []string
+	// Deferred are findings parity excused or accepted on the strength of
+	// a write the run has yet to plan.
+	Deferred []Deferred
 }
 
 // NeedsAttention returns true if this workflow has any non-OK findings.
@@ -193,6 +196,9 @@ type Report struct {
 	// RepoFindings are findings that apply to the repository as a whole
 	// (not to any individual workflow).
 	RepoFindings []Finding
+	// Verified holds the on-disk keys and commits this run resolved afresh
+	// and checked with no blocking finding, by VerifiedKey.
+	Verified map[string]bool
 }
 
 // IsValid returns true if all workflows in the report pass validation.

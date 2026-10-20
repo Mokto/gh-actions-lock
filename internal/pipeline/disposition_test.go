@@ -46,7 +46,8 @@ func TestDisposeParity(t *testing.T) {
 			if tt.category != "" {
 				f.Category, f.Severity = tt.category, checks.SeverityWarning
 			}
-			assert.Equal(t, tt.wantKeep, disposeParity(tt.mode, &f, tt.subject))
+			verdict, _ := disposeParity(tt.mode, &f, tt.subject)
+			assert.Equal(t, tt.wantKeep, verdict != verdictExcuse)
 			if tt.wantKeep {
 				assert.Equal(t, tt.wantSev, f.Severity)
 			}
@@ -60,9 +61,37 @@ func TestDisposeParity_SharedPinRemediationNamesComposite(t *testing.T) {
 	for name, mode := range map[string]parityMode{"default": {}, "accept-moved": {relock: true, acceptMoved: true}} {
 		t.Run(name, func(t *testing.T) {
 			f := checks.Finding{Category: checks.UnreachablePin, Severity: checks.SeverityError, Dependency: &dep.Dependency{NWO: "actions/checkout"}, Remediation: checks.AcceptMovedRemediation}
-			assert.True(t, disposeParity(mode, &f, paritySubject{pin: pin, away: true, heldBy: "octo/composite@v1"}))
+			verdict, _ := disposeParity(mode, &f, paritySubject{pin: pin, away: true, heldBy: "octo/composite@v1"})
+			assert.Equal(t, verdictKeep, verdict)
 			assert.Equal(t, checks.SeverityError, f.Severity)
 			assert.Equal(t, "upgrade or replace octo/composite@v1 with a version whose pin of actions/checkout can be verified, or stop using it", f.Remediation)
+		})
+	}
+}
+
+func TestDisposeParity_DefersWhatItExcusesOrAccepts(t *testing.T) {
+	tagPin := parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: "v4"}
+	tests := []struct {
+		name        string
+		mode        parityMode
+		subject     paritySubject
+		category    checks.Category
+		wantVerdict parityVerdict
+		wantSev     checks.Severity
+	}{
+		{"an excused inconclusive check would block as an error", parityMode{relock: true}, paritySubject{pin: tagPin, head: "v4", inconclusive: true, away: true}, checks.ReachabilityUnknown, verdictExcuse, checks.SeverityError},
+		{"an accepted unreachable pin would block as an error", parityMode{relock: true, acceptMoved: true}, paritySubject{pin: tagPin}, checks.UnreachablePin, verdictAccept, checks.SeverityError},
+		{"a kept finding is itself", parityMode{}, paritySubject{pin: tagPin}, checks.UnreachablePin, verdictKeep, checks.SeverityError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := checks.Finding{Category: tt.category, Severity: checks.SeverityError, Dependency: &dep.Dependency{NWO: "actions/checkout"}}
+			if tt.category == checks.ReachabilityUnknown {
+				f.Severity = checks.SeverityWarning
+			}
+			verdict, blocking := disposeParity(tt.mode, &f, tt.subject)
+			assert.Equal(t, tt.wantVerdict, verdict)
+			assert.Equal(t, tt.wantSev, blocking.Severity)
 		})
 	}
 }
