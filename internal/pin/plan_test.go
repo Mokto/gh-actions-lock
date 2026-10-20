@@ -3,6 +3,7 @@ package pin
 import (
 	"context"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -1214,4 +1215,18 @@ func tagResolver(t *testing.T, owner, repo string, tags ...string) *resolve.Reso
 	r, err := resolve.New("github.com", pinpool.New(2, nil), resolve.WithTransport(reg))
 	require.NoError(t, err)
 	return r
+}
+
+// TestPruneStaleInventoryKeepsRefCasing: a stale main entry doesn't prune
+// Main, a different ref, even at the same commit.
+func TestPruneStaleInventoryKeepsRefCasing(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	inv := func(ref string) checks.InventoryEntry {
+		return checks.InventoryEntry{Dep: dep.Dependency{NWO: "o/a", Ref: ref, SHA: sha}}
+	}
+	stale := checks.Finding{Category: checks.Stale, Dependency: &dep.Dependency{NWO: "O/A", Ref: "main", SHA: strings.ToUpper(sha)}}
+
+	got := pruneStaleInventory([]checks.InventoryEntry{inv("main"), inv("Main")}, []checks.Finding{stale}, false, false)
+	require.Len(t, got, 1)
+	assert.Equal(t, "Main", got[0].Dep.Ref)
 }

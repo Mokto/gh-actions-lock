@@ -7,7 +7,6 @@ import (
 	"os"
 	"runtime"
 	"slices"
-	"strings"
 
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/lockfile"
@@ -245,7 +244,7 @@ func retainUnresolvablePins(rec *Record, store *lockfile.State, wfPath string, d
 		}
 		for _, wf := range e.Workflows {
 			if wf == wfPath {
-				retain[strings.ToLower(e.NWO+"@"+e.Ref)] = true
+				retain[dep.FoldedKey(e.NWO, e.Ref)] = true
 			}
 		}
 	}
@@ -258,10 +257,10 @@ func retainUnresolvablePins(rec *Record, store *lockfile.State, wfPath string, d
 	}
 	have := make(map[string]bool, len(deps))
 	for _, d := range deps {
-		have[strings.ToLower(d.NWO+"@"+d.Ref)] = true
+		have[dep.FoldedKey(d.NWO, d.Ref)] = true
 	}
 	for _, d := range existing {
-		k := strings.ToLower(d.NWO + "@" + d.Ref)
+		k := dep.FoldedKey(d.NWO, d.Ref)
 		if retain[k] && !have[k] {
 			deps = append(deps, d)
 			directKeys[d.Key()] = true

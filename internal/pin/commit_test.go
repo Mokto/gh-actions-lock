@@ -446,3 +446,25 @@ func TestCommitUsesCycleRewritesNothing(t *testing.T) {
 	assert.Equal(t, workflowContent, after)
 	assert.NoFileExists(t, filepath.Join(dir, ".github", "workflows", "actions.lock"))
 }
+
+// TestRetainUnresolvablePinsKeepsRefCasing: main and Main are different
+// refs, so resolving one must not stand in for retaining the other.
+func TestRetainUnresolvablePinsKeepsRefCasing(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	wfPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
+	store, err := lockfile.LoadState(dir, fakeMeta{})
+	require.NoError(t, err)
+	unresolved := dep.Dependency{NWO: "o/a", Ref: "main", Branch: "main", SHA: strings.Repeat("a", 40), HashAlgo: "sha1"}
+	require.NoError(t, store.Set(context.Background(), workflowfile.KeyFromPath(wfPath), []dep.Dependency{unresolved}, nil, nil))
+
+	rec := &Record{Entries: []Entry{{NWO: "O/A", Ref: "main", Resolution: Unresolved, Workflows: []string{wfPath}}}}
+	resolved := dep.Dependency{NWO: "o/a", Ref: "Main", SHA: strings.Repeat("b", 40)}
+	got := retainUnresolvablePins(rec, store, wfPath, []dep.Dependency{resolved}, map[string]bool{resolved.Key(): true})
+
+	var keys []string
+	for _, d := range got {
+		keys = append(keys, d.Key())
+	}
+	assert.Equal(t, []string{"o/a@Main", "o/a@main"}, keys)
+}
