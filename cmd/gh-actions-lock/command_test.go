@@ -1489,7 +1489,12 @@ jobs:
 // parser rejects is never skipped, in a workflow or a $/ composite, in
 // any mode or transport. Nothing is fetched or written.
 func TestFreshMalformedRemoteRefCannotOnboard(t *testing.T) {
-	const rejected = "actions/checkout@main:action.yml"
+	for _, rejected := range []string{"actions/checkout@main:action.yml", "actions/checkout/.github/workflows/ci.yml@v4"} {
+		t.Run(rejected, func(t *testing.T) { testMalformedRemoteRefCannotOnboard(t, rejected) })
+	}
+}
+
+func testMalformedRemoteRefCannotOnboard(t *testing.T, rejected string) {
 	for _, surface := range []string{"workflow", "self composite"} {
 		for _, proxy := range []bool{false, true} {
 			for _, refresh := range []bool{false, true} {
@@ -1543,8 +1548,18 @@ func TestFreshMalformedRemoteRefCannotOnboard(t *testing.T) {
 // TestRemoteCompositeMalformedRefBlocks: a fetched composite whose uses:
 // can't be parsed blocks the run instead of locking without that child.
 func TestRemoteCompositeMalformedRefBlocks(t *testing.T) {
+	tests := map[string]string{
+		"actions/checkout@main:action.yml":             "uses actions/checkout@main:action.yml, which is not an action reference the Actions backend accepts",
+		"actions/checkout/.github/workflows/ci.yml@v4": "reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps",
+	}
+	for use, want := range tests {
+		t.Run(use, func(t *testing.T) { testRemoteCompositeMalformedRef(t, use, want) })
+	}
+}
+
+func testRemoteCompositeMalformedRef(t *testing.T, use, want string) {
 	const sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@main:action.yml\n"
+	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: " + use + "\n"
 	reg := &httpmock.Registry{}
 	reg.Register(httpmock.GraphQLForRepo("octo", "composite"), httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": testRepoResponse("octo/composite", sha, composite)},
@@ -1561,6 +1576,6 @@ jobs:
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
 	require.ErrorIs(t, err, errSilent, stderr)
-	assert.Contains(t, stderr, "uses actions/checkout@main:action.yml, which is not an action reference the Actions backend accepts")
+	assert.Contains(t, stderr, want)
 	assert.NoFileExists(t, filepath.Join(filepath.Dir(path), "actions.lock"))
 }

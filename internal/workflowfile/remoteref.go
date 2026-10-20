@@ -25,7 +25,19 @@ func MalformedRemoteRef(use string) bool {
 	return parserlock.ParseActionRef(use) == nil && parserlock.ParseReusableWorkflowRef(use) == nil
 }
 
-// MalformedRefError is the error for a malformed remote `uses:` value.
+// MalformedStepRef reports whether a step-level `uses:` value can't be
+// used there: a malformed remote reference, or a reusable workflow, which
+// the Actions backend accepts only at jobs.<job_id>.uses.
+func MalformedStepRef(use string) bool {
+	return MalformedRemoteRef(use) || parserlock.ParseReusableWorkflowRef(strings.TrimSpace(use)) != nil
+}
+
+// MalformedRefError is the error for a malformed remote `uses:` value or a
+// reusable workflow used as a step.
 func MalformedRefError(use string) error {
-	return fmt.Errorf("uses: %s is not an action reference the Actions backend accepts", strings.TrimSpace(use))
+	use = strings.TrimSpace(use)
+	if parserlock.ParseReusableWorkflowRef(use) != nil {
+		return fmt.Errorf("uses: %s is a reusable workflow; reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps", use)
+	}
+	return fmt.Errorf("uses: %s is not an action reference the Actions backend accepts", use)
 }

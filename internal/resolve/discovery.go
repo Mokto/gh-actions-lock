@@ -62,6 +62,9 @@ type MalformedNestedRefError struct {
 }
 
 func (e *MalformedNestedRefError) Error() string {
+	if parserlock.ParseReusableWorkflowRef(e.Ref) != nil {
+		return fmt.Sprintf("composite action %s uses %s, a reusable workflow; reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps", e.Parent, e.Ref)
+	}
 	return fmt.Sprintf("composite action %s uses %s, which is not an action reference the Actions backend accepts", e.Parent, e.Ref)
 }
 
@@ -515,5 +518,6 @@ func malformedNestedRef(use string) bool {
 		strings.HasPrefix(use, selfRepositoryPrefix):
 		return false
 	}
-	return parserlock.ParseActionRef(use) == nil && parserlock.ParseReusableWorkflowRef(use) == nil
+	// Composite steps are steps: a reusable workflow isn't allowed there.
+	return parserlock.ParseActionRef(use) == nil
 }

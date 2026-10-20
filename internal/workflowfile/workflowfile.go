@@ -160,7 +160,7 @@ func (f *File) ExtractActionRefs() RefScan {
 		if appendDockerWarning(&scan.Warnings, seenDocker, value) {
 			return
 		}
-		if MalformedRemoteRef(value) {
+		if MalformedRemoteRef(value) || stepLevel && MalformedStepRef(value) {
 			if !seen[value] {
 				seen[value] = true
 				scan.MalformedRefs = append(scan.MalformedRefs, value)
@@ -284,7 +284,7 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 					scan.LocalPaths = append(scan.LocalPaths, use)
 				}
 			case appendDockerWarning(&scan.Warnings, seenDocker, use):
-			case MalformedRemoteRef(use):
+			case MalformedStepRef(use):
 				if !seenRefs[use] {
 					seenRefs[use] = true
 					scan.MalformedRefs = append(scan.MalformedRefs, use)
@@ -432,7 +432,7 @@ func ExtractLocalCompositeRefs(workflowPath string, localPaths []string) ([]pars
 		}
 
 		for _, use := range uses {
-			if MalformedRemoteRef(use) {
+			if MalformedStepRef(use) {
 				warnings = append(warnings, MalformedRefError(use).Error())
 				continue
 			}

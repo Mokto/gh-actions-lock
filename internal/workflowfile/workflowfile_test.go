@@ -705,3 +705,21 @@ func TestScanSelfRepositoryActions_EnvRootBoundsEscape(t *testing.T) {
 	assert.Contains(t, scan.Errors[0], "outside repo root")
 	assert.Empty(t, scan.Refs)
 }
+
+// TestExtractActionRefs_ReusableWorkflowOnlyAtJobLevel: a reusable workflow
+// referenced from a step is malformed; at jobs.<id>.uses it is not an action
+// and is left alone.
+func TestExtractActionRefs_ReusableWorkflowOnlyAtJobLevel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ci.yml")
+	body := "on: push\njobs:\n" +
+		"  call:\n    uses: octo/workflows/.github/workflows/release.yml@v1\n" +
+		"  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout/.github/workflows/ci.yml@v4\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	f, err := Load(path)
+	require.NoError(t, err)
+
+	scan := f.ExtractActionRefs()
+	assert.Equal(t, []string{"actions/checkout/.github/workflows/ci.yml@v4"}, scan.MalformedRefs)
+	assert.Empty(t, scan.Refs)
+	assert.Contains(t, MalformedRefError(scan.MalformedRefs[0]).Error(), "reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps")
+}
