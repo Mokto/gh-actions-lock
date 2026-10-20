@@ -2715,6 +2715,52 @@ func TestParity_AuditRechecksWithoutBlockedWriters(t *testing.T) {
 	assert.Equal(t, lock, string(after), "nothing is written")
 }
 
+// TestParity_RelockNeverExcusesUnreachablePin: a composite's child left its
+// tag's history, and a new direct use would rewrite its key. That repair is
+// --accept-moved's to make: plain --relock leaves an unreachable pin an
+// error, whatever the write would do.
+func TestParity_RelockNeverExcusesUnreachablePin(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	reg := &httpmock.Registry{}
+	stubGraph(t, reg,
+		map[string]string{"actions/checkout": parityTestMoved},
+		map[string]string{"octo/root": rootSHA, "actions/checkout": parityTestMoved},
+		map[string]string{"octo/root": "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4.2.1\n"})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/root@v1
+      - uses: actions/checkout@v4.2.1
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@v4.2.1'\n" +
+		"  'actions/checkout@v4.2.1':\n    ref: 'v4.2.1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	p, err := runParity(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
+	var unreachable []string
+	for _, f := range p.Findings {
+		if f.Category == "unreachable-pin" && f.Severity == "error" {
+			unreachable = append(unreachable, f.Dependency)
+		}
+	}
+	assert.Contains(t, unreachable, "actions/checkout@v4.2.1", "%+v", p.Findings)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
 // TestParity_AcceptMovedKeepsRedirectedSharedPinBlocking: the workflow and
 // a composite share octo/old@v4, whose recorded commit left v4's history,
 // and octo/old now redirects to octo/new. --accept-moved re-resolves the
