@@ -1,24 +1,19 @@
-# Shared scenario catalog for gh-actions-lock integration tests.
-#
-# Both the Ruby integration harness (test/integration/) and the Go scenario
-# loader (test/scenarios/) consume this file. Each scenario describes:
+# End-to-end scenarios for gh-actions-lock. test/e2e runs each one against
+# the compiled binary; test/scenarios/catalog.go documents every field.
 #
 #   name:        unique identifier (snake_case)
-#   category:    grouping for matrix display
+#   category:    grouping
 #   description: what the scenario validates
-#   needs_token: true if the scenario requires a real GH_TOKEN
-#   needs_stub:  true if the scenario uses a stub HTTP server
-#   tags:        labels for filtering (e.g. "smoke", "security")
+#   needs_token: runs against the real API; only with E2E_LIVE=1
+#   live_repo:   shallow-clones this repo instead of laying down fixtures
+#   stub:        fake GitHub profile (see stubProfiles in test/e2e/e2e.go)
+#   tags:        filters for E2E_TAGS; every non-live scenario is tagged
+#                `stub` and runs in `go test ./...`
 #   flags:       CLI flags passed to the binary
-#   fixtures:    inline workflow/lockfile content (Ruby-side hydrates these)
-#   expect:      expected exit code and output assertions
-#
-# The Ruby harness adds stub server wiring and custom assertions on top of
-# what's declared here. The Go side uses these for table-driven scenario
-# validation and matrix reporting.
-#
-# Scenarios with needs_token: true require a real GH_TOKEN and are
-# skipped gracefully when no token is present.
+#   input:       prompt responses typed into a pseudo-terminal
+#   fixtures:    workflows, lockfile (or a testfixture lockfile_template),
+#                and extra repo files
+#   expect:      assertions on the exit code, output, and written files
 
 version: 1
 
@@ -128,7 +123,7 @@ scenarios:
   - name: sso_auth_failure
     category: sso_auth
     description: "SSO-gated org returns 403 with X-GitHub-SSO header"
-    needs_stub: true
+    stub: sso_403
     tags: [smoke, stub]
     fixtures:
       workflows:
@@ -153,7 +148,7 @@ scenarios:
   - name: dependabot_proxy_rest_only
     category: sso_auth
     description: "Dependabot proxy context resolves private actions with REST GETs and no GraphQL POST"
-    needs_stub: true
+    stub: dependabot_proxy
     tags: [stub]
     env:
       GH_ACTIONS_LOCK_DEPENDABOT_PROXY: "1"
@@ -173,7 +168,7 @@ scenarios:
   - name: sso_dedup
     category: sso_auth
     description: "11 actions from same org — SSO reason shown only once"
-    needs_stub: true
+    stub: sso_403
     tags: [stub]
     fixtures:
       workflows:
@@ -201,12 +196,12 @@ scenarios:
         - "actions/checkout"
         - "actions/stale"
         - "actions/github-script"
-      custom: sso_dedup_count
+      output_count: {"SAML enforcement": 1}
 
   - name: sso_no_fix_single_url
     category: sso_auth
     description: "--no-fix: SSO fix guidance surfaces even in read-only mode"
-    needs_stub: true
+    stub: sso_403
     tags: [stub]
     flags: ["--no-fix"]
     fixtures:
@@ -221,7 +216,7 @@ scenarios:
   - name: mixed_failures
     category: sso_auth
     description: "SSO + repo-not-found — different errors not deduped"
-    needs_stub: true
+    stub: mixed
     tags: [stub]
     fixtures:
       workflows:
@@ -244,7 +239,7 @@ scenarios:
   - name: api_404_not_found
     category: api_errors
     description: "Action repo does not exist — 404 surfaced cleanly"
-    needs_stub: true
+    stub: not_found
     tags: [stub]
     fixtures:
       workflows:
@@ -261,7 +256,7 @@ scenarios:
   - name: api_rate_limit_429
     category: api_errors
     description: "Rate limit 429 with Retry-After — retries and recovers or fails gracefully"
-    needs_stub: true
+    stub: rate_limited
     tags: [stub]
     fixtures:
       workflows:
@@ -277,7 +272,7 @@ scenarios:
   - name: api_server_error_500
     category: api_errors
     description: "Server error 500 — fails gracefully"
-    needs_stub: true
+    stub: server_error
     tags: [stub]
     fixtures:
       workflows:
@@ -293,7 +288,7 @@ scenarios:
   - name: api_unauthorized_401
     category: api_errors
     description: "Unauthorized 401 — permission denied error"
-    needs_stub: true
+    stub: unauthorized
     tags: [stub]
     fixtures:
       workflows:
@@ -419,7 +414,7 @@ scenarios:
   - name: expression_in_uses
     category: workflow_parsing
     description: "Expression-based uses: (${{ }}) — illegal in Actions, fails to parse"
-    needs_stub: true
+    stub: sso_403
     tags: [stub]
     fixtures:
       workflows:
@@ -440,7 +435,7 @@ scenarios:
   - name: docker_uses_warns
     category: workflow_parsing
     description: "Real binary warns that docker:// image tags are mutable and outside lockfile coverage"
-    needs_stub: true
+    stub: sso_403
     tags: [stub]
     fixtures:
       workflows:
@@ -521,7 +516,7 @@ scenarios:
   - name: migrate_local_actions_rewrite
     category: workflow_parsing
     description: "migration runs by default on fix runs: rewrites a deep in-repo ./ chain to $/, then discovers, narrows and pins the remote dependency reached only through that $/ chain; no self repository ref enters the lockfile"
-    needs_stub: true
+    stub: checkout
     tags: [stub]
     fixtures:
       workflows:
@@ -636,7 +631,7 @@ scenarios:
   - name: json_output_findings
     category: output_modes
     description: "--json=findings includes findings array"
-    needs_stub: true
+    stub: sso_403
     tags: [stub]
     flags: ["--no-fix", "--json=findings"]
     fixtures:
@@ -652,7 +647,7 @@ scenarios:
   - name: no_fix_json_combined
     category: output_modes
     description: "--no-fix --json combined produces JSON without modifying disk"
-    needs_stub: true
+    stub: sso_403
     tags: [stub]
     flags: ["--no-fix", "--json"]
     fixtures:
@@ -681,7 +676,7 @@ scenarios:
   - name: verify_pinned_stub
     category: output_modes
     description: "Real-binary --verify succeeds with reachable pins and available locked manifests"
-    needs_stub: true
+    stub: checkout
     tags: [stub]
     flags: ["--verify"]
     fixtures:
@@ -696,7 +691,7 @@ scenarios:
   - name: verify_json_combined
     category: output_modes
     description: "--verify --json produces JSON output"
-    needs_stub: true
+    stub: checkout
     tags: [stub]
     flags: ["--verify", "--json=valid,findings"]
     fixtures:
@@ -712,7 +707,7 @@ scenarios:
   - name: verify_local_all_covered
     category: output_modes
     description: "--verify-local with all refs covered — exits 0"
-    needs_stub: false
+    tags: [stub]
     flags: ["--verify-local"]
     fixtures:
       workflows:
@@ -727,7 +722,7 @@ scenarios:
   - name: verify_local_missing_pin
     category: output_modes
     description: "--verify-local with uncovered ref — exits 1, reports not-pinned"
-    needs_stub: false
+    tags: [stub]
     flags: ["--verify-local"]
     fixtures:
       workflows:
@@ -742,7 +737,7 @@ scenarios:
   - name: verify_local_json
     category: output_modes
     description: "--verify-local --json produces structured output without network"
-    needs_stub: false
+    tags: [stub]
     flags: ["--verify-local", "--json=valid,findings"]
     fixtures:
       workflows:
@@ -757,7 +752,7 @@ scenarios:
   - name: verify_local_offline_unauthed
     category: output_modes
     description: "--verify-local succeeds with no token and GH_HOST pointed at a refused address — proves the offline path never touches the network or auth"
-    needs_stub: false
+    tags: [stub]
     flags: ["--verify-local"]
     env:
       # Any network call is a connection refused; stored github.com auth does
@@ -780,7 +775,7 @@ scenarios:
   - name: verify_conflict_verify_local
     category: output_modes
     description: "--verify and --verify-local are mutually exclusive — errors before any work"
-    needs_stub: false
+    tags: [stub]
     flags: ["--verify", "--verify-local"]
     fixtures:
       workflows:
@@ -788,13 +783,13 @@ scenarios:
           name: CI
           actions: ["actions/checkout@v4"]
     expect:
-      exit: 1
+      exit: 2
       output_contains: ["mutually exclusive"]
 
   - name: verify_local_conflict_relock
     category: output_modes
     description: "--verify-local --relock is rejected — verify-local is offline"
-    needs_stub: false
+    tags: [stub]
     flags: ["--verify-local", "--relock"]
     fixtures:
       workflows:
@@ -802,7 +797,7 @@ scenarios:
           name: CI
           actions: ["actions/checkout@v4"]
     expect:
-      exit: 1
+      exit: 2
       output_contains: ["offline"]
 
   # ╔═════════════════════════════════════════════════════════════════════════╗
@@ -893,7 +888,7 @@ scenarios:
   - name: unresolved_uses_error_icon
     category: security
     description: "Unresolved actions use error severity, not warning"
-    needs_stub: true
+    stub: sso_403
     tags: [stub]
     fixtures:
       workflows:
@@ -907,7 +902,7 @@ scenarios:
   - name: prefix_stripping
     category: security
     description: "Error reason prefix stripped — no 'resolution failed:' in output"
-    needs_stub: true
+    stub: sso_403
     tags: [stub]
     fixtures:
       workflows:
@@ -1162,8 +1157,6 @@ scenarios:
   - name: self_repository_action_valid
     category: workflow_parsing
     description: "Bare $/ self repository reference at step level is inherently pinned — offline verify passes with an empty workflow entry, no pins required"
-    needs_token: false
-    needs_stub: false
     tags: [stub]
     flags: ["--verify-local"]
     fixtures:
@@ -1194,8 +1187,6 @@ scenarios:
   - name: self_repository_reusable_workflow_valid
     category: workflow_parsing
     description: "$/ self repository reference at reusable-workflow call level (jobs.<id>.uses) is inherently pinned — offline verify passes with an empty workflow entry"
-    needs_token: false
-    needs_stub: false
     tags: [stub]
     flags: ["--verify-local"]
     fixtures:
@@ -1218,8 +1209,6 @@ scenarios:
   - name: self_repository_action_missing
     category: workflow_parsing
     description: "A missing in-repo $/ action is an unfixable invalid self repository ref, not a fixable not-pinned dependency."
-    needs_token: false
-    needs_stub: false
     tags: [stub]
     flags: ["--verify-local"]
     fixtures:
@@ -1240,8 +1229,6 @@ scenarios:
   - name: self_repository_ref_rejected
     category: workflow_parsing
     description: "$/…@ref is rejected — a self repository reference always resolves to the running commit, so an explicit @ref is invalid."
-    needs_token: false
-    needs_stub: false
     tags: [stub]
     flags: ["--verify-local"]
     fixtures:
@@ -1262,8 +1249,6 @@ scenarios:
   - name: self_repository_nested_ref_rejected
     category: workflow_parsing
     description: "A $/…@ref nested inside an in-repo composite is rejected during local closure discovery, before any network resolution."
-    needs_token: false
-    needs_stub: false
     tags: [stub]
     flags: ["--verify-local"]
     fixtures:
@@ -1291,7 +1276,7 @@ scenarios:
   - name: self_repository_shared_dependency
     category: workflow_parsing
     description: "The real binary narrows a remote ref shared by workflow YAML and a local $/ action in both files, so source and lockfile stay in sync"
-    needs_stub: true
+    stub: checkout
     tags: [stub]
     fixtures:
       workflows:
@@ -1320,6 +1305,8 @@ scenarios:
       files_contain:
         ".github/workflows/ci.yml": ["uses: $/actions/shared", "uses: actions/checkout@v4.2.2"]
         "actions/shared/action.yml": ["uses: actions/checkout@v4.2.2"]
+      # The written lockfile must verify offline as-is.
+      then_run: ["--verify-local"]
 
   - name: fresh_no_narrow_keeps_major
     category: narrowing
@@ -1376,7 +1363,7 @@ scenarios:
         ci.yml:
           name: CI
           actions: ["actions/checkout@v4"]
-      lockfile_template: pinned_checkout_v4_imprecise
+      lockfile_template: pinned_checkout
     expect:
       exit: 0
       lockfile_deps_cover_direct: true
@@ -1564,7 +1551,7 @@ scenarios:
         ci.yml:
           name: CI
           actions: ["actions/checkout@v4"]
-      lockfile_template: pinned_checkout_v4_imprecise
+      lockfile_template: pinned_checkout
     expect:
       exit: 0
       lockfile_deps_cover_direct: true
@@ -1925,7 +1912,7 @@ scenarios:
   - name: dbot_inconclusive_ref_blocks
     category: dependabot
     description: "Real-binary JSON/exit contract for an inconclusive recorded-ref check: fail closed and retain the lockfile; Go tests cover history-check logic"
-    needs_stub: true
+    stub: sso_403
     tags: [stub]
     flags: ["--no-onboard", "--no-narrow", "--no-interactive", "--json=valid,findings"]
     fixtures:
@@ -1957,7 +1944,7 @@ scenarios:
   - name: dbot_renamed_repo_warns
     category: dependabot
     description: "Same-repo-ID rename reports a non-blocking repo-renamed finding in the JSON contract (Go tests cover the rewrite)"
-    needs_stub: true
+    stub: renamed
     tags: [stub]
     flags: ["--no-onboard", "--no-narrow", "--no-interactive", "--no-fix", "--json=valid,findings"]
     fixtures:
@@ -1994,7 +1981,7 @@ scenarios:
       stdout_contains: ["does not exist or is not reachable in nodeselector/actions-test-fixtures"]
       jq:
         - expr: '.findings | length'
-          gt: 0
+          greater_than: 0
         - expr: '.findings[0].category'
           equals: 'not-pinned'
         - expr: '.findings[0].severity'
@@ -2003,7 +1990,7 @@ scenarios:
   - name: dbot_forgery_blocks
     category: dependabot
     description: "Stale pin (lockfile SHA not reachable from the ref head) produces unreachable-pin/error finding"
-    needs_stub: true
+    stub: forgery
     tags: [stub]
     flags: ["--no-onboard", "--no-narrow", "--no-interactive", "--relock", "--no-fix", "--json=valid,findings"]
     fixtures:
@@ -2067,7 +2054,8 @@ scenarios:
   - name: relock_bumps_stale_branch_ref
     category: security
     description: "--relock bumps a moved branch ref (main) from a stale ancestor SHA to the live head"
-    needs_stub: true
+    tags: [stub]
+    stub: relock
     flags: ["--relock", "--no-narrow"]
     fixtures:
       workflows:
@@ -2111,7 +2099,7 @@ scenarios:
   - name: fresh_tag_warns_without_cooldown
     category: cooldown
     description: "No Dependabot cooldown configured: pinning a tag released <3 days ago warns on the terminal"
-    needs_stub: true
+    stub: checkout_fresh
     tags: [stub]
     flags: ["--no-narrow"]
     fixtures:
@@ -2129,7 +2117,7 @@ scenarios:
   - name: fresh_tag_suppressed_by_cooldown
     category: cooldown
     description: "Dependabot cooldown default-days>0 suppresses the fresh-tag finding"
-    needs_stub: true
+    stub: checkout_fresh
     tags: [stub]
     flags: ["--no-narrow", "--json=findings"]
     fixtures:
@@ -2155,7 +2143,7 @@ scenarios:
   - name: fresh_tag_zero_days_still_warns
     category: cooldown
     description: "Dependabot cooldown default-days:0 cannot suppress the fresh-tag finding (no silent downgrade)"
-    needs_stub: true
+    stub: checkout_fresh
     tags: [stub]
     flags: ["--no-narrow", "--json=findings"]
     fixtures:
@@ -2182,7 +2170,7 @@ scenarios:
   - name: cooldown_ignored_keys_surface_in_readonly
     category: cooldown
     description: "Read-only (--no-fix): unsupported Dependabot cooldown keys surface in JSON even when the run fails on an unpinned action"
-    needs_stub: true
+    stub: checkout
     tags: [stub]
     flags: ["--no-fix", "--no-narrow", "--json=findings"]
     fixtures:

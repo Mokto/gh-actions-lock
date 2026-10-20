@@ -13,9 +13,16 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/github/actions-lockfile/go v0.0.6
+require (
+	github.com/creack/pty v1.1.17
+	github.com/github/actions-lockfile/go v0.0.6
+)
 
-require go.yaml.in/yaml/v3 v3.0.5 // indirect
+require (
+	github.com/itchyny/gojq v0.12.19 // indirect
+	github.com/itchyny/timefmt-go v0.1.8 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
+)
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

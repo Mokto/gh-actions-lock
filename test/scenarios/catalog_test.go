@@ -3,6 +3,7 @@ package scenarios
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"testing"
@@ -76,14 +77,33 @@ func TestEveryScenarioHasExpectation(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, s := range cat.Scenarios {
-		hasExit := s.Expect.Exit != nil || len(s.Expect.ExitAny) > 0
-		hasOutput := len(s.Expect.OutputContains) > 0 || len(s.Expect.OutputExcludes) > 0
-		hasStdout := len(s.Expect.StdoutContains) > 0 || s.Expect.StdoutIsJSON
-		hasCustom := s.Expect.Custom != ""
-		hasLockfile := s.Expect.LockfileExists
-
-		assert.True(t, hasExit || hasOutput || hasStdout || hasCustom || hasLockfile,
+		assert.False(t, reflect.ValueOf(s.Expect).IsZero(),
 			"scenario %q has no expectations defined", s.Name)
+	}
+}
+
+// TestEveryScenarioRunsInCI keeps each scenario in exactly one CI lane:
+// hermetic `stub` scenarios guard merge from `go test ./...`, live ones run
+// in the non-blocking integration-live job.
+func TestEveryScenarioRunsInCI(t *testing.T) {
+	cat, err := Load()
+	require.NoError(t, err)
+
+	for _, s := range cat.Scenarios {
+		assert.NotEqual(t, s.Live(), s.HasTag("stub"),
+			"scenario %q must be tagged stub or need a token, not both or neither", s.Name)
+	}
+}
+
+func TestLockfileTemplatesExist(t *testing.T) {
+	cat, err := Load()
+	require.NoError(t, err)
+
+	templates := testfixture.LockfileTemplates()
+	for _, s := range cat.Scenarios {
+		if name := s.Fixtures.LockfileTemplate; name != "" {
+			assert.Contains(t, templates, name, "scenario %q", s.Name)
+		}
 	}
 }
 
