@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -349,7 +350,8 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 	if err := conflictingCommits(allDeps); err != nil {
 		resolveErr = errors.Join(resolveErr, err)
 	}
-	return dep.Dedup(allDeps), parentMap, resolveErr
+	deps := dep.Dedup(allDeps)
+	return deps, canonicalParents(deps, parentMap), resolveErr
 }
 
 // conflictingCommits rejects a run that resolved one NWO@Ref to two commits,
@@ -366,6 +368,35 @@ func conflictingCommits(deps []dep.Dependency) error {
 		commits[key] = d.SHA
 	}
 	return nil
+}
+
+// canonicalParents rewrites parent-map keys to the owner/repo casing of the
+// returned dependencies. A manifest can name an action with different
+// casing than the cached dependency it resolves to, and the writer looks
+// edges up by Dependency.Key. Ref casing is preserved.
+func canonicalParents(deps []dep.Dependency, parents dep.ParentMap) dep.ParentMap {
+	canon := make(map[string]string, len(deps))
+	for _, d := range deps {
+		canon[strings.ToLower(d.NWO)+"@"+d.Ref] = d.Key()
+	}
+	key := func(k string) string {
+		if i := strings.LastIndex(k, "@"); i >= 0 {
+			if c, ok := canon[strings.ToLower(k[:i])+k[i:]]; ok {
+				return c
+			}
+		}
+		return k
+	}
+	out := make(dep.ParentMap, len(parents))
+	for child, pp := range parents {
+		c := key(child)
+		for _, p := range pp {
+			if p = key(p); !slices.Contains(out[c], p) {
+				out[c] = append(out[c], p)
+			}
+		}
+	}
+	return out
 }
 
 // resolveWithActionYMLParallel resolves refs one-per-worker via the shared pool

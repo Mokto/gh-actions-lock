@@ -239,6 +239,27 @@ func TestResolveLockedRecursiveDoesNotFoldRefCasing(t *testing.T) {
 	assert.Equal(t, "Main", missing.Ref.Ref)
 }
 
+func TestResolveAllRecursiveCanonicalizesParentCasing(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
+		ghapi.ForActionRef("vendor", "child", "", "v1"): {
+			dep:       dep.Dependency{NWO: "vendor/child", Ref: "v1", SHA: sha},
+			actionYML: "runs:\n  using: node20\n",
+		},
+		ghapi.ForActionRef("o", "parent", "", "v1"): {
+			dep:       dep.Dependency{NWO: "o/parent", Ref: "v1", SHA: sha},
+			actionYML: "runs:\n  using: composite\n  steps:\n    - uses: Vendor/Child@v1\n",
+		},
+	})
+	_, parents, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
+		{Owner: "vendor", Repo: "child", Ref: "v1"},
+		{Owner: "o", Repo: "parent", Ref: "v1"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, dep.ParentMap{"vendor/child@v1": {"o/parent@v1"}}, parents,
+		"edges are keyed by the resolved dependency, so the writer finds them")
+}
+
 func TestResolveAllRecursiveRejectsConflictingCommits(t *testing.T) {
 	const (
 		first  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
