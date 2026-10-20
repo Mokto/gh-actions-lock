@@ -137,6 +137,81 @@ func TestCommitDependencyFreeWorkflow(t *testing.T) {
 	}
 }
 
+func TestCommitSourceContainment(t *testing.T) {
+	for _, tc := range []struct {
+		name, source string
+		directory    bool
+		inside       bool
+		override     bool
+	}{
+		{name: "workflow file outside repository", source: "workflow"},
+		{name: "workflow directory outside repository", source: "workflow", directory: true},
+		{name: "self action file outside repository", source: "action"},
+		{name: "self action directory outside repository", source: "action", directory: true},
+		{name: "override root rejects external workflow", source: "workflow", override: true},
+		{name: "workflow alias inside repository", source: "workflow", inside: true},
+		{name: "self action alias inside repository", source: "action", inside: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Chdir(root)
+			if tc.override {
+				t.Setenv(workflowfile.RepoRootEnv, root)
+			} else {
+				require.NoError(t, os.Mkdir(".git", 0o755))
+			}
+			targetDir := t.TempDir()
+			if tc.inside {
+				targetDir = filepath.Join(root, "sources")
+				require.NoError(t, os.Mkdir(targetDir, 0o755))
+			}
+			const oldUse = "owner/action@v1"
+			const newUse = "owner/action@v1.2.3"
+			content := []byte("jobs:\n  build:\n    steps:\n      - uses: " + oldUse + "\n")
+			target := filepath.Join(targetDir, "source.yml")
+			require.NoError(t, os.WriteFile(target, content, 0o600))
+			safe := filepath.Join(".github", "workflows", "safe.yml")
+			require.NoError(t, os.MkdirAll(filepath.Dir(safe), 0o755))
+			require.NoError(t, os.WriteFile(safe, content, 0o600))
+			path := filepath.Join(".github", tc.source, "linked", "source.yml")
+			if tc.directory {
+				require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Dir(path)), 0o755))
+				require.NoError(t, os.Symlink(targetDir, filepath.Dir(path)))
+			} else {
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+				require.NoError(t, os.Symlink(target, path))
+			}
+			plans := []WorkflowPlan{{
+				Path: safe, Rewrites: map[dep.Spelling]string{oldUse: newUse},
+			}}
+			if tc.source == "workflow" {
+				plans = append(plans, WorkflowPlan{Path: path, Rewrites: map[dep.Spelling]string{oldUse: newUse}})
+			} else {
+				plans[0].SelfActionFiles = []string{path}
+			}
+			store, err := lockfile.LoadState(root, fakeMeta{})
+			require.NoError(t, err)
+			err = Commit(context.Background(), &Record{Workflows: plans}, store, nil)
+			if tc.inside {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, "outside")
+				assert.Empty(t, store.WorkflowKeys(), "validate all sources before mutating the store")
+				assert.NoFileExists(t, filepath.Join(root, ".github", "workflows", "actions.lock"))
+			}
+			for _, source := range []string{safe, target} {
+				got, err := os.ReadFile(source)
+				require.NoError(t, err)
+				if tc.inside {
+					assert.Contains(t, string(got), newUse)
+				} else {
+					assert.Equal(t, content, got, "no source is written before all paths are validated")
+				}
+			}
+		})
+	}
+}
+
 func TestCommitPartialResolution(t *testing.T) {
 	dir := t.TempDir()
 	workflowPath := filepath.Join(".github", "workflows", "ci.yml")

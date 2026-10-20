@@ -32,6 +32,9 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 		progress = copts.OnProgress
 	}
 	rec.Workflows = committedWorkflows(rec, store, copts)
+	if err := validateSourcePaths(rec.Workflows); err != nil {
+		return err
+	}
 	if err := validateRequiredRewrites(rec.Workflows); err != nil {
 		return err
 	}
@@ -149,6 +152,24 @@ func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, 
 		deps = retainUnresolvablePins(rec, store, wfPath, deps, directKeys)
 		if err := store.Set(ctx, wfKey, deps, parentMap, directKeys); err != nil {
 			return fmt.Errorf("updating lockfile for %s: %w", wfPath, err)
+		}
+	}
+	return nil
+}
+
+func validateSourcePaths(plans []WorkflowPlan) error {
+	for _, wp := range plans {
+		root, err := workflowfile.FindRepoRoot(wp.Path)
+		if err != nil {
+			return fmt.Errorf("validating source %s: %w", wp.Path, err)
+		}
+		if root == "" {
+			continue
+		}
+		for _, path := range append([]string{wp.Path}, wp.SelfActionFiles...) {
+			if err := workflowfile.ValidatePathWithinRoot(root, path); err != nil {
+				return fmt.Errorf("validating source %s: %w", path, err)
+			}
 		}
 	}
 	return nil
