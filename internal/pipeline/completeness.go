@@ -41,8 +41,8 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 		// Discovery names entries as manifests spell them; match them to the
 		// recorded keys with dep.RefKey's rule, so a full SHA in another case
 		// neither fails a complete graph nor skips its entry's descendants.
-		// A spelling that reaches several entries and none exactly checks
-		// each of them: their edges can differ.
+		// A spelling that reaches several entries checks each of them:
+		// their edges can differ.
 		for _, child := range slices.Sorted(maps.Keys(parents)) {
 			for _, parent := range lockedParents(refs, parents[child]) {
 				action := file.Dependencies[parent]
@@ -96,9 +96,8 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 	return nil
 }
 
-// lockedRoots names each full-SHA root by the entries it reaches: its own
-// spelling when recorded, else every entry with its identity, so each
-// candidate's graph is walked. A full SHA with no such entry takes the first
+// lockedRoots names each full-SHA root by every entry with its identity,
+// exact spelling or not, so each candidate's graph is walked. A full SHA with no such entry takes the first
 // entry whose commit it pins.
 func lockedRoots(roots []parserlock.ActionRef, existing []dep.Dependency) []parserlock.ActionRef {
 	var out []parserlock.ActionRef
@@ -111,10 +110,6 @@ func lockedRoots(roots []parserlock.ActionRef, existing []dep.Dependency) []pars
 		for _, d := range existing {
 			if dep.RefKey(d.NWO, d.Ref) != dep.RefKey(ref.NWO(), ref.Ref) {
 				continue
-			}
-			if d.Ref == ref.Ref {
-				spellings = []string{d.Ref}
-				break
 			}
 			if !slices.Contains(spellings, d.Ref) {
 				spellings = append(spellings, d.Ref)
@@ -142,13 +137,12 @@ func lockedRoots(roots []parserlock.ActionRef, existing []dep.Dependency) []pars
 }
 
 // lockedParents maps discovered parents to the recorded entries whose edges
-// must cover the child: each parent's exact entry, else every entry with its
-// identity.
+// must cover the child: every entry with the parent's identity.
 func lockedParents(refs lockfile.RefIndex, parents []string) []string {
 	var out []string
 	for _, parent := range parents {
 		nwo, ref, _ := strings.Cut(parent, "@")
-		for _, k := range refs.Lookup(nwo, ref).Entries() {
+		for _, k := range refs.Lookup(nwo, ref).Candidates {
 			if !slices.Contains(out, k) {
 				out = append(out, k)
 			}

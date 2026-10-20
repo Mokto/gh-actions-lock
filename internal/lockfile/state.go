@@ -440,36 +440,52 @@ type MissingPin struct {
 
 // InspectClosure checks metadata coverage while walking the selected roots.
 func InspectClosure(file parserlock.File, workflowKey string, live func(parserlock.Pin, parserlock.Action) bool) ([]LockedPin, []MissingPin) {
+	refs := NewRefIndex(file)
 	var out []LockedPin
 	var missing []MissingPin
 	seen := map[string]bool{}
-	add := func(key, parent string) (parserlock.Action, bool) {
+	// reach returns the entries a recorded reference names: every entry with
+	// its identity (see RefIndex), so a full SHA in another case reaches its
+	// entry, and one recorded under several spellings reaches each. A
+	// reference with none is missing.
+	reach := func(key, parent string) []string {
+		var entries []string
+		if pin, ok := parserlock.ParsePin(key); ok {
+			entries = refs.Lookup(pin.NWO, pin.Ref).Candidates
+		}
+		if len(entries) == 0 && !seen[key] {
+			seen[key] = true
+			missing = append(missing, MissingPin{Key: key, Parent: parent})
+		}
+		return entries
+	}
+	add := func(key, parent string) bool {
 		if seen[key] {
-			return parserlock.Action{}, false
+			return false
 		}
 		seen[key] = true
-		pin, ok := parserlock.ParsePin(key)
-		action, found := file.Dependencies[key]
-		if !ok || !found {
-			missing = append(missing, MissingPin{Key: key, Parent: parent})
-			return parserlock.Action{}, false
-		}
-		out = append(out, LockedPin{Key: key, Pin: pin, Action: action, Parent: parent})
-		return action, true
+		pin, _ := parserlock.ParsePin(key)
+		out = append(out, LockedPin{Key: key, Pin: pin, Action: file.Dependencies[key], Parent: parent})
+		return true
 	}
 	var walk func(key, parent string)
-	walk = func(key, parent string) {
-		if action, ok := add(key, parent); ok {
-			for _, child := range action.Uses {
-				walk(child, key)
+	walk = func(ref, parent string) {
+		for _, key := range reach(ref, parent) {
+			if add(key, parent) {
+				for _, child := range file.Dependencies[key].Uses {
+					walk(child, key)
+				}
 			}
 		}
 	}
 	// Claim every root first, so traversal order can't make one transitive.
 	var roots []string
-	for _, key := range file.Workflows[workflowKey] {
-		if pin, ok := parserlock.ParsePin(key); ok && live(pin, file.Dependencies[key]) {
-			if _, ok := add(key, ""); ok {
+	for _, ref := range file.Workflows[workflowKey] {
+		if pin, ok := parserlock.ParsePin(ref); !ok || !live(pin, file.Dependencies[ref]) {
+			continue
+		}
+		for _, key := range reach(ref, "") {
+			if add(key, "") {
 				roots = append(roots, key)
 			}
 		}

@@ -1031,6 +1031,8 @@ func TestStateClosureDirectPinIsNeverTransitive(t *testing.T) {
 
 func TestInspectClosure(t *testing.T) {
 	const workflow = ".github/workflows/ci.yml"
+	const lowerSHA = "abcdef0123456789abcdef0123456789abcdef01"
+	upperSHA := strings.ToUpper(lowerSHA)
 	for _, tt := range []struct {
 		name     string
 		roots    []string
@@ -1092,6 +1094,41 @@ func TestInspectClosure(t *testing.T) {
 			},
 			live:     func(p parserlock.Pin, _ parserlock.Action) bool { return p.NWO == "o/current" },
 			wantPins: []string{"o/current@v1"},
+		},
+		{
+			name:     "a full-SHA root reaches its entry in another case",
+			roots:    []string{"o/a@" + upperSHA},
+			actions:  map[string]parserlock.Action{"o/a@" + lowerSHA: {}},
+			wantPins: []string{"o/a@" + lowerSHA},
+		},
+		{
+			name:  "a missing child under a cased alias is the child",
+			roots: []string{"o/a@" + upperSHA},
+			actions: map[string]parserlock.Action{
+				"o/a@" + lowerSHA: {Uses: []string{"o/child@v2"}},
+			},
+			wantPins: []string{"o/a@" + lowerSHA},
+			missing:  []MissingPin{{Key: "o/child@v2", Parent: "o/a@" + lowerSHA}},
+		},
+		{
+			name:  "a full SHA recorded under several spellings walks each",
+			roots: []string{"o/a@" + lowerSHA},
+			actions: map[string]parserlock.Action{
+				"o/a@" + lowerSHA: {},
+				"o/a@" + upperSHA: {Uses: []string{"o/gone@v1"}},
+			},
+			wantPins: []string{"o/a@" + upperSHA, "o/a@" + lowerSHA},
+			missing:  []MissingPin{{Key: "o/gone@v1", Parent: "o/a@" + upperSHA}},
+		},
+		{
+			name:  "an edge in another case walks its entry",
+			roots: []string{"o/root@v1"},
+			actions: map[string]parserlock.Action{
+				"o/root@v1":       {Uses: []string{"o/a@" + upperSHA}},
+				"o/a@" + lowerSHA: {Uses: []string{"o/leaf@v1"}},
+			},
+			wantPins: []string{"o/root@v1", "o/a@" + lowerSHA},
+			missing:  []MissingPin{{Key: "o/leaf@v1", Parent: "o/a@" + lowerSHA}},
 		},
 		{
 			name:    "ref casing is significant",

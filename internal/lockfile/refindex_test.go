@@ -75,23 +75,3 @@ dependencies:
 		assert.Empty(t, up.Uses)
 	})
 }
-
-func TestRefMatchEntries(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		m    RefMatch
-		want []string
-	}{
-		{name: "exact entry wins among candidates", m: RefMatch{Exact: "o/a@B", Candidates: []string{"o/a@B", "o/a@b"}}, want: []string{"o/a@B"}},
-		{name: "single candidate reached from another spelling", m: RefMatch{Candidates: []string{"o/a@b"}}, want: []string{"o/a@b"}},
-		{name: "several candidates and no exact entry", m: RefMatch{Candidates: []string{"o/a@B", "o/a@b"}}, want: []string{"o/a@B", "o/a@b"}},
-		{name: "dangling exact spelling does not hide several candidates", m: RefMatch{Exact: "o/a@Bb", Candidates: []string{"o/a@B", "o/a@b"}}, want: []string{"o/a@B", "o/a@b"}},
-		{name: "dangling exact spelling does not shadow a single candidate", m: RefMatch{Exact: "o/a@Bb", Candidates: []string{"o/a@b"}}, want: []string{"o/a@b"}},
-		{name: "dangling exact spelling alone is not an entry", m: RefMatch{Exact: "o/gone@v1"}},
-		{name: "unrecorded", m: RefMatch{}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.m.Entries())
-		})
-	}
-}

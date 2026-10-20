@@ -57,6 +57,8 @@ type graphTransport struct {
 	childSHA, parentUsesChildAt string
 	// childOnMain answers that acme/child's commit is in its main branch.
 	childOnMain bool
+	// goneRef is a tag or branch name parity reports as no longer existing.
+	goneRef string
 }
 
 func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -123,6 +125,31 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				return nil, fmt.Errorf("unexpected fixture repository %s", name)
 			}
 			data[fmt.Sprintf("a%d", i)] = testRepoResponse("acme/"+name, sha, yml)
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	}
+	if g.goneRef != "" && httpmock.GraphQL(`commit: object\(oid`)(req) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		data := map[string]any{}
+		for i := 0; ; i++ {
+			owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+			if !ok {
+				break
+			}
+			oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+			repo := map[string]any{
+				"nameWithOwner": owner + "/" + body.Variables[fmt.Sprintf("name%d", i)].(string),
+				"commit":        oid, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+			}
+			if body.Variables[fmt.Sprintf("tagRef%d", i)] == "refs/tags/"+g.goneRef {
+				repo["tag"], repo["tagRef"], repo["head"], repo["headRef"] = nil, nil, nil, nil
+			}
+			data[fmt.Sprintf("a%d", i)] = repo
 		}
 		return httpmock.JSONResponse(map[string]any{"data": data})(req)
 	}
@@ -859,25 +886,51 @@ func TestRun_VerifyChecksEveryAmbiguousSHASpelling(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		erase string
+		gone  string
+		exact bool
 	}{
 		{name: "both complete passes"},
 		{name: "lowercase entry missing an edge blocks", erase: child},
 		{name: "uppercase entry missing an edge blocks", erase: upper},
+		{name: "uppercase entry whose ref is gone blocks", gone: upper},
+		{name: "an exact spelling doesn't hide the other's missing edge", erase: upper, exact: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			path := writeTempWorkflow(t, "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/child@AbCdEf0123456789abcdef0123456789abcdef01\n")
+			spelling := "AbCdEf0123456789abcdef0123456789abcdef01"
+			if tt.gone != "" || tt.exact {
+				// An exact match doesn't make the other spelling's entry moot.
+				spelling = child
+			}
+			path := writeTempWorkflow(t, "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/child@"+spelling+"\n")
 			shaSpellingLock(t, path, child, upper)
 			if tt.erase != "" {
 				lock := strings.Replace(readTempLockfilePins(t), "  'acme/child@"+tt.erase+"':\n    ref: 'v2'\n    commit: 'sha1-"+child+"'\n    owner_id: 1\n    repo_id: 1\n    uses:\n      - 'acme/leaf@v3'\n", "  'acme/child@"+tt.erase+"':\n    ref: 'v2'\n    commit: 'sha1-"+child+"'\n    owner_id: 1\n    repo_id: 1\n", 1)
 				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
 			}
 
-			p, err := runParity(t, &graphTransport{childSHA: child, childOnMain: true}, "--verify", path)
+			transport := &graphTransport{childSHA: child, childOnMain: true}
+			if tt.gone != "" {
+				// The workflow's root is the healthy spelling; the other is
+				// recorded for another workflow.
+				lock := strings.Replace(readTempLockfilePins(t), "  'acme/child@"+tt.gone+"':\n    ref: 'v2'", "  'acme/child@"+tt.gone+"':\n    ref: 'gone'", 1)
+				lock = strings.Replace(lock, "    - 'acme/child@"+tt.gone+"'\n", "", 1)
+				lock = strings.Replace(lock, "workflows:\n", "workflows:\n  '.github/workflows/other.yml':\n    - 'acme/child@"+tt.gone+"'\n", 1)
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+				transport.goneRef = "gone"
+			}
+
+			p, err := runParity(t, transport, "--verify", path)
 			var blocking []string
 			for _, f := range p.Findings {
 				if f.Severity == "error" {
 					blocking = append(blocking, f.Detail)
 				}
+			}
+			if tt.gone != "" {
+				require.ErrorIs(t, err, errSilent)
+				require.Len(t, blocking, 1, "%v", blocking)
+				assert.Contains(t, blocking[0], "ref gone is not a tag or branch of acme/child")
+				return
 			}
 			if tt.erase == "" {
 				require.NoError(t, err, "%v", blocking)
@@ -885,6 +938,60 @@ func TestRun_VerifyChecksEveryAmbiguousSHASpelling(t *testing.T) {
 			}
 			require.ErrorIs(t, err, errSilent)
 			assert.Equal(t, []string{"locked manifest for acme/child@" + tt.erase + " uses acme/leaf@v3 but the lockfile omits that edge"}, blocking)
+		})
+	}
+}
+
+// TestRun_VerifyLocalFollowsFullSHASpellings: offline verification reaches a
+// recorded full SHA from a root or edge spelled in another case, so a lone
+// alias is not a missing root, a missing child under it is named as the
+// child, and every spelling of an ambiguous SHA is checked.
+func TestRun_VerifyLocalFollowsFullSHASpellings(t *testing.T) {
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	upper := strings.ToUpper(sha)
+	entry := func(key, uses string) string {
+		e := "  'acme/action@" + key + "':\n    ref: 'v1.0.0'\n    commit: 'sha1-" + sha + "'\n    owner_id: 1\n    repo_id: 1\n"
+		if uses != "" {
+			e += "    uses:\n      - '" + uses + "'\n"
+		}
+		return e
+	}
+	leaf := "  'acme/leaf@v1':\n    ref: 'v1'\n    commit: 'sha1-" + graphLeafSHA + "'\n    owner_id: 1\n    repo_id: 1\n"
+	for _, tt := range []struct {
+		name, uses, root, deps string
+		wantBlocking           []string
+	}{
+		{name: "uppercase root, lowercase entry", uses: upper, root: upper, deps: entry(sha, "")},
+		{name: "lowercase root, uppercase entry", uses: sha, root: sha, deps: entry(upper, "")},
+		{
+			name: "missing child under an alias", uses: upper, root: upper, deps: entry(sha, "acme/leaf@v1"),
+			wantBlocking: []string{"lockfile references acme/leaf@v1 but its dependency metadata is missing (used by acme/action@" + sha + ")"},
+		},
+		{name: "alias root with a complete child", uses: upper, root: upper, deps: entry(sha, "acme/leaf@v1") + leaf},
+		{
+			name: "dangling edge on the other spelling of an ambiguous SHA", uses: sha, root: sha,
+			deps:         entry(sha, "") + entry(upper, "acme/gone@v1"),
+			wantBlocking: []string{"lockfile references acme/gone@v1 but its dependency metadata is missing (used by acme/action@" + upper + ")"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/action@"+tt.uses+"\n")
+			lock := "version: 'v0.0.3'\nworkflows:\n  '.github/workflows/" + filepath.Base(path) + "':\n    - 'acme/action@" + tt.root + "'\ndependencies:\n" + tt.deps
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			p, err := runParity(t, nil, "--verify-local", path)
+			var blocking []string
+			for _, f := range p.Findings {
+				if f.Severity == "error" {
+					blocking = append(blocking, f.Detail)
+				}
+			}
+			assert.Equal(t, tt.wantBlocking, blocking)
+			if tt.wantBlocking == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, errSilent)
+			}
 		})
 	}
 }
