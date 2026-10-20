@@ -352,6 +352,7 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 	case pc.Head != "" && st.HeadOID == "":
 		f.Category = checks.UnreachablePin
 		f.Detail = fmt.Sprintf("ref %s is not a tag or branch of %s; the Actions backend will reject this pin%s", pc.Head, nwo, via)
+		f.RefGone = true
 		// A full-SHA `uses:` names no ref to repoint; the lock entry is wrong.
 		f.Remediation = checks.AcceptMovedRemediation
 		if !parserlock.IsFullSha(lp.Pin.Ref) {

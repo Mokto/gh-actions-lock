@@ -1595,6 +1595,48 @@ func testAcceptMovedGoneRef(t *testing.T, status string) {
 	assert.Contains(t, lock, "sha1-"+parityTestSHA)
 }
 
+// TestParity_FullSHAKeyTitleMatchesCause: a full-SHA pin's recorded ref
+// that is gone is titled as a missing ref, and only a ref that exists but
+// lost the commit is titled as history.
+func TestParity_FullSHAKeyTitleMatchesCause(t *testing.T) {
+	const live = "cccccccccccccccccccccccccccccccccccccccc"
+	tests := []struct {
+		name    string
+		head    any
+		compare bool
+		want    string
+		notWant string
+	}{
+		{"recorded ref gone", nil, false, "Ref no longer exists actions/checkout@" + parityTestSHA, "Pinned commit not in upstream history"},
+		{"recorded ref lost the commit", map[string]any{"oid": live}, true, "Pinned commit not in upstream history actions/checkout@" + parityTestSHA, "Ref no longer exists"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": map[string]any{
+					"nameWithOwner": "actions/checkout",
+					"databaseId":    1,
+					"commit":        map[string]any{"oid": parityTestSHA},
+					"head":          tt.head,
+					"headRef":       tt.head,
+				}},
+			}))
+			if tt.compare {
+				reg.Register(httpmock.REST("GET", `compare/`), httpmock.JSONResponse(map[string]any{
+					"status": "diverged", "merge_base_commit": map[string]any{"sha": parityTestMoved},
+				}))
+			}
+			path := writeFullSHAWorkflow(t, "main")
+
+			_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
+			require.ErrorIs(t, err, errSilent)
+			assert.Contains(t, stderr, tt.want)
+			assert.NotContains(t, stderr, tt.notWant)
+		})
+	}
+}
+
 // writeFullSHAWorkflow writes a workflow using actions/checkout at
 // parityTestSHA, locked to that commit with the given recorded ref.
 func writeFullSHAWorkflow(t *testing.T, ref string) string {

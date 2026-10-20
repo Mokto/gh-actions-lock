@@ -52,6 +52,10 @@ type Finding struct {
 	// separately and skips the release and doc links; the JSON category is
 	// unchanged.
 	RefMissing bool
+	// RefGone marks an unreachable-pin finding whose checked ref is not a
+	// tag or branch, including a full-SHA key's recorded ref, which
+	// RefMissing leaves unset. It only picks the terminal title.
+	RefGone bool
 	// TagMoved marks a ref-moved warning from parity: an exact-version tag
 	// moved ahead of its locked commit. Unlike a sticky mutable ref, the
 	// terminal shows it; the JSON category is unchanged.
