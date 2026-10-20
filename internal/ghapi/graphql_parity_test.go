@@ -160,6 +160,8 @@ func TestPinCheckRefs(t *testing.T) {
 		{name: "head tries tag then branch", pc: PinCheck{Head: "main"}, want: []string{"refs/tags/main", "refs/heads/main"}},
 		{name: "a full ref name is never used as-is", pc: PinCheck{Head: "refs/tags/v1"}, want: []string{"refs/tags/refs/tags/v1", "refs/heads/refs/tags/v1"}},
 		{name: "a pull request ref is not a tag or branch", pc: PinCheck{Head: "pull/1/head"}, want: []string{"refs/tags/pull/1/head", "refs/heads/pull/1/head"}},
+		{name: "revision syntax is never looked up", pc: PinCheck{Head: "main~1"}},
+		{name: "reflog syntax is never looked up", pc: PinCheck{Head: "v1@{1}"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

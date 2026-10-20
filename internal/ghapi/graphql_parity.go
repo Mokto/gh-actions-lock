@@ -309,10 +309,12 @@ func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
 }
 
 // refs lists the full names p's Head is looked up as, in order: a tag, then
-// a branch. A refs/ name is prefixed too, so it never resolves.
+// a branch. A refs/ name is prefixed too, so it never resolves, and a name
+// that isn't a valid ref name is never looked up: the expression would
+// evaluate revision syntax such as main~1.
 // This is the order the Actions backend resolver looks up a lock entry ref.
 func (p PinCheck) refs() []string {
-	if p.Head == "" {
+	if !ValidRefName(p.Head) {
 		return nil
 	}
 	return []string{"refs/tags/" + p.Head, "refs/heads/" + p.Head}

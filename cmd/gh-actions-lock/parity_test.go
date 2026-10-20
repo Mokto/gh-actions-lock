@@ -1249,6 +1249,7 @@ func TestParity_InvalidEntryRefIsParseError(t *testing.T) {
 	}{
 		{"full-SHA key records the SHA", parityTestSHA, parityTestSHA},
 		{"full-SHA key records a qualified branch", parityTestSHA, "refs/heads/main"},
+		{"full-SHA key records revision syntax", parityTestSHA, "main~1"},
 	}
 	for _, tt := range tests {
 		for mode, args := range fullSHAModes {
@@ -1368,6 +1369,55 @@ jobs:
 			}
 		}
 	}
+}
+
+// TestParity_RevisionSyntaxRefRefused: `main~1` resolves by rev-parse rules
+// to the branch's parent, but it names no tag or branch. Parity never builds
+// a lookup expression from it, so nothing is locked.
+func TestParity_RevisionSyntaxRefRefused(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		assert.NotContains(t, body.Variables, "tag0", "revision syntax must not reach a lookup expression")
+		assert.NotContains(t, body.Variables, "head0", "revision syntax must not reach a lookup expression")
+		return httpmock.JSONResponse(map[string]any{
+			"data": map[string]any{"a0": map[string]any{
+				"nameWithOwner": "actions/checkout",
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": parityTestSHA},
+			}},
+		})(req)
+	})
+	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+	}))
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+		"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+	}))
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main~1
+`)
+
+	p, err := runParity(t, reg, "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent)
+	var unreachable []string
+	for _, f := range p.Findings {
+		if f.Category == "unreachable-pin" {
+			unreachable = append(unreachable, f.Detail)
+		}
+	}
+	require.Len(t, unreachable, 1, "%+v", p.Findings)
+	assert.Contains(t, unreachable[0], "ref main~1 is not a tag or branch of actions/checkout")
+	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
 }
 
 // writeFullSHAWorkflow writes a workflow using actions/checkout at

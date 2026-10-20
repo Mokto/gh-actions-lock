@@ -33,6 +33,13 @@ func TestValidEntryRef(t *testing.T) {
 		{"qualified branch", entryRefSHA, "refs/heads/main", false},
 		{"pull request ref", entryRefSHA, "refs/pull/1/head", false},
 		{"qualified ref on a matching key", "refs/heads/main", "refs/heads/main", false},
+		// Revision syntax would be evaluated, not looked up literally.
+		{"parent of a branch", entryRefSHA, "main~1", false},
+		{"parent of a tag", entryRefSHA, "v1^", false},
+		{"reflog entry", entryRefSHA, "v1@{1}", false},
+		{"range", entryRefSHA, "a..b", false},
+		{"path in a ref", entryRefSHA, "refs:x", false},
+		{"revision syntax on a matching key", "main~1", "main~1", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,6 +62,7 @@ func TestLoadState_InvalidEntryRefIsCorrupt(t *testing.T) {
 		{"qualified tag", entryRefSHA, "refs/tags/v6.1.0"},
 		{"qualified pull request ref", entryRefSHA, "refs/pull/1/head"},
 		{"tag key records a branch", "v4", "main"},
+		{"revision expression", entryRefSHA, "main~1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
