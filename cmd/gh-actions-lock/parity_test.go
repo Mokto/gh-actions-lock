@@ -2524,6 +2524,78 @@ func testChildWithNewDirectUse(t *testing.T, cross, blocked, narrow bool) {
 	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 }
 
+// TestParity_AcceptMovedNarrowedDirectUseLeavesChildBlocking: a composite's
+// child actions/checkout@v4 left v4's history, and the workflow now uses
+// checkout@v4 directly too. Narrowing locks that direct use as v4.2.1, so
+// the composite's v4 entry keeps its rejected commit: nothing is written.
+// Without narrowing, the direct use rewrites v4 itself and the repair holds.
+func TestParity_AcceptMovedNarrowedDirectUseLeavesChildBlocking(t *testing.T) {
+	for _, narrow := range []bool{true, false} {
+		t.Run(fmt.Sprintf("narrow=%v", narrow), func(t *testing.T) {
+			const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+			reg := &httpmock.Registry{}
+			stubGraph(t, reg,
+				map[string]string{"actions/checkout": parityTestMoved},
+				map[string]string{"octo/root": rootSHA, "actions/checkout": parityTestMoved},
+				map[string]string{"octo/root": "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"})
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+				httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/tags`),
+				httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", parityTestMoved, "v4", parityTestMoved)))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/tags`),
+				httpmock.JSONResponse(httpmock.TagListResponse("v1.0.0", rootSHA, "v1", rootSHA)))
+			useDefaultTransport(t, reg)
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/root@v1
+      - uses: actions/checkout@v4
+`)
+			lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+				"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+				"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+				"    uses:\n      - 'actions/checkout@v4'\n" +
+				"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
+			lockPath := filepath.Join(".github", "workflows", "actions.lock")
+			require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+			wfBefore, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			args := []string{"--accept-moved", "--no-interactive", path}
+			if !narrow {
+				args = append([]string{"--no-narrow"}, args...)
+			}
+			_, stderr, err := runCommandWithHTTP(t, reg, args...)
+			after, rerr := os.ReadFile(lockPath)
+			require.NoError(t, rerr)
+			if narrow {
+				// The plan locks the direct use under the narrowed key.
+				jout, _, _ := runCommandWithHTTP(t, reg, append(args, "--json=pins")...)
+				var planned struct {
+					Pins []struct{ NWO, Ref string } `json:"pins"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(jout), &planned), jout)
+				assert.Contains(t, planned.Pins, struct{ NWO, Ref string }{"actions/checkout", "v4.2.1"}, jout)
+				require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
+				assert.Equal(t, lock, string(after), "nothing is written")
+				wfAfter, werr := os.ReadFile(path)
+				require.NoError(t, werr)
+				assert.Equal(t, string(wfBefore), string(wfAfter))
+				return
+			}
+			require.NoError(t, err, "%s\n%s", stderr, after)
+			assert.Contains(t, string(after), "commit: 'sha1-"+parityTestMoved+"'")
+			assert.NotContains(t, string(after), parityTestSHA)
+			_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
+			require.NoError(t, err, "the repaired lock verifies: %s", stderr)
+		})
+	}
+}
+
 // TestParity_AuditRechecksWithoutBlockedWriters: workflow.yml's composite
 // child checkout@v4.2.1 left its tag's history; only other.yml's new direct
 // use rewrites it. But other.yml can't be written either: its own

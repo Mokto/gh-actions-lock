@@ -14,8 +14,10 @@ var errPreview = errors.New("lockfile preview is never saved")
 
 // Preview returns an in-memory copy of s for computing what a write would
 // leave on disk. It never reaches the network or the file: an owner/repo
-// ID missing from s's cache gets a placeholder, since IDs decide no key,
-// commit or edge, and Save refuses. Writes to the preview leave s alone.
+// ID missing from s's cache gets a placeholder in the preview's own cache,
+// and Save refuses. So a preview matches the real write in its keys, refs,
+// commits, edges and workflow lists, which no ID decides, but not in its
+// IDs. Writes to the preview leave s alone.
 func (s *State) Preview() *State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
