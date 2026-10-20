@@ -301,3 +301,13 @@ func TestLoadState_ContentErrorFirstEntryAnyKeyStyle(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadState_FullSHAKeyCommitMustMatch: a full-SHA key always records its
+// own commit, so an own-SHA entry's key names the commit to repair from.
+func TestLoadState_FullSHAKeyCommitMustMatch(t *testing.T) {
+	const tagObject = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	dir := writeEntryRefLock(t, tagObject, tagObject)
+	_, err := LoadState(dir, fakeMetadataResolver{})
+	require.ErrorIs(t, err, ErrCorruptLockfile)
+	assert.Contains(t, err.Error(), "does not match")
+}
