@@ -331,6 +331,47 @@ jobs:
 	}
 }
 
+// TestParity_TerminalSeverity: the terminal must agree with the exit code.
+// A fail-closed history check prints as an error, never a warning; a moved
+// exact tag under --verify prints as a warning on a passing run.
+func TestParity_TerminalSeverity(t *testing.T) {
+	workflow := `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.1
+`
+	t.Run("inconclusive is an error", func(t *testing.T) {
+		path := writeTempWorkflow(t, workflow, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+		_, stderr, err := runCommandWithHTTP(t, parityDown{&httpmock.Registry{}}, "--verify", path)
+		require.ErrorIs(t, err, errSilent, stderr)
+		assert.Contains(t, stderr, "✗ reachability unknown actions/checkout@v4.2.1")
+		assert.NotContains(t, stderr, "actions/checkout@v4.2.1: could not verify", "an error must not also print as a warning")
+	})
+	t.Run("moved exact tag warns", func(t *testing.T) {
+		reg := &httpmock.Registry{}
+		defer reg.Verify(t)
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+			"data": map[string]any{"a0": map[string]any{
+				"nameWithOwner": "actions/checkout",
+				"commit":        map[string]any{"oid": parityTestSHA},
+				"tag":           map[string]any{"oid": parityTestMoved},
+			}},
+		}))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+			httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+		path := writeTempWorkflow(t, workflow, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+		_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
+		require.NoError(t, err, stderr)
+		assert.Contains(t, stderr, "actions/checkout@v4.2.1: tag v4.2.1 now points at bbbbbbbbbbbb; locked commit 9ddf35b71a48 is still in its history")
+		assert.Contains(t, stderr, "All 1 workflow valid")
+		assert.NotContains(t, stderr, "✗")
+	})
+}
+
 // TestParity_DefaultRunPrintsParityFinding: parity findings have no pin
 // record entry, so the fix-mode summary must still print them.
 func TestParity_DefaultRunPrintsParityFinding(t *testing.T) {

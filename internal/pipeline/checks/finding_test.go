@@ -21,3 +21,16 @@ func TestFindingIsValidFollowsSeverity(t *testing.T) {
 		}
 	}
 }
+
+// TestFindingIsWarningNeverForErrors: an error-severity finding blocks the
+// run, so it must never render as a warning, whatever its category.
+func TestFindingIsWarningNeverForErrors(t *testing.T) {
+	for _, cat := range []Category{ShaAsRef, RefMoved, LocalAction, RepoRenamed, AncestryUnknown, ReachabilityUnknown, NotPinned} {
+		t.Run(string(cat), func(t *testing.T) {
+			warn := Finding{Category: cat, Severity: SeverityWarning}
+			assert.True(t, warn.IsWarning())
+			blocking := Finding{Category: cat, Severity: SeverityError}
+			assert.False(t, blocking.IsWarning())
+		})
+	}
+}

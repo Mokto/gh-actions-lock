@@ -252,6 +252,7 @@ func movedTagFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, pc ghap
 		Severity:     checks.SeverityWarning,
 		Confidence:   checks.ConfidenceHigh,
 		ObservedSHA:  st.HeadOID,
+		TagMoved:     true,
 		Detail:       fmt.Sprintf("tag %s now points at %s; locked commit %s is still in its history", pc.Head, parserlock.ShortSHA(st.HeadOID), parserlock.ShortSHA(pc.SHA)),
 		Remediation:  "the Actions backend accepts this pin; run `gh actions-lock --relock` to lock the tag's current commit",
 	}
@@ -290,7 +291,7 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		f.Severity = checks.SeverityWarning
 		f.Confidence = checks.ConfidenceLow
 		f.Detail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, st.Err)
-		f.Remediation = "retry; the runner will re-check this pin at job start"
+		f.Remediation = "retry; the Actions backend will re-check this pin when the job starts"
 	case st.RepoMissing:
 		f.Category = checks.RepoUnavailable
 		f.Detail = fmt.Sprintf("%s is missing or not visible to this token%s", nwo, via)

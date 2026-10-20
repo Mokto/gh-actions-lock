@@ -52,6 +52,10 @@ type Finding struct {
 	// separately and skips the release and doc links; the JSON category is
 	// unchanged.
 	RefMissing bool
+	// TagMoved marks a ref-moved warning from parity: an exact-version tag
+	// moved ahead of its locked commit. Unlike a sticky mutable ref, the
+	// terminal shows it; the JSON category is unchanged.
+	TagMoved bool
 	// TrackedAction marks a not-pinned bare SHA whose owner/repo the
 	// workflow already locks at another ref. It is a ref change on a
 	// tracked action, not onboarding, so --no-onboard lets it through to
@@ -129,19 +133,23 @@ func (f *Finding) IsValid() bool {
 	return f.Severity != SeverityError
 }
 
-// IsWarning returns true for findings that should render as warnings (not errors).
+// IsWarning returns true for findings that should render as warnings (not
+// errors). An error-severity finding never does: it blocks the run.
 func (f *Finding) IsWarning() bool {
+	if f.Severity == SeverityError {
+		return false
+	}
 	switch {
 	case f.Category == ShaAsRef:
 		return true
 	case f.Category == RefMoved:
 		return true
 	case f.Category == LocalAction, f.Category == RepoRenamed:
-		return f.Severity != SeverityError
+		return true
 	case f.Category.IsInconclusive():
 		return true
 	case f.Category == NotPinned && f.ActionRef == nil:
-		return f.Severity != SeverityError
+		return true
 	default:
 		return false
 	}

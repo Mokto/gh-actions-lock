@@ -383,7 +383,7 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 			if !isTransitive {
 				bareSHADeps = append(bareSHADeps, key)
 			}
-		case f.Category == checks.RefMoved:
+		case f.Category == checks.RefMoved && !f.TagMoved:
 			// Moved mutable refs are sticky; --relock advances them, so
 			// there is nothing actionable to print here.
 		case f.Category.IsInconclusive() &&
@@ -425,7 +425,7 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 		wg := warnMap[key]
 		f := wg.finding
 		depKey := f.DepKey()
-		if f.Category.IsInconclusive() && f.Severity == checks.SeverityWarning {
+		if f.Category.IsInconclusive() || f.TagMoved {
 			label := depKey
 			if label == "" {
 				label = f.WorkflowPath
