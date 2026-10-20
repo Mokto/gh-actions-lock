@@ -1549,7 +1549,7 @@ func testMalformedRemoteRefCannotOnboard(t *testing.T, rejected string) {
 // can't be parsed blocks the run instead of locking without that child.
 func TestRemoteCompositeMalformedRefBlocks(t *testing.T) {
 	tests := map[string]string{
-		"actions/checkout@main:action.yml":             "uses actions/checkout@main:action.yml, which is not an action reference the Actions backend accepts",
+		"actions/checkout@main:action.yml":             "uses: actions/checkout@main:action.yml is not an action reference the Actions backend accepts",
 		"actions/checkout/.github/workflows/ci.yml@v4": "reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps",
 	}
 	for use, want := range tests {

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/uses"
 	"gopkg.in/yaml.v3"
 )
 
@@ -107,8 +108,8 @@ type RefScan struct {
 	SelfRepositoryActionRefs []string
 	// SelfRepositoryRefErrs are malformed `$/…@ref` values — the invalid form.
 	SelfRepositoryRefErrs []string
-	// MalformedRefs are remote-looking `uses:` values the parser rejects;
-	// see MalformedRemoteRef.
+	// MalformedRefs are the errors for `uses:` values the Actions backend
+	// rejects (uses.Invalid). They are never skipped.
 	MalformedRefs []string
 	// Warnings are non-fatal parse notes (e.g. expression-based uses:).
 	Warnings []string
@@ -160,19 +161,21 @@ func (f *File) ExtractActionRefs() RefScan {
 		if appendDockerWarning(&scan.Warnings, seenDocker, value) {
 			return
 		}
-		if MalformedRemoteRef(value) || stepLevel && MalformedStepRef(value) {
+		pos := uses.Job
+		if stepLevel {
+			pos = uses.Step
+		}
+		switch c := uses.Classify(value, pos); c.Kind {
+		case uses.Invalid:
 			if !seen[value] {
 				seen[value] = true
-				scan.MalformedRefs = append(scan.MalformedRefs, value)
+				scan.MalformedRefs = append(scan.MalformedRefs, c.Err().Error())
 			}
-			return
-		}
-		actionRef := parserlock.ParseActionRef(value)
-		if actionRef != nil {
-			dedupKey := actionRef.FullName() + "@" + actionRef.Ref
+		case uses.Action:
+			dedupKey := c.Action.FullName() + "@" + c.Action.Ref
 			if !seen[dedupKey] {
 				seen[dedupKey] = true
-				scan.Refs = append(scan.Refs, *actionRef)
+				scan.Refs = append(scan.Refs, c.Action)
 			}
 		}
 	})
@@ -258,13 +261,13 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 			continue
 		}
 
-		uses, actionPath, err := readActionUses(repoRoot, actionDir)
+		actionUses, actionPath, err := readActionUses(repoRoot, actionDir)
 		if err != nil {
 			scan.Errors = append(scan.Errors, fmt.Sprintf("can't inspect self repository action %s: %v", current.ref, err))
 			continue
 		}
 		scan.ActionFiles = append(scan.ActionFiles, actionPath)
-		for _, rawUse := range uses {
+		for _, rawUse := range actionUses {
 			use := strings.TrimSpace(rawUse)
 			switch {
 			case SelfRepositoryRefHasVersion(use):
@@ -284,20 +287,19 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 					scan.LocalPaths = append(scan.LocalPaths, use)
 				}
 			case appendDockerWarning(&scan.Warnings, seenDocker, use):
-			case MalformedStepRef(use):
-				if !seenRefs[use] {
-					seenRefs[use] = true
-					scan.MalformedRefs = append(scan.MalformedRefs, use)
-				}
 			default:
-				actionRef := parserlock.ParseActionRef(use)
-				if actionRef == nil {
-					continue
-				}
-				key := actionRef.FullName() + "@" + actionRef.Ref
-				if !seenRefs[key] {
-					seenRefs[key] = true
-					scan.Refs = append(scan.Refs, *actionRef)
+				switch c := uses.Classify(use, uses.Step); c.Kind {
+				case uses.Invalid:
+					if !seenRefs[use] {
+						seenRefs[use] = true
+						scan.MalformedRefs = append(scan.MalformedRefs, c.Err().Error())
+					}
+				case uses.Action:
+					key := c.Action.FullName() + "@" + c.Action.Ref
+					if !seenRefs[key] {
+						seenRefs[key] = true
+						scan.Refs = append(scan.Refs, c.Action)
+					}
 				}
 			}
 		}
@@ -425,23 +427,21 @@ func ExtractLocalCompositeRefs(workflowPath string, localPaths []string) ([]pars
 			}
 		}
 
-		uses, parseErr := parseActionYAMLForUses(actionContent)
+		usesList, parseErr := parseActionYAMLForUses(actionContent)
 		if parseErr != nil {
 			warnings = append(warnings, fmt.Sprintf("can't parse action file for %s: %v", localPath, parseErr))
 			continue
 		}
 
-		for _, use := range uses {
-			if MalformedStepRef(use) {
-				warnings = append(warnings, MalformedRefError(use).Error())
-				continue
-			}
-			actionRef := parserlock.ParseActionRef(use)
-			if actionRef != nil {
-				dedupKey := actionRef.FullName() + "@" + actionRef.Ref
+		for _, use := range usesList {
+			switch c := uses.Classify(use, uses.Step); c.Kind {
+			case uses.Invalid:
+				warnings = append(warnings, c.Err().Error())
+			case uses.Action:
+				dedupKey := c.Action.FullName() + "@" + c.Action.Ref
 				if !seen[dedupKey] {
 					seen[dedupKey] = true
-					refs = append(refs, *actionRef)
+					refs = append(refs, c.Action)
 				}
 			}
 		}

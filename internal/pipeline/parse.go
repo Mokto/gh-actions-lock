@@ -60,8 +60,8 @@ func ParseAll(paths []string, store *lockfile.State) []checks.ParsedWorkflow {
 		// would lock without it.
 		if bad := mergeStrings(scan.MalformedRefs, selfScan.MalformedRefs); len(bad) > 0 {
 			errs := make([]error, len(bad))
-			for i, use := range bad {
-				errs[i] = workflowfile.MalformedRefError(use)
+			for i, msg := range bad {
+				errs[i] = errors.New(msg)
 			}
 			pw.LoadErr = errors.Join(errs...)
 			out = append(out, pw)

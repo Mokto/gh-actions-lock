@@ -719,7 +719,7 @@ func TestExtractActionRefs_ReusableWorkflowOnlyAtJobLevel(t *testing.T) {
 	require.NoError(t, err)
 
 	scan := f.ExtractActionRefs()
-	assert.Equal(t, []string{"actions/checkout/.github/workflows/ci.yml@v4"}, scan.MalformedRefs)
+	require.Len(t, scan.MalformedRefs, 1)
+	assert.Equal(t, "uses: actions/checkout/.github/workflows/ci.yml@v4 is a reusable workflow; reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps", scan.MalformedRefs[0])
 	assert.Empty(t, scan.Refs)
-	assert.Contains(t, MalformedRefError(scan.MalformedRefs[0]).Error(), "reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps")
 }

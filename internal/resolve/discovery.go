@@ -12,6 +12,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/pinpool"
+	"github.com/github/gh-actions-lock/internal/uses"
 )
 
 // CompositeLocalPathError is returned when a remote composite action uses a
@@ -62,10 +63,7 @@ type MalformedNestedRefError struct {
 }
 
 func (e *MalformedNestedRefError) Error() string {
-	if parserlock.ParseReusableWorkflowRef(e.Ref) != nil {
-		return fmt.Sprintf("composite action %s uses %s, a reusable workflow; reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps", e.Parent, e.Ref)
-	}
-	return fmt.Sprintf("composite action %s uses %s, which is not an action reference the Actions backend accepts", e.Parent, e.Ref)
+	return fmt.Sprintf("composite action %s: %s", e.Parent, uses.Classify(e.Ref, uses.Step).Err())
 }
 
 // selfRepositoryPrefix marks a `$/…` self repository action inside a composite's
@@ -259,14 +257,14 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 						fetchRef: deps[i].SHA,
 					}
 				} else {
-					actionRef := parserlock.ParseActionRef(use)
-					if actionRef == nil {
-						if malformedNestedRef(use) {
-							resolveErr = errors.Join(resolveErr, &MalformedNestedRefError{Parent: parentKey, Ref: use})
-						}
+					c := uses.Classify(use, uses.Step)
+					if c.Kind == uses.Invalid {
+						resolveErr = errors.Join(resolveErr, &MalformedNestedRefError{Parent: parentKey, Ref: use})
+					}
+					if c.Kind != uses.Action {
 						continue
 					}
-					request = resolutionRequest{ref: *actionRef}
+					request = resolutionRequest{ref: c.Action}
 				}
 				actionRef := request.ref
 				if actionRef.Owner == "" {
@@ -503,21 +501,4 @@ func selectLatestTag(tags []string) string {
 		return bestVersionTag
 	}
 	return bestFallback
-}
-
-// malformedNestedRef reports whether a composite's `uses:` value is a remote
-// action reference the parser rejects, rather than a form that is not a
-// repository action by design. It mirrors workflowfile.MalformedRemoteRef,
-// which the resolver doesn't import.
-func malformedNestedRef(use string) bool {
-	switch {
-	case use == "",
-		strings.HasPrefix(use, "./"),
-		strings.HasPrefix(use, "docker://"),
-		strings.Contains(use, "${"),
-		strings.HasPrefix(use, selfRepositoryPrefix):
-		return false
-	}
-	// Composite steps are steps: a reusable workflow isn't allowed there.
-	return parserlock.ParseActionRef(use) == nil
 }
