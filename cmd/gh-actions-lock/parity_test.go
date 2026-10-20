@@ -4958,17 +4958,23 @@ func TestSHARecordedRef_FixKeepsFullSHAUseInAnyCase(t *testing.T) {
 // TestParity_FullSHARootClosureCheckedInAnyCase: a workflow using a
 // composite by its full SHA in another case than the recorded root still
 // selects that root's recorded closure, so a child whose commit left its
-// tag's history blocks; a healthy child verifies.
+// tag's history blocks. A fix run over a healthy closure leaves a lock that
+// verifies, whichever spelling it writes.
 func TestParity_FullSHARootClosureCheckedInAnyCase(t *testing.T) {
-	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	const root = "abcdef0123456789abcdef0123456789abcdef01"
+	upper, mixed := strings.ToUpper(root), "AbCdEf0123456789abcdef0123456789ABCDEF01"
 	for _, tt := range []struct {
-		name, use, head string
-		block           bool
+		name, use, key, head string
+		block                bool
 	}{
-		{name: "uppercase use, child gone", use: strings.ToUpper(root), head: parityTestMoved, block: true},
-		{name: "uppercase use, healthy", use: strings.ToUpper(root), head: parityTestSHA},
-		{name: "same case, child gone", use: root, head: parityTestMoved, block: true},
+		{name: "uppercase use, child gone", use: upper, key: root, head: parityTestMoved, block: true},
+		{name: "uppercase key, child gone", use: root, key: upper, head: parityTestMoved, block: true},
+		{name: "same case, child gone", use: root, key: root, head: parityTestMoved, block: true},
+		{name: "same case, healthy", use: root, key: root, head: parityTestSHA},
+		{name: "uppercase use, healthy", use: upper, key: root, head: parityTestSHA},
+		{name: "mixed-case use, healthy", use: mixed, key: root, head: parityTestSHA},
+		{name: "uppercase key, healthy", use: root, key: upper, head: parityTestSHA},
+		{name: "mixed-case use, uppercase key, healthy", use: mixed, key: upper, head: parityTestSHA},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
@@ -4978,14 +4984,20 @@ func TestParity_FullSHARootClosureCheckedInAnyCase(t *testing.T) {
 				map[string]string{"octo/root": "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"})
 			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
 				httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root$`),
+				httpmock.JSONResponse(map[string]any{"full_name": "octo/root", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v1", root)))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/releases`), httpmock.JSONResponse([]map[string]any{}))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", root)))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/git/ref/tags/v1$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v1", root)))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/git/ref/tags/main$`), httpmock.StatusResponse(http.StatusNotFound))
 			useDefaultTransport(t, reg)
 			path := writeTempWorkflow(t, "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/root@"+tt.use+"\n")
 			lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
 				"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
-				"  'octo/root@" + root + "':\n    ref: 'v1'\n    commit: 'sha1-" + root + "'\n    owner_id: 1\n    repo_id: 1\n" +
+				"  'octo/root@" + tt.key + "':\n    ref: 'v1'\n    commit: 'sha1-" + root + "'\n    owner_id: 1\n    repo_id: 1\n" +
 				"    uses:\n      - 'actions/checkout@v4'\n" +
-				"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@" + root + "'\n"
-			_ = rootSHA
+				"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@" + tt.key + "'\n"
 			lockPath := filepath.Join(".github", "workflows", "actions.lock")
 			require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
 
@@ -4996,6 +5008,11 @@ func TestParity_FullSHARootClosureCheckedInAnyCase(t *testing.T) {
 				return
 			}
 			require.NoError(t, err, stderr)
+
+			_, stderr, err = runCommandWithHTTP(t, reg, "--no-interactive", path)
+			require.NoError(t, err, stderr)
+			_, stderr, err = runCommandWithHTTP(t, reg, "--verify", "--no-interactive", path)
+			require.NoError(t, err, "the fixed lock verifies: %s", stderr)
 		})
 	}
 }
