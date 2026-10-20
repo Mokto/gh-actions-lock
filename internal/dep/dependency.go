@@ -3,6 +3,7 @@
 package dep
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -104,6 +105,10 @@ func Dedup(deps []Dependency) []Dependency {
 	}
 	return out
 }
+
+// ErrUsesCycle reports composite actions that reach themselves. They can't
+// run, and the lockfile can't record them.
+var ErrUsesCycle = errors.New("dependency graph has a uses cycle")
 
 // ParentMap is a child dep key → parent dep keys mapping returned alongside
 // resolved dependencies by ResolveAllRecursive. It is value-typed so callers

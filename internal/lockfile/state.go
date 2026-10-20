@@ -795,7 +795,7 @@ func (s *State) Save() error {
 
 // ErrUsesCycle reports a dependency graph the lockfile can't record because
 // a composite action reaches itself.
-var ErrUsesCycle = errors.New("dependency graph has a uses cycle")
+var ErrUsesCycle = dep.ErrUsesCycle
 
 // Validate reports whether Save would write a lockfile that the lockfile
 // parser accepts. Callers run it before touching workflow files so a graph
