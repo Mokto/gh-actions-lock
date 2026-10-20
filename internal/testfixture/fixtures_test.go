@@ -2,6 +2,7 @@ package testfixture
 
 import (
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,8 +34,13 @@ func TestPinsAreInRecordedRefHistory(t *testing.T) {
 		t.Run(p.Uses(), func(t *testing.T) {
 			if p.Absent {
 				var commit struct{ SHA string }
+				// Only a definite "no such commit" proves absence; a 403, rate
+				// limit or outage is inconclusive and must fail the guard.
 				err := client.Get("repos/"+p.Repo+"/commits/"+p.SHA, &commit)
-				assert.Error(t, err, "%s must not exist in %s", p.SHA, p.Repo)
+				var httpErr *api.HTTPError
+				require.ErrorAs(t, err, &httpErr, "%s must not exist in %s", p.SHA, p.Repo)
+				assert.Contains(t, []int{http.StatusNotFound, http.StatusUnprocessableEntity}, httpErr.StatusCode,
+					"lookup of %s in %s was inconclusive: %v", p.SHA, p.Repo, err)
 				return
 			}
 			if p.Ref == "" {
