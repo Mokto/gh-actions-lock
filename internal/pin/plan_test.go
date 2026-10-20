@@ -718,7 +718,10 @@ func TestNarrowVerifiedEntries_SHARepairRequiresTagAtCommit(t *testing.T) {
 	}
 }
 
-func TestPlanKeepsDistinctHistoricalPinsWithoutBranchHeadProof(t *testing.T) {
+// TestPlanRepairsOnlyTheSHAItsRecordedTagPeelsTo covers two workflows that
+// record the same tag for different SHAs. Before #174 both were repaired to
+// the tag and conflicted; now only the SHA the tag peels to is rewritten.
+func TestPlanRepairsOnlyTheSHAItsRecordedTagPeelsTo(t *testing.T) {
 	const firstSHA = "abc1230000000000000000000000000000000000"
 	const secondSHA = "def4560000000000000000000000000000000000"
 	report := func(path, sha string) checks.WorkflowReport {
@@ -728,26 +731,29 @@ func TestPlanKeepsDistinctHistoricalPinsWithoutBranchHeadProof(t *testing.T) {
 				Owner: "actions", Repo: "checkout", Ref: sha,
 			}},
 			Inventory: []checks.InventoryEntry{{
-				Dep:    dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Branch: "releases/v4"},
+				Dep:    dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v4.2.1"},
 				File:   path,
 				Direct: true,
 			}},
 		}
 	}
 
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`),
+		httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", firstSHA)))
 	record, err := Plan(context.Background(), &checks.Report{
 		Workflows: []checks.WorkflowReport{
 			report(".github/workflows/first.yml", firstSHA),
 			report(".github/workflows/second.yml", secondSHA),
 		},
 	}, PlanOptions{
-		Tagger: new(tag.Lister),
+		Tagger: tag.NewListerForTest(t, reg),
 		Pool:   pinpool.New(2, nil),
 	})
 
 	require.NoError(t, err)
 	require.Len(t, record.Entries, 2)
-	assert.Equal(t, firstSHA, record.Entries[0].Ref)
+	assert.Equal(t, "v4.2.1", record.Entries[0].Ref)
 	assert.Equal(t, secondSHA, record.Entries[1].Ref)
 }
 
