@@ -1484,3 +1484,83 @@ jobs:
 	_, _, err = runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", workflowPath)
 	require.ErrorIs(t, err, errSilent, "an unlocked bare SHA must not pass the offline gate")
 }
+
+// TestFreshMalformedRemoteRefCannotOnboard: a remote-looking uses: value the
+// parser rejects is never skipped, in a workflow or a $/ composite, in
+// any mode or transport. Nothing is fetched or written.
+func TestFreshMalformedRemoteRefCannotOnboard(t *testing.T) {
+	const rejected = "actions/checkout@main:action.yml"
+	for _, surface := range []string{"workflow", "self composite"} {
+		for _, proxy := range []bool{false, true} {
+			for _, refresh := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/proxy=%t/refresh=%t", surface, proxy, refresh), func(t *testing.T) {
+					if proxy {
+						t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+					}
+					dir := t.TempDir()
+					require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+					workflowPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
+					require.NoError(t, os.MkdirAll(filepath.Dir(workflowPath), 0o755))
+					use := rejected
+					var actionPath string
+					var action []byte
+					if surface == "self composite" {
+						use = "$/outer"
+						actionPath = filepath.Join(dir, "outer", "action.yml")
+						action = []byte("runs:\n  using: composite\n  steps:\n    - uses: " + rejected + "\n")
+						require.NoError(t, os.MkdirAll(filepath.Dir(actionPath), 0o755))
+						require.NoError(t, os.WriteFile(actionPath, action, 0o600))
+					}
+					workflow := []byte("on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: " + use + "\n")
+					require.NoError(t, os.WriteFile(workflowPath, workflow, 0o600))
+					t.Chdir(dir)
+					transport := &requestCountingTransport{}
+					args := []string{"--no-interactive", "--no-narrow", workflowPath}
+					if refresh {
+						args = append(args, "--relock", "--accept-moved")
+					}
+
+					_, stderr, err := runCommandWithHTTP(t, transport, args...)
+
+					assert.Error(t, err, stderr)
+					assert.Contains(t, stderr, rejected)
+					assert.Zero(t, transport.calls.Load())
+					assert.NoFileExists(t, filepath.Join(filepath.Dir(workflowPath), "actions.lock"))
+					got, readErr := os.ReadFile(workflowPath)
+					require.NoError(t, readErr)
+					assert.Equal(t, workflow, got)
+					if actionPath != "" {
+						got, readErr := os.ReadFile(actionPath)
+						require.NoError(t, readErr)
+						assert.Equal(t, action, got)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestRemoteCompositeMalformedRefBlocks: a fetched composite whose uses:
+// can't be parsed blocks the run instead of locking without that child.
+func TestRemoteCompositeMalformedRefBlocks(t *testing.T) {
+	const sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@main:action.yml\n"
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQLForRepo("octo", "composite"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("octo/composite", sha, composite)},
+	}))
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/composite@v1
+`)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent, stderr)
+	assert.Contains(t, stderr, "uses actions/checkout@main:action.yml, which is not an action reference the Actions backend accepts")
+	assert.NoFileExists(t, filepath.Join(filepath.Dir(path), "actions.lock"))
+}

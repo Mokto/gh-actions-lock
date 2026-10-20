@@ -53,6 +53,18 @@ func IsInvalidSelfRepositoryRef(err error) bool {
 	return errors.As(err, &target)
 }
 
+// MalformedNestedRefError is returned when a fetched composite's `uses:`
+// names a remote action the parser can't accept. It is never skipped: the
+// composite's dependencies would be locked without it.
+type MalformedNestedRefError struct {
+	Parent string
+	Ref    string
+}
+
+func (e *MalformedNestedRefError) Error() string {
+	return fmt.Sprintf("composite action %s uses %s, which is not an action reference the Actions backend accepts", e.Parent, e.Ref)
+}
+
 // selfRepositoryPrefix marks a `$/…` self repository action inside a composite's
 // nested uses. Kept local to avoid importing the workflowfile package into the
 // resolver; the sibling detection here is a plain prefix check.
@@ -246,6 +258,9 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 				} else {
 					actionRef := parserlock.ParseActionRef(use)
 					if actionRef == nil {
+						if malformedNestedRef(use) {
+							resolveErr = errors.Join(resolveErr, &MalformedNestedRefError{Parent: parentKey, Ref: use})
+						}
 						continue
 					}
 					request = resolutionRequest{ref: *actionRef}
@@ -485,4 +500,20 @@ func selectLatestTag(tags []string) string {
 		return bestVersionTag
 	}
 	return bestFallback
+}
+
+// malformedNestedRef reports whether a composite's `uses:` value is a remote
+// action reference the parser rejects, rather than a form that is not a
+// repository action by design. It mirrors workflowfile.MalformedRemoteRef,
+// which the resolver doesn't import.
+func malformedNestedRef(use string) bool {
+	switch {
+	case use == "",
+		strings.HasPrefix(use, "./"),
+		strings.HasPrefix(use, "docker://"),
+		strings.Contains(use, "${"),
+		strings.HasPrefix(use, selfRepositoryPrefix):
+		return false
+	}
+	return parserlock.ParseActionRef(use) == nil && parserlock.ParseReusableWorkflowRef(use) == nil
 }

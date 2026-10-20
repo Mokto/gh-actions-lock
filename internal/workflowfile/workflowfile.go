@@ -107,6 +107,9 @@ type RefScan struct {
 	SelfRepositoryActionRefs []string
 	// SelfRepositoryRefErrs are malformed `$/…@ref` values — the invalid form.
 	SelfRepositoryRefErrs []string
+	// MalformedRefs are remote-looking `uses:` values the parser rejects;
+	// see MalformedRemoteRef.
+	MalformedRefs []string
 	// Warnings are non-fatal parse notes (e.g. expression-based uses:).
 	Warnings []string
 }
@@ -157,6 +160,13 @@ func (f *File) ExtractActionRefs() RefScan {
 		if appendDockerWarning(&scan.Warnings, seenDocker, value) {
 			return
 		}
+		if MalformedRemoteRef(value) {
+			if !seen[value] {
+				seen[value] = true
+				scan.MalformedRefs = append(scan.MalformedRefs, value)
+			}
+			return
+		}
 		actionRef := parserlock.ParseActionRef(value)
 		if actionRef != nil {
 			dedupKey := actionRef.FullName() + "@" + actionRef.Ref
@@ -177,6 +187,7 @@ type SelfRepositoryActionScan struct {
 	SelfRepositoryRefs    []string
 	SelfRepositoryRefErrs []string
 	LocalPaths            []string
+	MalformedRefs         []string
 	// ActionFiles are the in-repo action definition files visited, in visit
 	// order. Refs in these files are rewritable source, unlike `$/…` itself.
 	ActionFiles []string
@@ -273,6 +284,11 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 					scan.LocalPaths = append(scan.LocalPaths, use)
 				}
 			case appendDockerWarning(&scan.Warnings, seenDocker, use):
+			case MalformedRemoteRef(use):
+				if !seenRefs[use] {
+					seenRefs[use] = true
+					scan.MalformedRefs = append(scan.MalformedRefs, use)
+				}
 			default:
 				actionRef := parserlock.ParseActionRef(use)
 				if actionRef == nil {
@@ -416,6 +432,10 @@ func ExtractLocalCompositeRefs(workflowPath string, localPaths []string) ([]pars
 		}
 
 		for _, use := range uses {
+			if MalformedRemoteRef(use) {
+				warnings = append(warnings, MalformedRefError(use).Error())
+				continue
+			}
 			actionRef := parserlock.ParseActionRef(use)
 			if actionRef != nil {
 				dedupKey := actionRef.FullName() + "@" + actionRef.Ref
