@@ -188,21 +188,21 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			wr := &report.Workflows[o.report]
 			if !ok {
 				if o.fresh {
-					verified[checks.VerifiedKey(o.lp.Pin.Canonical().String(), pins[i].SHA)] = true
+					verified[checks.VerifiedKey(lockfile.EntryKey(o.lp.Pin), pins[i].SHA)] = true
 				}
 				continue
 			}
 			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
 			if verdict != verdictKeep {
 				wr.Deferred = append(wr.Deferred, checks.Deferred{
-					Key: o.lp.Pin.Canonical().String(), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
+					Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
 				})
 			}
 			if verdict == verdictExcuse {
 				continue
 			}
 			if o.fresh && f.Severity != checks.SeverityError {
-				verified[checks.VerifiedKey(o.lp.Pin.Canonical().String(), pins[i].SHA)] = true
+				verified[checks.VerifiedKey(lockfile.EntryKey(o.lp.Pin), pins[i].SHA)] = true
 			}
 			// Dependabot reads back only actions.lock, so a rewritten `uses:`
 			// would never ship; keep the pin under the name the workflow uses.
