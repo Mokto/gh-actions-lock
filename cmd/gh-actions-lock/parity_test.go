@@ -2657,6 +2657,44 @@ jobs:
 	}
 }
 
+// TestParity_ReadOnlyRelockKeepsDeferredFindings: a read-only run never
+// writes, so a finding --relock would excuse on the strength of a write
+// must stand.
+func TestParity_ReadOnlyRelockKeepsDeferredFindings(t *testing.T) {
+	for _, args := range [][]string{{"--relock", "--no-fix"}, {"--relock", "--verify"}, {"--accept-moved", "--no-fix"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			stubGraph(t, reg,
+				map[string]string{"actions/checkout": parityTestMoved},
+				map[string]string{"actions/checkout": parityTestMoved},
+				nil)
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`), httpmock.StatusResponse(http.StatusServiceUnavailable))
+			useDefaultTransport(t, reg)
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+
+			p, err := runParity(t, reg, append(args, "--no-narrow", "--no-interactive", path)...)
+			require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
+			assert.False(t, p.Valid)
+			var checkout []string
+			for _, f := range p.Findings {
+				if f.Dependency == "actions/checkout@v4" && f.Severity == "error" {
+					checkout = append(checkout, f.Detail)
+				}
+			}
+			require.NotEmpty(t, checkout, "%+v", p.Findings)
+			assert.Contains(t, checkout[0], "checking v4 history")
+		})
+	}
+}
+
 // TestParity_AuditRechecksWithoutBlockedWriters: workflow.yml's composite
 // child checkout@v4.2.1 left its tag's history; only other.yml's new direct
 // use rewrites it. But other.yml can't be written either: its own

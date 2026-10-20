@@ -337,6 +337,11 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 
 	report := result.Report
 	valid := result.Valid
+	// A read-only run writes nothing, so a finding deferred on a write stands.
+	if opts.noFix {
+		report.RestoreDeferred()
+		valid = report.IsValid()
+	}
 
 	// Read-only modes never touch the lockfile, so surface stale entries as
 	// non-blocking info findings instead of pruning them. Fix mode reports
