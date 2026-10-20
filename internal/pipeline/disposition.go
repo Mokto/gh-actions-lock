@@ -14,6 +14,9 @@ type parityMode struct {
 	relock bool
 	// acceptMoved implies relock.
 	acceptMoved bool
+	// collapse is --relock of every workflow, which rewrites a full SHA
+	// recorded under several spellings as one fresh entry.
+	collapse bool
 }
 
 // paritySubject is the lock entry a parity finding is about.
@@ -33,6 +36,9 @@ type paritySubject struct {
 	// --accept-moved re-resolves the workflow's use (see heldBy in
 	// parity.go); "" when that repairs it.
 	heldBy string
+	// collapsed marks an entry whose full SHA is recorded under several
+	// spellings while --relock of every workflow collapses them.
+	collapsed bool
 	// head is the ref the commit was traced to; "" for an entry without one.
 	head string
 	// inconclusive marks a check that couldn't finish.
@@ -78,6 +84,13 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) (parityVerd
 			f.Remediation = "retry; nothing is written until the repository identity is confirmed"
 		}
 		return verdictKeep, *f
+	}
+	// A collapse writes one fresh entry, checked as a fresh pin, in place
+	// of every spelling, so no spelling's recorded ref or edges survive.
+	// pin.Audit holds the excuse to that write.
+	if m.collapse && s.collapsed {
+		blocking := *f
+		return verdictExcuse, blocking
 	}
 	fullSHA := parserlock.IsFullSha(s.pin.Ref)
 	c := f.Category

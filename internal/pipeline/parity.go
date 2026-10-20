@@ -87,6 +87,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		owners[i] = append(owners[i], o)
 	}
 	fresh := freshClosure(resolved, parents)
+	refs := lockfile.NewRefIndex(store.File())
 	for _, pw := range parsed {
 		ri, ok := reportIdx[pw.Path]
 		if !ok || isBlocked(pw) {
@@ -124,8 +125,9 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				ref = parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref}
 			}
 			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref,
-				away:   plannedAway(lp, edges[lp.Key], effects[checks.PruneKey(lp.Pin.NWO, lp.Pin.Ref, lockedSHA(lp.Action.Commit))]),
-				heldBy: heldBy(lp, edges[lp.Key]),
+				away:      plannedAway(lp, edges[lp.Key], effects[checks.PruneKey(lp.Pin.NWO, lp.Pin.Ref, lockedSHA(lp.Action.Commit))]),
+				heldBy:    heldBy(lp, edges[lp.Key]),
+				collapsed: mode.collapse && len(refs.Lookup(lp.Pin.NWO, lp.Pin.Ref).Candidates) > 1,
 			})
 		}
 		if pw.Resolved {
@@ -201,7 +203,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				}
 				continue
 			}
-			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
+			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, collapsed: o.collapsed, head: pins[i].Head, inconclusive: st.Err != nil})
 			if verdict != verdictKeep {
 				wr.Deferred = append(wr.Deferred, checks.Deferred{
 					Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
@@ -240,6 +242,8 @@ type parityOwner struct {
 	// heldBy is the composite that keeps this entry as recorded when
 	// --accept-moved re-resolves the workflow's use: see heldBy.
 	heldBy string
+	// collapsed marks an entry of a full SHA the run collapses.
+	collapsed bool
 }
 
 // compositeEdges maps each pin a composite in the recorded closure lists in

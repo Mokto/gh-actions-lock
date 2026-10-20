@@ -154,7 +154,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	// Phase 4: Parity.
 	if r != nil {
-		mode := parityMode{verify: opts.Verify, relock: opts.Relock, acceptMoved: opts.AcceptMoved}
+		mode := parityMode{verify: opts.Verify, relock: opts.Relock, acceptMoved: opts.AcceptMoved, collapse: opts.CollapseSpellings}
 		endParity := prof.Phase("  parity check")
 		err := checkParity(ctx, r, parsed, opts.Store, report, recordedRefs, resolved, parents, mode)
 		endParity()

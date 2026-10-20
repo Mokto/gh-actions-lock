@@ -1101,6 +1101,38 @@ func TestRun_PlainRunKeepsLoneSHAAlias(t *testing.T) {
 	}
 }
 
+// TestRun_RelockCollapseDiscardsAlternateMetadata: one spelling of an
+// ambiguous full SHA records a ref that no longer exists and a child its
+// manifest doesn't use. --relock of every workflow replaces both spellings
+// with one fresh entry, verified in this run, so the alternate's recorded
+// ref and edges don't block and aren't written.
+func TestRun_RelockCollapseDiscardsAlternateMetadata(t *testing.T) {
+	const child = "abcdef0123456789abcdef0123456789abcdef01"
+	upper := strings.ToUpper(child)
+	path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/child@"+child+"\n")
+	shaSpellingLock(t, path, child, upper)
+	lock := strings.Replace(readTempLockfilePins(t),
+		"  'acme/child@"+upper+"':\n    ref: 'v2'\n    commit: 'sha1-"+child+"'\n    owner_id: 1\n    repo_id: 1\n    uses:\n      - 'acme/leaf@v3'\n",
+		"  'acme/child@"+upper+"':\n    ref: 'gone'\n    commit: 'sha1-"+child+"'\n    owner_id: 1\n    repo_id: 1\n    uses:\n      - 'acme/leaf@v3'\n      - 'acme/stale@v1'\n"+
+			"  'acme/stale@v1':\n    ref: 'v1'\n    commit: 'sha1-"+graphLeafSHA+"'\n    owner_id: 1\n    repo_id: 1\n", 1)
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+	transport := &graphTransport{childSHA: child, childOnMain: true, goneRef: "gone"}
+
+	_, stderr, err := runCommandWithHTTP(t, transport, "--relock", "--no-narrow")
+	require.NoError(t, err, stderr)
+	after := readTempLockfilePins(t)
+	file, err := parserlock.Parse([]byte(after))
+	require.NoError(t, err)
+	// acme/child@v2 is the composite's own child, at its live commit.
+	assert.ElementsMatch(t, []string{"acme/child@" + child, "acme/child@v2", "acme/leaf@v3", "acme/parent@v1.0.0"}, slices.Collect(maps.Keys(file.Dependencies)))
+	assert.Equal(t, []string{"acme/leaf@v3"}, file.Dependencies["acme/child@"+child].Uses)
+	assert.NotEqual(t, "gone", file.Dependencies["acme/child@"+child].Ref)
+	assert.NotContains(t, after, upper)
+
+	_, stderr, err = runCommandWithHTTP(t, transport, "--verify")
+	require.NoError(t, err, stderr)
+}
+
 func TestRun_ParitySSOGuidance(t *testing.T) {
 	const message = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
 	for _, mode := range []struct {
