@@ -25,11 +25,16 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 		}
 		recorded, _ := pw.PartitionRefs()
 		// A full-SHA root is checked under its own entry when one exists;
-		// otherwise under the entry whose commit it pins.
+		// otherwise under the entry whose commit it pins. Either way it
+		// takes that entry's spelling, so the walk finds the entry it names.
 		for j, ref := range recorded {
-			if !parserlock.IsFullSha(ref.Ref) || slices.ContainsFunc(pw.ExistingDeps, func(d dep.Dependency) bool {
-				return strings.EqualFold(d.NWO, ref.NWO()) && strings.EqualFold(d.Ref, ref.Ref)
-			}) {
+			if !parserlock.IsFullSha(ref.Ref) {
+				continue
+			}
+			if i := slices.IndexFunc(pw.ExistingDeps, func(d dep.Dependency) bool {
+				return dep.RefKey(d.NWO, d.Ref) == dep.RefKey(ref.NWO(), ref.Ref)
+			}); i >= 0 {
+				recorded[j].Ref = pw.ExistingDeps[i].Ref
 				continue
 			}
 			for _, d := range pw.ExistingDeps {

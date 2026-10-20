@@ -702,6 +702,33 @@ func TestCompleteness_RedirectedRootAndAliasBothNarrowable(t *testing.T) {
 	require.NoError(t, err, stderr)
 }
 
+// TestCompleteness_VerifyFindsFullSHAEntryInAnyCase: a full SHA names a
+// commit in either case, so --verify walks the lockfile entry the
+// workflow's differently cased SHA names instead of calling it unlocked.
+func TestCompleteness_VerifyFindsFullSHAEntryInAnyCase(t *testing.T) {
+	reg := &httpmock.Registry{}
+	registerParity(reg)
+	registerNodeManifests(reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+strings.ToUpper(parityTestSHA)+`
+`, "actions/checkout@"+parityTestSHA+"=sha1-"+parityTestSHA)
+	lock := readTempLockfilePins(t)
+	lock = strings.Replace(lock, "ref: '"+parityTestSHA+"'", "ref: 'v4.2.1'", 1)
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+	p, err := runParity(t, reg, "--verify", path)
+	require.NoError(t, err, "%+v", p.Findings)
+	for _, f := range p.Findings {
+		assert.NotEqual(t, "error", f.Severity, "%+v", f)
+	}
+}
+
 func TestRun_ParitySSOGuidance(t *testing.T) {
 	const message = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
 	for _, mode := range []struct {

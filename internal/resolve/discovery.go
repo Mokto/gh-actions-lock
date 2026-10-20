@@ -140,6 +140,15 @@ func (e *UnlockedRefError) Error() string {
 	return fmt.Sprintf("no locked commit for %s@%s", e.Ref.FullName(), e.Ref.Ref)
 }
 
+// lockedKey keys recorded commits by owner/repo@ref with dep.RefKey's rule:
+// a full SHA in either case finds its entry; a tag or branch must match.
+func lockedKey(owner, repo, ref string) ghapi.NWORef {
+	if parserlock.IsFullSha(ref) {
+		ref = strings.ToLower(ref)
+	}
+	return ghapi.ForNWORef(owner, repo, ref)
+}
+
 // ResolveLockedRecursive discovers dependencies using only recorded commits.
 // Its content cache is separate from live-ref resolution and lockfile seeds.
 func (r *Resolver) ResolveLockedRecursive(ctx context.Context, refs []parserlock.ActionRef, deps []dep.Dependency) ([]dep.Dependency, dep.ParentMap, error) {
@@ -147,7 +156,7 @@ func (r *Resolver) ResolveLockedRecursive(ctx context.Context, refs []parserlock
 	for _, d := range deps {
 		owner, repo := d.OwnerRepo()
 		if d.SHA != "" {
-			locked[ghapi.ForNWORef(owner, repo, d.Ref)] = d.SHA
+			locked[lockedKey(owner, repo, d.Ref)] = d.SHA
 		}
 	}
 	g, err := r.resolveRecursive(ctx, refs, locked)
@@ -209,7 +218,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 			if !seen[key] {
 				seen[key] = true
 				if locked != nil && request.fetchRef == "" {
-					request.fetchRef = locked[ghapi.ForNWORef(request.ref.Owner, request.ref.Repo, request.ref.Ref)]
+					request.fetchRef = locked[lockedKey(request.ref.Owner, request.ref.Repo, request.ref.Ref)]
 					if request.fetchRef == "" {
 						resolveErr = errors.Join(resolveErr, &UnlockedRefError{Ref: request.ref})
 						continue
