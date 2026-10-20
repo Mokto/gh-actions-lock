@@ -43,6 +43,8 @@ func execute() int {
 		// Blocking findings were already reported via well-formed output; exit
 		// 1 quietly so a second error line doesn't clobber the JSON/summary.
 		return 1
+	case errors.As(err, new(printedError)):
+		return 2
 	case errors.Is(err, context.Canceled):
 		// CTRL+C / SIGTERM: exit silently. The signal is intentional, not a
 		// tool failure. Print a newline so the shell prompt starts clean.
@@ -56,6 +58,11 @@ func execute() int {
 		return 2
 	}
 }
+
+// printedError is a tool failure the run already printed; it still exits 2.
+type printedError struct{ error }
+
+func (e printedError) Unwrap() error { return e.error }
 
 type resolverFunc func(hostname string, pool *pinpool.Pool) (*resolve.Resolver, error)
 

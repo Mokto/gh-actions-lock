@@ -353,6 +353,8 @@ jobs:
 		require.ErrorIs(t, err, errSilent, stderr)
 		assert.Contains(t, stderr, "✗ reachability unknown actions/checkout@v4.2.1")
 		assert.NotContains(t, stderr, "actions/checkout@v4.2.1: could not verify", "an error must not also print as a warning")
+		assert.Contains(t, stderr, "could not verify locked actions/checkout@9ddf35b71a48: GitHub returned 502 Bad Gateway")
+		assert.NotContains(t, stderr, "api.github.com", "the request URL stays out of the terminal")
 	})
 	t.Run("moved exact tag warns", func(t *testing.T) {
 		reg := &httpmock.Registry{}
@@ -691,9 +693,9 @@ func TestParity_DependabotProxyInconclusiveAborts(t *testing.T) {
 		resp   httpmock.Responder
 		status string
 	}{
-		"rate-limited 403":           {httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}), "HTTP 403"},
-		"secondary rate-limited 403": {httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"Retry-After": "60"}), "HTTP 403"},
-		"503":                        {httpmock.StatusResponse(http.StatusServiceUnavailable), "HTTP 503"},
+		"rate-limited 403":           {httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}), "GitHub returned 403 Forbidden"},
+		"secondary rate-limited 403": {httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"Retry-After": "60"}), "GitHub returned 403 Forbidden"},
+		"503":                        {httpmock.StatusResponse(http.StatusServiceUnavailable), "GitHub returned 503 Service Unavailable"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, args := range [][]string{nil, {"--verify"}} {
@@ -864,7 +866,7 @@ jobs:
 				if proxy && tt.want == "reachability-unknown" {
 					require.Error(t, err, stderr)
 					assert.NotErrorIs(t, err, errSilent, "inconclusive under the proxy is a retry")
-					assert.Contains(t, err.Error(), "HTTP 503")
+					assert.Contains(t, err.Error(), "GitHub returned 503 Service Unavailable")
 					return
 				}
 				var p parityPayload

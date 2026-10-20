@@ -13,6 +13,7 @@ import (
 
 	"github.com/cli/go-gh/v2/pkg/repository"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
+	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
@@ -96,7 +97,13 @@ func writeRunLogJSON(w io.Writer, report *checks.Report, record *pin.Record, val
 	payload["succeeded"], _ = json.Marshal(runErr == nil)
 	// errSilent means the reason was already rendered as findings.
 	if runErr != nil && !errors.Is(runErr, errSilent) {
-		payload["error"], _ = json.Marshal(runErr.Error())
+		// The terminal shows the short form; the log keeps the full one.
+		msg := runErr.Error()
+		var be *ghapi.BriefError
+		if errors.As(runErr, &be) {
+			msg = be.Verbose()
+		}
+		payload["error"], _ = json.Marshal(msg)
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

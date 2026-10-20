@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -134,7 +135,18 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	// the log can never call a failed run valid.
 	rl := &runLog{}
 	defer func() {
-		if path := rl.save(runErr); path != "" && runErr != nil && opts.jsonFields == "" {
+		path := rl.save(runErr)
+		if runErr == nil || opts.jsonFields != "" {
+			return
+		}
+		// A tool failure prints here, before the log path, rather than
+		// after it in execute.
+		if !errors.Is(runErr, errSilent) && !errors.Is(runErr, context.Canceled) {
+			console.StopProgress()
+			console.TermError("%s", runErr)
+			runErr = printedError{runErr}
+		}
+		if path != "" {
 			console.TermBlank()
 			console.TermDetail("Run log: %s", path)
 		}

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,6 +228,59 @@ func TestCheck_RunLogOnEveryExitPath(t *testing.T) {
 		assert.False(t, payload.Succeeded)
 		assert.False(t, payload.Valid)
 		assert.Equal(t, err.Error(), payload.Error)
+	})
+
+	t.Run("a tool failure prints before the run log path", func(t *testing.T) {
+		isolateRunLogs(t)
+		path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+parityTestSHA+`
+`, "actions/checkout@"+parityTestSHA+"=sha1-"+parityTestSHA)
+
+		_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify", path)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, errSilent, "a tool failure exits 2")
+		failure := strings.Index(stderr, "lockfile is unreadable")
+		logLine := strings.Index(stderr, "Run log:")
+		require.NotEqual(t, -1, failure, stderr)
+		require.NotEqual(t, -1, logLine, stderr)
+		assert.Less(t, failure, logLine, stderr)
+	})
+
+	t.Run("a proxy abort is short on the terminal and full in the log", func(t *testing.T) {
+		logDir := isolateRunLogs(t)
+		t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+		reg := &httpmock.Registry{}
+		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+			"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+		}))
+		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/v4$`), httpmock.StatusResponse(http.StatusServiceUnavailable))
+		useDefaultTransport(t, reg)
+		path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+
+		_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", path)
+		require.Error(t, err)
+		assert.Contains(t, stderr, "could not verify locked actions/checkout@9ddf35b71a48: GitHub returned 503 Service Unavailable")
+		assert.NotContains(t, stderr, "api.github.com", "the request URL stays out of the terminal")
+
+		var payload struct {
+			Error string `json:"error"`
+		}
+		readOnlyRunLog(t, logDir, &payload)
+		assert.Contains(t, payload.Error, "git/ref/tags/v4", "the log keeps the full error")
 	})
 
 	t.Run("successful run logs success without printing the path", func(t *testing.T) {

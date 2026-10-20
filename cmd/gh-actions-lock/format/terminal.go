@@ -1,6 +1,7 @@
 package format
 
 import (
+	"cmp"
 	"fmt"
 	"sort"
 	"strings"
@@ -147,7 +148,7 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 		icon = out.TermRed(ui.IconError)
 	}
 	out.TermDetail("%s %s %s", icon, out.TermDim(label), dep)
-	out.TermDetail("  %s", f.Detail)
+	out.TermDetail("  %s", cmp.Or(f.TermDetail, f.Detail))
 	if f.Category == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
 		owner, repo := f.Dependency.OwnerRepo()
 		if owner != "" {
@@ -299,7 +300,7 @@ func renderFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 		icon = out.Red(ui.IconError)
 	}
 	out.Detail("%s %s %s", icon, out.Dim(label), dep)
-	out.Detail("  %s", f.Detail)
+	out.Detail("  %s", cmp.Or(f.TermDetail, f.Detail))
 	if f.Category == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
 		owner, repo := f.Dependency.OwnerRepo()
 		if owner != "" {
@@ -432,7 +433,7 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 			if label == "" {
 				label = f.WorkflowPath
 			}
-			out.TermWarn("%s: %s", label, f.Detail)
+			out.TermWarn("%s: %s", label, cmp.Or(f.TermDetail, f.Detail))
 			if f.Remediation != "" {
 				out.TermDetail("↳ %s", f.Remediation)
 			}

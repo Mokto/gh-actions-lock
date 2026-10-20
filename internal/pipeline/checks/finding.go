@@ -61,6 +61,9 @@ type Finding struct {
 	// latter, which the lockfile never recorded.
 	RecordedRef string
 	FreshRef    bool
+	// TermDetail, when set, replaces Detail on the terminal: a short form
+	// without request URLs. --json and the run log keep Detail.
+	TermDetail string
 	// TrackedAction marks a not-pinned bare SHA whose owner/repo the
 	// workflow already locks at another ref. It is a ref change on a
 	// tracked action, not onboarding, so --no-onboard lets it through to

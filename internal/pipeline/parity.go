@@ -3,6 +3,7 @@ package pipeline
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -124,11 +125,15 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		if pc.Head == "" || st.Err != nil || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
 			continue
 		}
-		switch ancestry, detail := r.CheckAncestry(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); ancestry {
+		switch ancestry, detail, cause := r.CheckAncestryCause(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); ancestry {
 		case resolve.AncestryNotAncestor:
 			st.CommitFound = false
 		case resolve.AncestryUnknown:
-			st.Err = fmt.Errorf("checking %s history: %s", pc.Head, detail)
+			brief := fmt.Sprintf("could not check %s history", pc.Head)
+			if cause != nil {
+				brief += ": " + ghapi.Brief(cause)
+			}
+			st.Err = &ghapi.BriefError{Msg: brief, Err: fmt.Errorf("checking %s history: %s", pc.Head, detail)}
 		default:
 			sv, ok := parserlock.ParseSemVer(pc.Head)
 			tagMoved[i] = ok && sv.IsFull()
@@ -137,7 +142,8 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	if ghapi.DependabotProxy() {
 		for i, st := range states {
 			if st.Err != nil {
-				return fmt.Errorf("could not verify locked %s/%s@%s: %w", pins[i].Owner, pins[i].Repo, parserlock.ShortSHA(pins[i].SHA), st.Err)
+				msg := fmt.Sprintf("could not verify locked %s/%s@%s", pins[i].Owner, pins[i].Repo, parserlock.ShortSHA(pins[i].SHA))
+				return &ghapi.BriefError{Msg: msg + ": " + briefCause(st.Err), Err: fmt.Errorf("%s: %s", msg, verbose(st.Err))}
 			}
 		}
 	}
@@ -245,6 +251,24 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 	}
 }
 
+// briefCause is err for a terminal line: see ghapi.Brief.
+func briefCause(err error) string {
+	var be *ghapi.BriefError
+	if errors.As(err, &be) {
+		return be.Msg
+	}
+	return ghapi.Brief(err)
+}
+
+// verbose is err with any underlying detail a BriefError shortened.
+func verbose(err error) string {
+	var be *ghapi.BriefError
+	if errors.As(err, &be) {
+		return be.Verbose()
+	}
+	return err.Error()
+}
+
 // movedTagFinding warns that an exact-version tag moved ahead of its locked
 // commit. Tags can move and the Actions backend accepts the pin, so it never
 // blocks.
@@ -298,7 +322,12 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		f.Category = checks.ReachabilityUnknown
 		f.Severity = checks.SeverityWarning
 		f.Confidence = checks.ConfidenceLow
-		f.Detail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, st.Err)
+		f.Detail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, verbose(st.Err))
+		f.TermDetail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, briefCause(st.Err))
+		var be *ghapi.BriefError
+		if errors.As(st.Err, &be) {
+			f.TermDetail = be.Msg
+		}
 		f.Remediation = "retry; the Actions backend will re-check this pin when the job starts"
 	case st.RepoMissing:
 		f.Category = checks.RepoUnavailable

@@ -39,30 +39,37 @@ const (
 // of liveSHA. This detects lockfile forgery: if someone injects a SHA that was
 // never in the ref's lineage, merge_base(pinned, live) ≠ pinned.
 func (r *Resolver) CheckAncestry(ctx context.Context, owner, repo, pinnedSHA, liveSHA string) (AncestryStatus, string) {
+	status, detail, _ := r.CheckAncestryCause(ctx, owner, repo, pinnedSHA, liveSHA)
+	return status, detail
+}
+
+// CheckAncestryCause is CheckAncestry that also returns the error behind an
+// AncestryUnknown result.
+func (r *Resolver) CheckAncestryCause(ctx context.Context, owner, repo, pinnedSHA, liveSHA string) (AncestryStatus, string, error) {
 	if strings.EqualFold(pinnedSHA, liveSHA) {
-		return AncestryConfirmed, "pinned SHA equals live SHA"
+		return AncestryConfirmed, "pinned SHA equals live SHA", nil
 	}
 
 	status, mergeBaseSHA, err := r.gh.CompareRefs(ctx, owner, repo, pinnedSHA, liveSHA)
 	if err != nil {
 		code, ok := ghapi.StatusCode(err)
 		if !ok {
-			return AncestryUnknown, err.Error()
+			return AncestryUnknown, err.Error(), err
 		}
 		switch code {
 		case http.StatusNotFound:
-			return AncestryNotAncestor, "commit not found in repository"
+			return AncestryNotAncestor, "commit not found in repository", nil
 		case http.StatusConflict:
-			return AncestryNotAncestor, "no common ancestor between pinned and live SHA"
+			return AncestryNotAncestor, "no common ancestor between pinned and live SHA", nil
 		default:
-			return AncestryUnknown, fmt.Sprintf("API error (HTTP %d): %s", code, err.Error())
+			return AncestryUnknown, fmt.Sprintf("API error (HTTP %d): %s", code, err.Error()), err
 		}
 	}
 
 	if strings.EqualFold(mergeBaseSHA, pinnedSHA) {
-		return AncestryConfirmed, fmt.Sprintf("pinned SHA is ancestor of live SHA (compare: %s)", status)
+		return AncestryConfirmed, fmt.Sprintf("pinned SHA is ancestor of live SHA (compare: %s)", status), nil
 	}
-	return AncestryNotAncestor, fmt.Sprintf("merge base is %s, not the pinned SHA — possible lockfile forgery or upstream history rewrite", shortHex(mergeBaseSHA))
+	return AncestryNotAncestor, fmt.Sprintf("merge base is %s, not the pinned SHA — possible lockfile forgery or upstream history rewrite", shortHex(mergeBaseSHA)), nil
 }
 
 func shortHex(sha string) string {
