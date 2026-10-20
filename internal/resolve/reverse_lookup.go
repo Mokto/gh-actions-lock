@@ -39,9 +39,29 @@ func (r *Resolver) DiscoverContaining(ctx context.Context, owner, repo, sha, hin
 // then all-branches scan — runs only when phase 1 finds nothing. An orphan
 // error is returned only if both phases fail to place the commit.
 func (r *Resolver) DiscoverContainingDefault(ctx context.Context, owner, repo, sha, hintRef, defaultBranch string) (tag, branch string, err error) {
+	allTags, err := r.ListTagsForRepo(ctx, owner, repo)
+	if err != nil {
+		return "", "", err
+	}
+	// The Actions backend resolver looks a recorded ref up as a tag first,
+	// so a branch whose name is also a tag can't be recorded.
+	tagNamed := make(map[string]bool, len(allTags))
+	for _, t := range allTags {
+		tagNamed[t.Name] = true
+	}
+	unshadowed := func(cands []ghapi.BranchHead) []ghapi.BranchHead {
+		out := cands[:0:0]
+		for _, b := range cands {
+			if !tagNamed[b.Name] {
+				out = append(out, b)
+			}
+		}
+		return out
+	}
+
 	// Phase 0: check named branches directly (ref, hint, default) — one
 	// REST call each, no pagination.
-	named := r.namedBranches(ctx, owner, repo, sha, hintRef, defaultBranch)
+	named := unshadowed(r.namedBranches(ctx, owner, repo, sha, hintRef, defaultBranch))
 	branch, err = r.findContainingBranch(ctx, owner, repo, sha, hintRef, defaultBranch, named)
 	if err != nil {
 		return "", "", err
@@ -62,7 +82,7 @@ func (r *Resolver) DiscoverContainingDefault(ctx context.Context, owner, repo, s
 				remaining = append(remaining, b)
 			}
 		}
-		branch, err = r.findContainingBranch(ctx, owner, repo, sha, hintRef, defaultBranch, remaining)
+		branch, err = r.findContainingBranch(ctx, owner, repo, sha, hintRef, defaultBranch, unshadowed(remaining))
 		if err != nil {
 			return "", "", err
 		}
@@ -74,6 +94,7 @@ func (r *Resolver) DiscoverContainingDefault(ctx context.Context, owner, repo, s
 		if lerr != nil {
 			return "", "", lerr
 		}
+		branches = unshadowed(branches)
 		protectedBranches := make([]ghapi.BranchHead, 0, len(branches))
 		for _, b := range branches {
 			if b.Protected {
@@ -96,10 +117,6 @@ func (r *Resolver) DiscoverContainingDefault(ctx context.Context, owner, repo, s
 	// on refs/tags (lightweight repos, GitHub Releases, etc.).
 
 	// Discover tags pointing at sha.
-	allTags, err := r.ListTagsForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", "", err
-	}
 	var tagNames []string
 	for _, t := range allTags {
 		if strings.EqualFold(t.SHA, sha) {

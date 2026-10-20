@@ -431,3 +431,40 @@ func TestReverseLookup_PreservesBranchRefOverTag(t *testing.T) {
 	}
 	reg.Verify(t)
 }
+
+// TestDiscoverContaining_SkipsBranchShadowedByTag: the Actions backend
+// resolver looks a recorded ref up as a tag first, so a branch whose name is
+// also a tag would resolve to the tag. Such a branch is never recorded.
+func TestDiscoverContaining_SkipsBranchShadowedByTag(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.Register(
+		httpmock.REST("GET", `repos/actions/checkout/branches`),
+		httpmock.JSONResponse(httpmock.BranchListResponse("main", "m000", "release", "r000")),
+	)
+	for range 2 {
+		reg.Register(
+			httpmock.REST("GET", `repos/actions/checkout/compare/abc`),
+			httpmock.JSONResponse(httpmock.CompareAncestorResponse("abc")),
+		)
+	}
+	reg.Register(
+		httpmock.REST("GET", `repos/actions/checkout/tags`),
+		httpmock.JSONResponse(httpmock.TagListResponse("main", "zzz")),
+	)
+
+	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tag, branch, err := r.DiscoverContainingDefault(context.Background(), "actions", "checkout", "abc", "", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tag != "" {
+		t.Fatalf("expected no tag at abc, got %q", tag)
+	}
+	if branch != "release" {
+		t.Fatalf("expected the unshadowed branch release, got %q", branch)
+	}
+}
