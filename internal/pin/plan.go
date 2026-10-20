@@ -3,6 +3,7 @@ package pin
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -200,7 +201,8 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// Resolve live state for unrecorded refs only.
 	status("resolving " + wr.Path)
 	graph, resolveErr := opts.Resolver.ResolveGraph(ctx, unrecordedRefs)
-	deps, parentMap := graph.Flatten()
+	deps, parentMap, flatErr := graph.Flatten()
+	resolveErr = errors.Join(resolveErr, flatErr)
 	if resolveErr != nil {
 		// A resolved root is not pinnable when its transitive graph is incomplete.
 		for _, ref := range unrecordedRefs {

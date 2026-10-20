@@ -120,8 +120,8 @@ const batchActionFileSize = 20
 // caller and safe to mutate or hold across concurrent resolver calls.
 func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.ActionRef) ([]dep.Dependency, dep.ParentMap, error) {
 	g, err := r.resolveRecursive(ctx, refs, nil)
-	deps, parents := g.Flatten()
-	return deps, parents, err
+	deps, parents, flatErr := g.Flatten()
+	return deps, parents, errors.Join(err, flatErr)
 }
 
 // ResolveGraph is ResolveAllRecursive's graph, for callers that record
@@ -160,13 +160,14 @@ func (r *Resolver) ResolveLockedRecursive(ctx context.Context, refs []parserlock
 		}
 	}
 	g, err := r.resolveRecursive(ctx, refs, locked)
-	deps, parents := g.Flatten()
-	return deps, parents, err
+	deps, parents, flatErr := g.Flatten()
+	return deps, parents, errors.Join(err, flatErr)
 }
 
 func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.ActionRef, locked map[ghapi.NWORef]string) (*Graph, error) {
 	seen := make(map[ghapi.ActionRef]bool)
 	g := newGraph(refs)
+	g.host = r.hostname
 
 	pending := make([]resolutionRequest, len(refs))
 	for i, ref := range refs {

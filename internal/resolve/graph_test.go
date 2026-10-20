@@ -139,7 +139,8 @@ func TestGraphRewritesBelongToTheReferrer(t *testing.T) {
 		})
 		g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{old, {Owner: "c", Repo: "comp", Ref: "v1"}})
 		require.NoError(t, err)
-		deps, parents := g.Flatten()
+		deps, parents, err := g.Flatten()
+		require.NoError(t, err)
 		assert.Equal(t, []string{"new/action@v1", "old/action@v1", "c/comp@v1"}, depKeys(deps))
 		assert.Equal(t, []parserlock.ActionRef{old}, deps[0].OriginalRefs, "the workflow root is rewritten to the new name")
 		assert.Empty(t, deps[1].OriginalRefs, "the composite's reference is not")
@@ -167,12 +168,14 @@ func TestGraphRejectsMergingDifferentTargets(t *testing.T) {
 		name     string
 		sha      string
 		hostname string
+		ok       bool
 	}{
 		{name: "different commit", sha: second},
 		{name: "different host", sha: first, hostname: "tenant.ghe.com"},
+		{name: "empty host is the resolver's", sha: first, hostname: "github.com", ok: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
+			r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth, hostname: "github.com"}, map[ghapi.ActionRef]resolvedEntry{
 				ghapi.ForActionRef("o", "a", "", "v2"): {
 					dep:       dep.Dependency{NWO: "o/a", Ref: "v2", SHA: first},
 					actionYML: "runs:\n  using: node20\n",
@@ -187,6 +190,10 @@ func TestGraphRejectsMergingDifferentTargets(t *testing.T) {
 			})
 			require.NoError(t, err)
 			_, _, _, err = g.FlattenPlanned(Decisions{Roots: map[string]string{"o/a@v2": "v2.1.0"}})
+			if tt.ok {
+				require.NoError(t, err)
+				return
+			}
 			require.ErrorContains(t, err, "o/a@v2.1.0 would record both")
 		})
 	}

@@ -21,6 +21,8 @@ type Graph struct {
 	// order lists resolved nodes in resolution order.
 	order []ghapi.ActionRef
 	roots []ghapi.ActionRef
+	// host is the resolver's host, which an empty Dependency.Hostname means.
+	host string
 }
 
 type graphNode struct {
@@ -155,11 +157,9 @@ func (g *Graph) cycle() *UsesCycleError {
 // Flatten returns one dependency per owner/repo@ref, in resolution order,
 // and the edges between them as child key → parent keys. An edge to an
 // action that didn't resolve keeps the name its parent's manifest uses.
-func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap) {
-	// Without decisions every entry is one discovered ref, and discovery
-	// already rejected two commits for one ref.
-	deps, parents, _, _ := g.FlattenPlanned(Decisions{})
-	return deps, parents
+func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap, error) {
+	deps, parents, _, err := g.FlattenPlanned(Decisions{})
+	return deps, parents, err
 }
 
 // Decisions are planning's choices about the graph's entries, keyed by the
@@ -268,7 +268,7 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 			deps = append(deps, e)
 			continue
 		}
-		if !strings.EqualFold(deps[i].SHA, e.SHA) || deps[i].Hostname != e.Hostname {
+		if !strings.EqualFold(deps[i].SHA, e.SHA) || g.hostOf(deps[i]) != g.hostOf(e) {
 			return nil, nil, nil, fmt.Errorf("%s would record both %s and %s; retry", e.Key(), describeTarget(deps[i]), describeTarget(e))
 		}
 		for _, ref := range e.OriginalRefs {
@@ -300,6 +300,14 @@ func (g *Graph) FlattenPlanned(d Decisions) (deps []dep.Dependency, parents dep.
 		}
 	}
 	return deps, parents, roots, nil
+}
+
+// hostOf is d's host; empty means the resolver's own.
+func (g *Graph) hostOf(d dep.Dependency) string {
+	if d.Hostname == "" {
+		return g.host
+	}
+	return d.Hostname
 }
 
 func describeTarget(d dep.Dependency) string {
