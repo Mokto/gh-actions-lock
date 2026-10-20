@@ -509,3 +509,38 @@ func TestDiscoverContaining_ShadowCheckFailureFailsClosed(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+// TestDiscoverContaining_SkipsRejectedRefNames: a tag or branch name the
+// Actions backend doesn't accept is never chosen as the recorded ref.
+func TestDiscoverContaining_SkipsRejectedRefNames(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.Register(
+		httpmock.REST("GET", `repos/actions/checkout/branches`),
+		httpmock.JSONResponse(httpmock.BranchListResponse("fix-gabcd", "abc", "main", "m000")),
+	)
+	reg.Register(
+		httpmock.REST("GET", `repos/actions/checkout/compare/abc`),
+		httpmock.JSONResponse(httpmock.CompareAncestorResponse("abc")),
+	)
+	reg.Register(
+		httpmock.REST("GET", `repos/actions/checkout/tags`),
+		httpmock.JSONResponse(httpmock.TagListResponse("release-g1234", "abc")),
+	)
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
+
+	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tag, branch, err := r.DiscoverContainingDefault(context.Background(), "actions", "checkout", "abc", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tag != "" {
+		t.Fatalf("expected the rejected tag to be skipped, got %q", tag)
+	}
+	if branch != "main" {
+		t.Fatalf("expected branch main, got %q", branch)
+	}
+}

@@ -71,7 +71,7 @@ func (r *Resolver) DiscoverContainingDefault(ctx context.Context, owner, repo, s
 	}
 	var tagNames []string
 	for _, t := range allTags {
-		if strings.EqualFold(t.SHA, sha) {
+		if strings.EqualFold(t.SHA, sha) && ghapi.AcceptedRefName(t.Name) {
 			tagNames = append(tagNames, t.Name)
 		}
 	}
@@ -81,12 +81,12 @@ func (r *Resolver) DiscoverContainingDefault(ctx context.Context, owner, repo, s
 }
 
 // searchContainingBranch runs the phased branch search, skipping branches
-// named in skip.
+// named in skip and names the Actions backend doesn't accept.
 func (r *Resolver) searchContainingBranch(ctx context.Context, owner, repo, sha, hintRef, defaultBranch string, skip map[string]bool) (string, error) {
 	without := func(cands []ghapi.BranchHead) []ghapi.BranchHead {
 		out := cands[:0:0]
 		for _, b := range cands {
-			if !skip[b.Name] {
+			if !skip[b.Name] && ghapi.AcceptedRefName(b.Name) {
 				out = append(out, b)
 			}
 		}

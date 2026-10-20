@@ -321,3 +321,36 @@ jobs:
 	assert.Contains(t, string(got), "uses:\n            - 'actions/checkout@v4'")
 	assert.NotContains(t, string(got), "'owner/action@"+tagObjectSHA+"'")
 }
+
+// TestCommitRejectedEntryRefWritesNothing: a planned entry the lockfile
+// refuses must fail before any workflow is rewritten.
+func TestCommitRejectedEntryRefWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(".github", "workflows", "ci.yml")
+	sha := strings.Repeat("a", 40)
+	content := []byte("on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + sha + "\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, filepath.Dir(workflowPath)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, workflowPath), content, 0o644))
+	t.Chdir(dir)
+
+	store, err := lockfile.LoadState(dir, fakeMeta{})
+	require.NoError(t, err)
+	rec := &Record{
+		Entries: []Entry{{
+			NWO: "actions/checkout", Ref: "release-g1234", SHA: sha, Tag: "release-g1234",
+			Resolution: Pinned, Workflows: []string{workflowPath}, Direct: true,
+		}},
+		Workflows: []WorkflowPlan{{
+			Path:     workflowPath,
+			Rewrites: map[string]string{"actions/checkout@" + sha: "actions/checkout@release-g1234"},
+		}},
+	}
+
+	err = Commit(context.Background(), rec, store, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "release-g1234")
+	after, err := os.ReadFile(filepath.Join(dir, workflowPath))
+	require.NoError(t, err)
+	assert.Equal(t, string(content), string(after), "the workflow is not rewritten")
+	assert.NoFileExists(t, filepath.Join(dir, ".github", "workflows", "actions.lock"))
+}
