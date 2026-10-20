@@ -1067,6 +1067,40 @@ func testRelockCollapsesSHASpellings(t *testing.T, args []string) {
 	assert.Equal(t, lock, readTempLockfilePins(t), "a second relock converges")
 }
 
+// TestRun_PlainRunKeepsLoneSHAAlias: a workflow root recorded in another
+// case than its only entry names that entry, so a plain run keeps the entry
+// as recorded and records the root under the entry's spelling, once.
+func TestRun_PlainRunKeepsLoneSHAAlias(t *testing.T) {
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	upper := strings.ToUpper(sha)
+	for _, tt := range []struct{ name, uses, entry string }{
+		{name: "uppercase root, lowercase entry", uses: upper, entry: sha},
+		{name: "lowercase root, uppercase entry", uses: sha, entry: upper},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/action@"+tt.uses+"\n")
+			lock := "version: 'v0.0.3'\nworkflows:\n  '.github/workflows/" + filepath.Base(path) + "':\n    - 'acme/action@" + tt.uses + "'\ndependencies:\n" +
+				"  'acme/action@" + tt.entry + "':\n    ref: 'v1.0.0'\n    commit: 'sha1-" + sha + "'\n    owner_id: 1\n    repo_id: 1\n"
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, parityFallback{&httpmock.Registry{}}, "--no-narrow", path)
+			require.NoError(t, err, stderr)
+			first := readTempLockfilePins(t)
+			file, err := parserlock.Parse([]byte(first))
+			require.NoError(t, err)
+			assert.Equal(t, []string{"acme/action@" + tt.entry}, file.Workflows[".github/workflows/"+filepath.Base(path)])
+			assert.Equal(t, []string{"acme/action@" + tt.entry}, slices.Collect(maps.Keys(file.Dependencies)))
+			assert.Equal(t, "v1.0.0", file.Dependencies["acme/action@"+tt.entry].Ref)
+
+			_, stderr, err = runCommandWithHTTP(t, parityFallback{&httpmock.Registry{}}, "--no-narrow", path)
+			require.NoError(t, err, stderr)
+			assert.Equal(t, first, readTempLockfilePins(t), "a second run converges")
+			_, stderr, err = runCommandWithHTTP(t, parityFallback{&httpmock.Registry{}}, "--verify-local", path)
+			require.NoError(t, err, stderr)
+		})
+	}
+}
+
 func TestRun_ParitySSOGuidance(t *testing.T) {
 	const message = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
 	for _, mode := range []struct {

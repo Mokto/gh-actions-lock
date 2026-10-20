@@ -388,11 +388,20 @@ func (s *State) Get(workflowKey string) ([]dep.Dependency, error) {
 	if !ok {
 		return nil, nil
 	}
+	refs := NewRefIndex(s.file)
 	out := make([]dep.Dependency, 0, len(deps))
 	for _, raw := range deps {
 		pin, ok := parserlock.ParsePin(raw)
 		if !ok {
 			return nil, fmt.Errorf("invalid pin %q in %s for workflow %q", raw, parserlock.Path, workflowKey)
+		}
+		// A root spelling a full SHA in another case than its only entry
+		// names that entry, under the entry's spelling.
+		if _, found := s.file.Dependencies[raw]; !found {
+			if c := refs.Lookup(pin.NWO, pin.Ref).Candidates; len(c) == 1 {
+				raw = c[0]
+				pin, _ = parserlock.ParsePin(raw)
+			}
 		}
 		d := pinToDep(pin)
 		if action, found := s.file.Dependencies[raw]; found {
