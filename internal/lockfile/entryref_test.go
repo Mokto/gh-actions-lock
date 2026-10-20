@@ -276,3 +276,28 @@ func TestLoadState_ContentErrorNamesFirstEntry(t *testing.T) {
 		require.Contains(t, err.Error(), "line 4: entry for actions/zeta@"+entryRefSHA+" ")
 	}
 }
+
+// TestLoadState_ContentErrorFirstEntryAnyKeyStyle: file order holds whatever
+// YAML style a dependency key is written in.
+func TestLoadState_ContentErrorFirstEntryAnyKeyStyle(t *testing.T) {
+	body := func(key string) string {
+		return "  " + key + "\n    ref: 'refs/heads/main'\n    commit: 'sha1-" + entryRefSHA + "'\n    owner_id: 1\n    repo_id: 1\n"
+	}
+	for name, first := range map[string]string{
+		"double-quoted": `"actions/zeta@` + entryRefSHA + `":`,
+		"plain":         "actions/zeta@" + entryRefSHA + ":",
+		"commented":     "'actions/zeta@" + entryRefSHA + "': # pinned",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+			lock := "version: 'v0.0.3'\nworkflows: {}\ndependencies:\n" + body(first) + body("'actions/alpha@"+entryRefSHA+"':")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(lock), 0o600))
+			for range 10 {
+				_, err := LoadState(dir, fakeMetadataResolver{})
+				require.ErrorIs(t, err, ErrCorruptLockfile)
+				require.Contains(t, err.Error(), "line 4: entry for actions/zeta@"+entryRefSHA+" ")
+			}
+		})
+	}
+}

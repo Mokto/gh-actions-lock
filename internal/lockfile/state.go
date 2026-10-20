@@ -18,6 +18,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"golang.org/x/sync/singleflight"
+	"gopkg.in/yaml.v3"
 )
 
 // lockfileHeader is prepended to every write of the lockfile. It warns
@@ -70,27 +71,34 @@ func (e *contentError) Error() string { return e.msg }
 
 func (e *contentError) Is(target error) bool { return target == ErrCorruptLockfile }
 
-// entryLines maps each dependency entry's canonical pin key to its 1-based
-// line. It matches whole quoted mapping keys ('key':), so a workflow list
-// item doesn't match, and keys by canonical pin: owner and repo fold, refs
-// are case-sensitive. The first line wins for duplicate keys.
-func entryLines(contents []byte) map[string]int {
+// entryLines maps each dependency entry's canonical pin key to the 1-based
+// line of its key in the dependencies: mapping, whatever YAML style the key
+// is written in. Keys fold owner and repo; refs are case-sensitive. The
+// first line wins for duplicate keys.
+func entryLines(contents []byte) (map[string]int, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(contents, &doc); err != nil {
+		return nil, err
+	}
 	lines := map[string]int{}
-	for n, line := range bytes.Split(contents, []byte("\n")) {
-		key, ok := strings.CutPrefix(string(bytes.TrimSpace(line)), "'")
-		if !ok {
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return lines, nil
+	}
+	top := doc.Content[0].Content
+	for i := 0; i+1 < len(top); i += 2 {
+		if top[i].Value != "dependencies" || top[i+1].Kind != yaml.MappingNode {
 			continue
 		}
-		if key, ok = strings.CutSuffix(key, "':"); !ok {
-			continue
-		}
-		if p, ok := parserlock.ParsePin(key); ok {
-			if _, seen := lines[p.String()]; !seen {
-				lines[p.String()] = n + 1
+		deps := top[i+1].Content
+		for j := 0; j+1 < len(deps); j += 2 {
+			if p, ok := parserlock.ParsePin(deps[j].Value); ok {
+				if _, seen := lines[p.String()]; !seen {
+					lines[p.String()] = deps[j].Line
+				}
 			}
 		}
 	}
-	return lines
+	return lines, nil
 }
 
 // LoadState reads the lockfile at repoRoot, returning an empty in-memory file
@@ -157,7 +165,10 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 	// legacy mixed-case keys are rewritten on the next Save.
 	// Check entries in file order, so an invalid lockfile is always reported
 	// by its first bad entry.
-	lines := entryLines(contents)
+	lines, err := entryLines(contents)
+	if err != nil {
+		return nil, &contentError{fmt.Sprintf("%s: %v", parserlock.Path, err)}
+	}
 	line := func(key string) int {
 		if p, ok := parserlock.ParsePin(key); ok {
 			if n, ok := lines[p.String()]; ok {
