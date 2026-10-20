@@ -136,6 +136,25 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		for _, o := range fresh(pw, recordedRefs) {
 			o.report = ri
 			add(o)
+			// A fresh pin the lockfile already records at the same commit,
+			// such as a composite seeded from it, keeps its recorded
+			// descendants: the write merges, never drops, recorded edges.
+			// They are recorded pins, checked as such.
+			recorded, ok := store.File().Dependencies[lockfile.EntryKey(o.lp.Pin)]
+			if !ok || !strings.EqualFold(lockedSHA(recorded.Commit), lockedSHA(o.lp.Action.Commit)) {
+				continue
+			}
+			for _, lp := range store.Descendants(lockfile.EntryKey(o.lp.Pin)) {
+				// An entry recording its own SHA isn't kept unchanged: entry
+				// repair proves and rewrites it (see pin.PlanEntryRepairs).
+				if lockfile.RecordsOwnSHA(lp.Pin, lp.Action.Ref) {
+					continue
+				}
+				add(parityOwner{report: ri, pw: pw, lp: lp,
+					ref:    parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref},
+					heldBy: heldBy(lp, nil),
+				})
+			}
 		}
 	}
 	if len(pins) == 0 {

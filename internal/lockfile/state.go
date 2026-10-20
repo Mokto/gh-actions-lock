@@ -446,6 +446,34 @@ func (s *State) Closure(workflowKey string, live func(parserlock.Pin, parserlock
 	return out
 }
 
+// Descendants returns the recorded entries below the entry stored under key,
+// each with the entry whose uses: reached it as Parent; the entry itself is
+// not included. A write that keeps the entry keeps them too.
+func (s *State) Descendants(key string) []LockedPin {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []LockedPin
+	seen := map[string]bool{key: true}
+	var walk func(parent string)
+	walk = func(parent string) {
+		for _, child := range s.file.Dependencies[parent].Uses {
+			if seen[child] {
+				continue
+			}
+			seen[child] = true
+			action, ok := s.file.Dependencies[child]
+			pin, pok := parserlock.ParsePin(child)
+			if !ok || !pok {
+				continue
+			}
+			out = append(out, LockedPin{Key: child, Pin: pin, Action: action, Parent: parent})
+			walk(child)
+		}
+	}
+	walk(key)
+	return out
+}
+
 // MissingPin identifies a dangling reference in a workflow's recorded graph.
 type MissingPin struct {
 	Key    string

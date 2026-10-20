@@ -1314,3 +1314,17 @@ func TestHostConflicts(t *testing.T) {
 	s := &State{file: file, hostname: "tenant.ghe.com"}
 	assert.Equal(t, map[string][]string{"o/split": {"github.com", "tenant.ghe.com"}}, s.HostConflicts())
 }
+
+func TestDescendants(t *testing.T) {
+	s := &State{file: parserlock.File{Dependencies: map[string]parserlock.Action{
+		"o/root@v1":  {Uses: []string{"o/child@v2", "o/gone@v1"}},
+		"o/child@v2": {Uses: []string{"o/leaf@v3", "o/root@v1"}},
+		"o/leaf@v3":  {},
+		"o/other@v1": {},
+	}}}
+	var got []string
+	for _, lp := range s.Descendants("o/root@v1") {
+		got = append(got, lp.Key+"<"+lp.Parent)
+	}
+	assert.Equal(t, []string{"o/child@v2<o/root@v1", "o/leaf@v3<o/child@v2"}, got, "dangling edges and cycles back to the root are skipped")
+}
