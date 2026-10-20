@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/resolve"
@@ -64,8 +65,23 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 			}
 		}
 	}
-	for _, key := range slices.Sorted(maps.Keys(workflows)) {
+	keys := slices.Sorted(maps.Keys(workflows))
+	failed := proveIdentity(ctx, resolver, preview, keys)
+	for _, key := range keys {
 		pin, _ := parserlock.ParsePin(key)
+		if reason, ok := failed[key]; ok {
+			rec.Entries = append(rec.Entries, Entry{
+				NWO:        pin.NWO,
+				Ref:        pin.Ref,
+				SHA:        pin.Ref,
+				Resolution: Unresolved,
+				Issue:      "identity",
+				Reason:     reason + "; nothing is written. Run `gh actions-lock --relock` to re-resolve it",
+				Workflows:  workflows[key],
+				RequiredBy: slices.Sorted(slices.Values(parents[key])),
+			})
+			continue
+		}
 		tag, branch, err := resolver.DiscoverContaining(ctx, pin.Owner, pin.Repo, pin.Ref, pin.Ref)
 		if err != nil {
 			return fmt.Errorf("%s: %w", key, err)
@@ -87,4 +103,40 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 		rec.EntryRepairs = append(rec.EntryRepairs, EntryRepair{Key: key, Ref: ref, Workflows: workflows[key]})
 	}
 	return nil
+}
+
+// proveIdentity checks, in one batch, that each repair candidate's recorded
+// repository still answers to its name with the recorded repo ID and has the
+// recorded commit. No other check in the run need have reached a candidate
+// (a composite reused from the lock carries no manifest), so a repair is
+// admitted only on this proof. It returns why each failed candidate can't be
+// repaired; a check that can't finish fails closed.
+func proveIdentity(ctx context.Context, resolver *resolve.Resolver, preview *lockfile.State, keys []string) map[string]string {
+	gh := resolver.GHClient()
+	if len(keys) == 0 || gh == nil {
+		return nil
+	}
+	checks := make([]ghapi.PinCheck, len(keys))
+	recorded := make([]parserlock.Action, len(keys))
+	for i, key := range keys {
+		pin, _ := parserlock.ParsePin(key)
+		recorded[i], _ = preview.Entry(key)
+		_, sha, _ := strings.Cut(recorded[i].Commit, "-")
+		checks[i] = ghapi.PinCheck{Owner: pin.Owner, Repo: pin.Repo, SHA: sha}
+	}
+	failed := map[string]string{}
+	for i, st := range gh.CheckPins(ctx, checks) {
+		nwo := checks[i].Owner + "/" + checks[i].Repo
+		switch {
+		case st.Err != nil:
+			failed[keys[i]] = fmt.Sprintf("could not confirm %s is the repository locked: %s", nwo, ghapi.Brief(st.Err))
+		case st.RepoMissing:
+			failed[keys[i]] = fmt.Sprintf("%s is missing or not visible to this token", nwo)
+		case recorded[i].RepoID != 0 && st.RepoID != 0 && st.RepoID != recorded[i].RepoID:
+			failed[keys[i]] = fmt.Sprintf("%s now resolves to a different repository than the one locked (repo ID %d, locked %d)", nwo, st.RepoID, recorded[i].RepoID)
+		case !st.CommitFound:
+			failed[keys[i]] = fmt.Sprintf("commit %s is not in %s", parserlock.ShortSHA(checks[i].SHA), nwo)
+		}
+	}
+	return failed
 }

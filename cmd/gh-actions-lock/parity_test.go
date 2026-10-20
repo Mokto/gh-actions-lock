@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1860,11 +1861,16 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 		// replaces gives new.yml an existing lock root its `uses:` no
 		// longer names, so the run replaces it with the shared composite.
 		replaces bool
+		// identity is how the repair candidate's own identity check, which
+		// no other check in the run covers, answers: "" confirms it.
+		identity string
 	}{
-		{"onboarding/repairable", true, false},
-		{"onboarding/unrepairable", false, false},
-		{"root replacement/repairable", true, true},
-		{"root replacement/unrepairable", false, true},
+		{"onboarding/repairable", true, false, ""},
+		{"onboarding/unrepairable", false, false, ""},
+		{"root replacement/repairable", true, true, ""},
+		{"root replacement/unrepairable", false, true, ""},
+		{"onboarding/replaced repository", true, false, "replaced"},
+		{"onboarding/unconfirmed identity", true, false, "inconclusive"},
 	} {
 		repairable := tt.repairable
 		t.Run(tt.name, func(t *testing.T) {
@@ -1873,6 +1879,40 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 				base, compare, tags = "cccccccccccccccccccccccccccccccccccccccc", "diverged", nil
 			}
 			reg := &httpmock.Registry{}
+			candidateChecks := 0
+			for range 4 {
+				reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+					var body struct {
+						Variables map[string]any `json:"variables"`
+					}
+					require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+					data := map[string]any{}
+					for i := 0; ; i++ {
+						owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+						if !ok {
+							break
+						}
+						name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+						_, hasHead := body.Variables[fmt.Sprintf("head%d", i)]
+						id := 1
+						if name == "cache" && !hasHead {
+							candidateChecks++
+							if tt.identity == "inconclusive" {
+								continue
+							}
+							if tt.identity == "replaced" {
+								id = 999
+							}
+						}
+						oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+						data[fmt.Sprintf("a%d", i)] = map[string]any{
+							"nameWithOwner": owner + "/" + name, "databaseId": id,
+							"commit": oid, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+						}
+					}
+					return httpmock.JSONResponse(map[string]any{"data": data})(req)
+				})
+			}
 			for _, repo := range []string{"checkout", "cache", "setup-go"} {
 				for range 4 {
 					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
@@ -1909,6 +1949,14 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 
 			_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive", filepath.Join(".github", "workflows", "new.yml"))
 			after := readTempLockfilePins(t)
+			assert.Equal(t, 1, candidateChecks, "the candidate's identity is checked once")
+			if tt.identity != "" {
+				require.ErrorIs(t, err, errSilent, stderr)
+				assert.Contains(t, stderr, "actions/cache@"+parityTestSHA)
+				assert.Contains(t, stderr, "--relock")
+				assert.Equal(t, lock, after)
+				return
+			}
 			if !repairable {
 				require.ErrorIs(t, err, errSilent, stderr)
 				assert.Contains(t, stderr, "is not on any tag or branch of actions/cache")
@@ -2118,7 +2166,31 @@ jobs:
 				}
 				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
 
-				_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, append(args, "--no-interactive", ci)...)
+				// An unselected workflow's entry is no repair candidate: the
+				// run spends no identity check on it.
+				headless := 0
+				counting := proximaTransport(func(req *http.Request) (*http.Response, error) {
+					if req.Body != nil && httpmock.GraphQL(`commit: object\(oid`)(req) {
+						b, err := io.ReadAll(req.Body)
+						require.NoError(t, err)
+						var body struct {
+							Variables map[string]any `json:"variables"`
+						}
+						require.NoError(t, json.Unmarshal(b, &body))
+						for i := 0; ; i++ {
+							if _, ok := body.Variables[fmt.Sprintf("owner%d", i)]; !ok {
+								break
+							}
+							if _, ok := body.Variables[fmt.Sprintf("head%d", i)]; !ok {
+								headless++
+							}
+						}
+						req.Body = io.NopCloser(bytes.NewReader(b))
+					}
+					return parityFallback{reg}.RoundTrip(req)
+				})
+				_, stderr, err := runCommandWithHTTP(t, counting, append(args, "--no-interactive", ci)...)
+				assert.Zero(t, headless, "no identity check for an entry the run doesn't rewrite")
 				require.NoError(t, err, stderr)
 				assert.Contains(t, stderr, "actions/checkout@"+parityTestSHA+", in .github/workflows/other.yml, records ref "+parserlock.ShortSHA(parityTestSHA))
 				assert.Contains(t, stderr, "run `gh actions-lock` without a path to repair it")
