@@ -11,66 +11,44 @@ import (
 	"time"
 
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/stretchr/testify/assert"
 )
 
 // --- retry transport tests ---
 
-func TestShouldRetry_429(t *testing.T) {
-	rt := &retryTransport{maxRetries: 3}
-	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}}
-	if !rt.shouldRetry(resp) {
-		t.Fatal("expected 429 to be retryable")
-	}
-}
-
-func TestShouldRetry_5xx(t *testing.T) {
-	rt := &retryTransport{maxRetries: 3}
-	for _, code := range []int{500, 502, 503, 504} {
-		resp := &http.Response{StatusCode: code, Header: http.Header{}}
-		if !rt.shouldRetry(resp) {
-			t.Fatalf("expected %d to be retryable", code)
-		}
-	}
-}
-
-func TestShouldRetry_403WithRetryAfter(t *testing.T) {
-	rt := &retryTransport{maxRetries: 3}
-	resp := &http.Response{
-		StatusCode: http.StatusForbidden,
-		Header:     http.Header{"Retry-After": []string{"60"}},
-	}
-	if !rt.shouldRetry(resp) {
-		t.Fatal("expected 403 with Retry-After to be retryable")
-	}
-}
-
-func TestShouldRetry_403WithRateLimitReset(t *testing.T) {
-	rt := &retryTransport{maxRetries: 3}
-	resp := &http.Response{
-		StatusCode: http.StatusForbidden,
-		Header: http.Header{
-			"X-Ratelimit-Reset":     []string{fmt.Sprintf("%d", time.Now().Add(30*time.Second).Unix())},
-			"X-Ratelimit-Remaining": []string{"0"},
+// TestShouldRetry: rate limits and server errors retry; a 403 retries only
+// when it carries rate-limit headers, since a plain 403 is a permission
+// failure.
+func TestShouldRetry(t *testing.T) {
+	reset := fmt.Sprintf("%d", time.Now().Add(30*time.Second).Unix())
+	tests := []struct {
+		name   string
+		status int
+		header http.Header
+		want   bool
+	}{
+		{name: "429", status: http.StatusTooManyRequests, want: true},
+		{name: "500", status: 500, want: true},
+		{name: "502", status: 502, want: true},
+		{name: "503", status: 503, want: true},
+		{name: "504", status: 504, want: true},
+		{name: "403 with Retry-After", status: http.StatusForbidden, header: http.Header{"Retry-After": {"60"}}, want: true},
+		{
+			name: "403 with exhausted rate limit", status: http.StatusForbidden, want: true,
+			header: http.Header{"X-Ratelimit-Reset": {reset}, "X-Ratelimit-Remaining": {"0"}},
 		},
+		{name: "plain 403", status: http.StatusForbidden},
+		{name: "200", status: http.StatusOK},
 	}
-	if !rt.shouldRetry(resp) {
-		t.Fatal("expected 403 with rate limit headers to be retryable")
-	}
-}
-
-func TestShouldRetry_403NoHeaders(t *testing.T) {
 	rt := &retryTransport{maxRetries: 3}
-	resp := &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}}
-	if rt.shouldRetry(resp) {
-		t.Fatal("expected plain 403 (no rate limit headers) to NOT be retryable")
-	}
-}
-
-func TestShouldRetry_200(t *testing.T) {
-	rt := &retryTransport{maxRetries: 3}
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
-	if rt.shouldRetry(resp) {
-		t.Fatal("expected 200 to NOT be retryable")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := tt.header
+			if header == nil {
+				header = http.Header{}
+			}
+			assert.Equal(t, tt.want, rt.shouldRetry(&http.Response{StatusCode: tt.status, Header: header}))
+		})
 	}
 }
 
