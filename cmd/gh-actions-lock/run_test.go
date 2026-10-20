@@ -48,6 +48,9 @@ type graphTransport struct {
 	parentUsesSubAtV1 bool
 	// parentUsesChildSHA makes acme/parent use acme/child at its full SHA.
 	parentUsesChildSHA bool
+	// parentUsesOld makes acme/parent use acme/old@v1, a node action whose
+	// repository was renamed to acme/new.
+	parentUsesOld bool
 }
 
 func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -73,6 +76,9 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				if g.parentUsesOwnSub {
 					yml = "runs:\n  using: composite\n  steps:\n    - uses: $/sub\n"
 				}
+				if g.parentUsesOld {
+					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/old@v1\n"
+				}
 				if g.parentUsesChildSHA {
 					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/child@" + graphChildSHA + "\n"
 				}
@@ -94,6 +100,9 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					sha = graphLeafSHA
 				}
 				yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/leaf@v3\n"
+			case "old", "new":
+				data[fmt.Sprintf("a%d", i)] = testRepoResponse("acme/new", graphLeafSHA, nodeActionYAML)
+				continue
 			case "leaf":
 				if g.leafUsesParent {
 					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/parent@v1.0.0\n"
@@ -144,7 +153,7 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return httpmock.JSONResponse(httpmock.TagListResponse("v2.1.0", graphChildSHA, "v2", graphChildSHA))(req)
 		case "/repos/acme/parent/branches":
 			return httpmock.JSONResponse(httpmock.BranchListResponse("main", graphParentSHA))(req)
-		case "/repos/acme/parent", "/repos/acme/child", "/repos/acme/leaf":
+		case "/repos/acme/parent", "/repos/acme/child", "/repos/acme/leaf", "/repos/acme/old", "/repos/acme/new":
 			return httpmock.JSONResponse(map[string]any{
 				"id": 1, "owner": map[string]any{"id": 1}, "default_branch": "main",
 			})(req)
@@ -629,6 +638,28 @@ func TestCompleteness_NarrowingKeepsRefsCompositesName(t *testing.T) {
 			require.NoError(t, err, stderr)
 		})
 	}
+}
+
+// TestCompleteness_RedirectKeepsCompositeNameOutOfWorkflowRoots: the
+// workflow's uses: of a renamed repository moves to the new name, while a
+// composite that names the old one keeps it as its own entry, reachable only
+// through that composite.
+func TestCompleteness_RedirectKeepsCompositeNameOutOfWorkflowRoots(t *testing.T) {
+	path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/old@v1\n")
+	transport := &graphTransport{parentUsesOld: true}
+	_, stderr, err := runCommandWithHTTP(t, transport, "--no-narrow", path)
+	require.NoError(t, err, stderr)
+	wf, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(wf), "uses: acme/new@v1")
+	file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/new@v1", "acme/parent@v1.0.0"}, file.Workflows[".github/workflows/"+filepath.Base(path)])
+	assert.Equal(t, []string{"acme/old@v1"}, file.Dependencies["acme/parent@v1.0.0"].Uses)
+	assert.Contains(t, file.Dependencies, "acme/old@v1")
+
+	_, stderr, err = runCommandWithHTTP(t, transport, "--verify", path)
+	require.NoError(t, err, stderr)
 }
 
 func TestRun_ParitySSOGuidance(t *testing.T) {

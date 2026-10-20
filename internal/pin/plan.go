@@ -264,7 +264,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 			learned[declared[i]] = d
 		}
 	}
-	deps, parentMap = graph.FlattenRenamed(renames)
+	deps, parentMap, roots := graph.FlattenRenamed(renames)
 	for i, d := range deps {
 		if p, ok := planned[dep.FoldedKey(d.NWO, d.Ref)]; ok {
 			deps[i] = p
@@ -276,12 +276,14 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 			deps[i].Tag, deps[i].Branch = l.Tag, l.Branch
 		}
 	}
-	rootRefs := make([]parserlock.ActionRef, len(unrecordedRefs))
-	for i, ref := range unrecordedRefs {
-		if newRef, ok := renames[dep.FoldedKey(ref.NWO(), ref.Ref)]; ok {
-			ref.Ref = newRef
+	// The graph knows which entries are workflow roots; matching the
+	// workflow's refs would also claim an entry kept for a manifest's name.
+	var rootRefs []parserlock.ActionRef
+	for _, d := range deps {
+		if roots[d.Key()] {
+			owner, repo := d.OwnerRepo()
+			rootRefs = append(rootRefs, parserlock.ActionRef{Owner: owner, Repo: repo, Ref: d.Ref})
 		}
-		rootRefs[i] = ref
 	}
 	rootTracker = lockfile.NewDirectTracker(rootRefs, deps)
 	if len(lookupIssues) > 0 {

@@ -90,7 +90,7 @@ func TestGraphFlattenRenamed(t *testing.T) {
 			})
 			g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "v1"}})
 			require.NoError(t, err)
-			deps, parents := g.FlattenRenamed(map[string]string{"o/action@v1": "v1.0.0"})
+			deps, parents, _ := g.FlattenRenamed(map[string]string{"o/action@v1": "v1.0.0"})
 			var keys []string
 			for _, d := range deps {
 				keys = append(keys, d.Key())
@@ -119,7 +119,7 @@ func TestGraphRewritesBelongToTheReferrer(t *testing.T) {
 		})
 		g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "v1"}})
 		require.NoError(t, err)
-		deps, parents := g.FlattenRenamed(map[string]string{"o/action@v1": "v1.0.0"})
+		deps, parents, _ := g.FlattenRenamed(map[string]string{"o/action@v1": "v1.0.0"})
 		assert.Equal(t, []string{"o/action@v1.0.0", "o/action@v1"}, depKeys(deps))
 		assert.Equal(t, dep.ParentMap{"o/action@v1": {"o/action@v1.0.0"}}, parents)
 	})

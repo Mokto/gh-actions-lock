@@ -156,7 +156,8 @@ func (g *Graph) cycle() *UsesCycleError {
 // and the edges between them as child key → parent keys. An edge to an
 // action that didn't resolve keeps the name its parent's manifest uses.
 func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap) {
-	return g.FlattenRenamed(nil)
+	deps, parents, _ := g.FlattenRenamed(nil)
+	return deps, parents
 }
 
 // FlattenRenamed is Flatten with workflow roots recorded under other refs at
@@ -167,8 +168,9 @@ func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap) {
 // root takes a new ref or a redirect's canonical repository. A manifest's
 // edge keeps the repository and ref it declares, so an action both uses
 // becomes two entries rather than one renamed entry. `$/…` sub-actions follow
-// their parent.
-func (g *Graph) FlattenRenamed(renames map[string]string) ([]dep.Dependency, dep.ParentMap) {
+// their parent. roots holds the Dependency.Key of each workflow root's
+// entry: an entry kept for a manifest's name is not one.
+func (g *Graph) FlattenRenamed(renames map[string]string) (deps []dep.Dependency, parents dep.ParentMap, roots map[string]bool) {
 	// item is one lockfile identity of a node: the repository and ref its
 	// referrer names it by.
 	type item struct {
@@ -233,7 +235,6 @@ func (g *Graph) FlattenRenamed(renames map[string]string) ([]dep.Dependency, dep
 		emitted = append(emitted, byKey[key]...)
 	}
 
-	var deps []dep.Dependency
 	rep := make(map[string]int)
 	for _, it := range emitted {
 		d := depOf(it)
@@ -256,7 +257,11 @@ func (g *Graph) FlattenRenamed(renames map[string]string) ([]dep.Dependency, dep
 		}
 		return it.nwo + "@" + it.ref
 	}
-	parents := make(dep.ParentMap)
+	parents = make(dep.ParentMap)
+	roots = make(map[string]bool, len(rootItems))
+	for it := range rootItems {
+		roots[name(it)] = true
+	}
 	for _, it := range emitted {
 		pk := name(it)
 		for _, c := range children(it) {
@@ -268,5 +273,5 @@ func (g *Graph) FlattenRenamed(renames map[string]string) ([]dep.Dependency, dep
 			parents[ck] = append(parents[ck], pk)
 		}
 	}
-	return deps, parents
+	return deps, parents, roots
 }
