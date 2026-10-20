@@ -685,6 +685,23 @@ func TestCompleteness_RedirectNarrowedOntoAnotherRoot(t *testing.T) {
 	require.NoError(t, err, stderr)
 }
 
+// TestCompleteness_RedirectedRootAndAliasBothNarrowable: narrowing a
+// redirected root keeps it the workflow's root under its new name, while a
+// composite's alias for the old name stays a transitive entry at its own ref.
+func TestCompleteness_RedirectedRootAndAliasBothNarrowable(t *testing.T) {
+	path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/old@v1\n")
+	transport := &graphTransport{parentUsesOld: true}
+	_, stderr, err := runCommandWithHTTP(t, transport, path)
+	require.NoError(t, err, stderr)
+	file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/new@v1.0.0", "acme/parent@v1.0.0"}, file.Workflows[".github/workflows/"+filepath.Base(path)])
+	assert.Equal(t, []string{"acme/old@v1"}, file.Dependencies["acme/parent@v1.0.0"].Uses)
+
+	_, stderr, err = runCommandWithHTTP(t, transport, "--verify", path)
+	require.NoError(t, err, stderr)
+}
+
 func TestRun_ParitySSOGuidance(t *testing.T) {
 	const message = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
 	for _, mode := range []struct {
