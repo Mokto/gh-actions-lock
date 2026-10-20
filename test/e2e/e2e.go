@@ -40,6 +40,17 @@ const (
 	stubToken = "gho_fake_default_stub_token"
 )
 
+// CoverDir resolves raw to an absolute, existing directory. The binary runs
+// from each scenario's repository, so a relative GOCOVERDIR would resolve
+// there and its coverage would be silently dropped.
+func CoverDir(raw string) (string, error) {
+	dir, err := filepath.Abs(raw)
+	if err != nil {
+		return "", err
+	}
+	return dir, os.MkdirAll(dir, 0o755)
+}
+
 // Build compiles the binary into dir, instrumented for coverage if cover.
 func Build(dir string, cover bool) (string, error) {
 	bin := filepath.Join(dir, "gh-actions-lock")
@@ -75,14 +86,7 @@ type result struct {
 // scenario's expectations.
 func (r *Runner) Run(t *testing.T, sc scenarios.Scenario) {
 	dir := t.TempDir()
-	env := environ()
-	if sc.Live() {
-		token := liveToken()
-		if token == "" {
-			t.Skip("no GH_TOKEN, GITHUB_TOKEN, or gh auth token")
-		}
-		env["GH_TOKEN"] = token
-	}
+	env, _ := r.scenarioEnv(t, sc)
 	if sc.LiveRepo != "" {
 		if out, err := exec.Command("git", "clone", "--depth=1", "--quiet", "https://github.com/"+sc.LiveRepo+".git", dir).CombinedOutput(); err != nil {
 			t.Skipf("clone %s failed: %v\n%s", sc.LiveRepo, err, out)
@@ -94,7 +98,35 @@ func (r *Runner) Run(t *testing.T, sc scenarios.Scenario) {
 		require.NoError(t, os.RemoveAll(filepath.Join(dir, lockPath)))
 	}
 
-	env["GH_ACTIONS_LOCK_CACHE_DIR"] = t.TempDir()
+	res := r.exec(t, dir, env, sc.Flags, sc.Input)
+	r.check(t, sc, dir, res)
+	if len(sc.Expect.ThenRun) > 0 {
+		then := r.exec(t, dir, env, sc.Expect.ThenRun, nil)
+		assert.Equal(t, 0, then.exit, "then_run %v:\n%s%s", sc.Expect.ThenRun, then.stdout, then.output)
+	}
+}
+
+// scenarioEnv returns the binary's environment for sc and the private home
+// directory it runs under. Each scenario gets its own HOME and XDG dirs, so
+// run logs, gh config and the user config file never leak between parallel
+// scenarios or touch the developer's own.
+func (r *Runner) scenarioEnv(t *testing.T, sc scenarios.Scenario) (map[string]string, string) {
+	env := environ()
+	if sc.Live() {
+		token := liveToken()
+		if token == "" {
+			t.Skip("no GH_TOKEN, GITHUB_TOKEN, or gh auth token")
+		}
+		env["GH_TOKEN"] = token
+	}
+
+	home := t.TempDir()
+	env["HOME"] = home
+	env["XDG_CACHE_HOME"] = filepath.Join(home, ".cache")
+	env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
+	env["XDG_STATE_HOME"] = filepath.Join(home, ".local", "state")
+	env["GH_CONFIG_DIR"] = filepath.Join(home, ".config", "gh")
+	env["GH_ACTIONS_LOCK_CONFIG"] = os.DevNull
 	if r.CoverDir != "" {
 		env["GOCOVERDIR"] = r.CoverDir
 	}
@@ -111,8 +143,6 @@ func (r *Runner) Run(t *testing.T, sc scenarios.Scenario) {
 		env["GH_HOST"] = srv.Listener.Addr().String()
 		env["GH_ENTERPRISE_TOKEN"] = stubToken
 		env["GH_ACTIONS_LOCK_INSECURE"] = "1"
-		env["GH_CONFIG_DIR"] = t.TempDir()
-		env["GH_ACTIONS_LOCK_CONFIG"] = os.DevNull
 	}
 	for k, v := range sc.Env {
 		if v == nil {
@@ -125,13 +155,7 @@ func (r *Runner) Run(t *testing.T, sc scenarios.Scenario) {
 		// CI suppresses prompts.
 		delete(env, "CI")
 	}
-
-	res := r.exec(t, dir, env, sc.Flags, sc.Input)
-	r.check(t, sc, dir, res)
-	if len(sc.Expect.ThenRun) > 0 {
-		then := r.exec(t, dir, env, sc.Expect.ThenRun, nil)
-		assert.Equal(t, 0, then.exit, "then_run %v:\n%s%s", sc.Expect.ThenRun, then.stdout, then.output)
-	}
+	return env, home
 }
 
 func environ() map[string]string {
@@ -339,6 +363,15 @@ func (r *Runner) check(t *testing.T, sc scenarios.Scenario, dir string, res resu
 // checkDeps asserts the lockfile is closed over its references: direct
 // workflow entries are dependencies that the workflow file still uses, and
 // every dependency's own uses are dependencies.
+// usesRef reports whether workflow src has a `uses:` of nwo (or a subpath)
+// at exactly ref. Owner and repository match case-insensitively; refs are
+// case-sensitive and must not be a prefix of a longer ref.
+func usesRef(src, nwo, ref string) bool {
+	re := regexp.MustCompile(`(?m)^\s*(?:-\s*)?uses:\s*['"]?(?i:` + regexp.QuoteMeta(nwo) + `)(?:/[^@\s'"]+)?@` +
+		regexp.QuoteMeta(ref) + `['"]?\s*(?:#.*)?$`)
+	return re.MatchString(src)
+}
+
 func checkDeps(t *testing.T, dir string, lock []byte, direct, indirect bool) {
 	var lf struct {
 		Workflows    map[string][]string `yaml:"workflows"`
@@ -358,8 +391,7 @@ func checkDeps(t *testing.T, dir string, lock []byte, direct, indirect bool) {
 				if err != nil || !ok {
 					continue
 				}
-				uses := `uses:\s*` + regexp.QuoteMeta(nwo) + `(?:/[^@]+)?@` + regexp.QuoteMeta(tag)
-				assert.Regexp(t, uses, string(src), "%s no longer uses %s", wf, ref)
+				assert.True(t, usesRef(string(src), nwo, tag), "%s no longer uses %s", wf, ref)
 			}
 		}
 	}

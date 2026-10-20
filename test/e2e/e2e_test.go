@@ -3,11 +3,15 @@ package e2e
 import (
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/github/gh-actions-lock/test/scenarios"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,6 +33,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	coverDir := os.Getenv("E2E_COVERDIR")
+	if coverDir != "" {
+		if coverDir, err = CoverDir(coverDir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
 	bin, err := Build(dir, coverDir != "")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -73,4 +83,76 @@ func selected(sc scenarios.Scenario, tags []string) bool {
 		}
 	}
 	return false
+}
+
+// TestScenarioStateStaysInScenarioHome: the binary writes a run log under
+// the user cache dir on every run and reads a user config file. Both must
+// resolve inside the scenario's own home, never the developer's.
+func TestScenarioStateStaysInScenarioHome(t *testing.T) {
+	cat, err := scenarios.Load()
+	require.NoError(t, err)
+	i := slices.IndexFunc(cat.Scenarios, func(s scenarios.Scenario) bool { return s.Name == "api_404_not_found" })
+	require.GreaterOrEqual(t, i, 0)
+	sc := cat.Scenarios[i]
+
+	env, home := runner.scenarioEnv(t, sc)
+	assert.Equal(t, os.DevNull, env["GH_ACTIONS_LOCK_CONFIG"])
+	for _, k := range []string{"HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR"} {
+		assert.True(t, strings.HasPrefix(env[k], home), "%s=%q is outside the scenario home", k, env[k])
+	}
+
+	dir := t.TempDir()
+	writeRepo(t, dir, sc.Fixtures)
+	res := runner.exec(t, dir, env, sc.Flags, nil)
+	require.NotZero(t, res.exit, "the scenario should fail and log it")
+
+	var logs []string
+	require.NoError(t, filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && filepath.Base(filepath.Dir(filepath.Dir(path))) == "gh-actions-lock" {
+			logs = append(logs, path)
+		}
+		return err
+	}))
+	assert.NotEmpty(t, logs, "run log was not written under the scenario home")
+}
+
+func TestUsesRef(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		nwo  string
+		ref  string
+		want bool
+	}{
+		{name: "exact step", src: "    - uses: actions/checkout@v4\n", nwo: "actions/checkout", ref: "v4", want: true},
+		{name: "job-level reusable workflow", src: "    uses: octo/wf/.github/workflows/ci.yml@main\n", nwo: "octo/wf", ref: "main", want: true},
+		{name: "subpath", src: "  - uses: actions/cache/save@v4\n", nwo: "actions/cache", ref: "v4", want: true},
+		{name: "quoted with comment", src: "  - uses: 'actions/checkout@v4' # pinned\n", nwo: "actions/checkout", ref: "v4", want: true},
+		{name: "owner and repo fold case", src: "  - uses: Actions/Checkout@v4\n", nwo: "actions/checkout", ref: "v4", want: true},
+		{name: "longer ref is not a match", src: "  - uses: actions/checkout@v4.2.2\n", nwo: "actions/checkout", ref: "v4", want: false},
+		{name: "ref case is significant", src: "  - uses: actions/checkout@Main\n", nwo: "actions/checkout", ref: "main", want: false},
+		{name: "longer repository name is not a match", src: "  - uses: actions/checkout-extra@v4\n", nwo: "actions/checkout", ref: "v4", want: false},
+		{name: "commented out", src: "  # - uses: actions/checkout@v4\n", nwo: "actions/checkout", ref: "v4", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, usesRef(tt.src, tt.nwo, tt.ref))
+		})
+	}
+}
+
+// TestCoverDirIsAbsolute: scenarios run from their own repository, so a
+// relative coverage directory must be resolved before it reaches GOCOVERDIR.
+func TestCoverDirIsAbsolute(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	got, err := CoverDir("cov")
+	require.NoError(t, err)
+	assert.True(t, filepath.IsAbs(got), got)
+	assert.DirExists(t, got)
+	want, err := filepath.EvalSymlinks(filepath.Join(root, "cov"))
+	require.NoError(t, err)
+	resolved, err := filepath.EvalSymlinks(got)
+	require.NoError(t, err)
+	assert.Equal(t, want, resolved)
 }
