@@ -54,30 +54,12 @@ func (d Dependency) FullName() string {
 	return d.NWO
 }
 
-// FoldedKey is the identity of owner/repo@ref, compared the way the Actions
-// backend and lockfile keys compare it: owner/repo case-insensitive, ref
-// exact (git refs are case-sensitive, and may contain "@"). Build every
-// identity key with it.
+// FoldedKey is E1: owner/repo case-insensitive, ref exactly as written. It
+// compares spellings from one source only (see refid.go); comparing a
+// reference with one from another source must use RefKey. The remaining
+// callers are tracked by TestReferenceIdentityBoundary until they move.
 func FoldedKey(nwo, ref string) string {
 	return strings.ToLower(nwo) + "@" + ref
-}
-
-// RefKey is FoldedKey for matching a `uses:` ref against recorded entries.
-// A full SHA names a commit, which git compares case-insensitively, so it is
-// folded too; a tag or branch name stays exact. Lockfile keys keep the case
-// they were written in, so look entries up by their own key, not this one.
-func RefKey(nwo, ref string) string {
-	if parserlock.IsFullSha(ref) {
-		ref = strings.ToLower(ref)
-	}
-	return FoldedKey(nwo, ref)
-}
-
-// RefKeyOf is RefKey for an owner/repo@ref string: use it to match a
-// reference as a manifest or workflow writes it against recorded keys.
-func RefKeyOf(key string) string {
-	nwo, ref, _ := strings.Cut(key, "@")
-	return RefKey(nwo, ref)
 }
 
 // FoldKey is FoldedKey for an owner/repo@ref string. Refs can contain "@";
