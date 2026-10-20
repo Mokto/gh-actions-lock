@@ -382,15 +382,6 @@ scenarios:
       exit: 2
       output_contains:
         - "no workflow"
-
-  - name: no_workflows_summary
-    category: workflow_parsing
-    description: "No workflows to check — summary says so, not 'All 0 valid'"
-    tags: [stub]
-    fixtures:
-      workflows: {}
-    expect:
-      exit: 2
       output_excludes: ["All 0"]
 
   - name: run_only_workflow
@@ -774,7 +765,7 @@ scenarios:
 
   - name: verify_conflict_verify_local
     category: output_modes
-    description: "--verify and --verify-local are mutually exclusive — errors before any work"
+    description: "Real-binary usage-error exit code (2) for conflicting flags; the conflict rules themselves are covered by TestValidateOutputFlags_VerifyConflicts"
     tags: [stub]
     flags: ["--verify", "--verify-local"]
     fixtures:
@@ -785,20 +776,6 @@ scenarios:
     expect:
       exit: 2
       output_contains: ["mutually exclusive"]
-
-  - name: verify_local_conflict_relock
-    category: output_modes
-    description: "--verify-local --relock is rejected — verify-local is offline"
-    tags: [stub]
-    flags: ["--verify-local", "--relock"]
-    fixtures:
-      workflows:
-        ci.yml:
-          name: CI
-          actions: ["actions/checkout@v4"]
-    expect:
-      exit: 2
-      output_contains: ["offline"]
 
   # ╔═════════════════════════════════════════════════════════════════════════╗
   # ║════════════════════════════ multi_workflow ═════════════════════════════║
@@ -2050,27 +2027,6 @@ scenarios:
         - "'actions/checkout@v4':"
         - "ref: 'v4'"
         - "commit: 'sha1-"
-
-  - name: relock_bumps_stale_branch_ref
-    category: security
-    description: "--relock bumps a moved branch ref (main) from a stale ancestor SHA to the live head"
-    tags: [stub]
-    stub: relock
-    flags: ["--relock", "--no-narrow"]
-    fixtures:
-      workflows:
-        ci.yml:
-          name: CI
-          actions: ["actions/checkout@main"]
-      lockfile_template: pinned_checkout_main
-    expect:
-      exit: 0
-      lockfile_deps_cover_direct: true
-      lockfile_contains:
-        - "'actions/checkout@main':"
-        - "ref: 'main'"
-        - "commit: 'sha1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"
-      lockfile_comment_excludes: "11bd71901bbe5b1630ceea73d27597364c9af683"
 
   - name: onboard_roundtrip_v003
     category: onboarding

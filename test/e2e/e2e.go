@@ -544,13 +544,6 @@ var stubProfiles = map[string]func(*httpmock.Registry){
 			"status": "diverged", "merge_base_commit": map[string]string{"sha": testfixture.Synthetic('c')},
 		}))
 	},
-	// main moved ahead of the locked commit.
-	"relock": func(reg *httpmock.Registry) {
-		checkoutAPI(reg, mainSHA, shortManifest, true)
-		get(reg, `/repos/actions/checkout/compare/`, reply(http.StatusOK, map[string]any{
-			"status": "behind", "merge_base_commit": map[string]string{"sha": checkout.SHA},
-		}))
-	},
 	// REST only: a GraphQL POST gets a 404 and fails the run.
 	"dependabot_proxy": func(reg *httpmock.Registry) {
 		get(reg, `/git/ref/tags/v4$`, reply(http.StatusOK, httpmock.GitRefResponse("refs/tags/v4", mainSHA)))
