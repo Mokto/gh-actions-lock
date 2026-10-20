@@ -137,12 +137,16 @@ func TestResolveRecursiveRejectsMalformedManifest(t *testing.T) {
 // refresh can't write a graph that --verify then rejects.
 func TestResolveRecursiveMissingManifest(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		path    string
-		wantErr bool
+		name       string
+		path       string
+		dockerfile string
+		wantErr    bool
 	}{
 		{name: "missing action cannot establish coverage", path: "action", wantErr: true},
 		{name: "callee workflow owns its own lockfile", path: ".github/workflows/callee.yml"},
+		// The Actions backend runs a Dockerfile in the action directory.
+		{name: "Dockerfile-only action", path: "action", dockerfile: "dockerfile"},
+		{name: "lowercase dockerfile-only action", path: "action", dockerfile: "dockerfileLower"},
 	} {
 		for mode, locked := range map[string]bool{"live refs": false, "locked commits": true} {
 			t.Run(tt.name+"/"+mode, func(t *testing.T) {
@@ -153,10 +157,14 @@ func TestResolveRecursiveMissingManifest(t *testing.T) {
 				if tt.wantErr && !locked {
 					fetches = 2
 				}
+				object := map[string]any{"oid": sha}
+				if tt.dockerfile != "" {
+					object[tt.dockerfile] = map[string]any{"oid": sha}
+				}
 				for range fetches {
 					reg.Register(httpmock.GraphQL(`file: file\(path`), httpmock.JSONResponse(map[string]any{
 						"data": map[string]any{"a0": map[string]any{
-							"nameWithOwner": "o/root", "object": map[string]any{"oid": sha},
+							"nameWithOwner": "o/root", "object": object,
 						}},
 					}))
 				}

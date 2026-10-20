@@ -38,7 +38,11 @@ type ActionFileResult struct {
 	Ref         string
 	CommitOID   string
 	ActionYML   string
-	Err         error
+	// Dockerfile reports a Dockerfile-only action: no action.yml or
+	// action.yaml, but a Dockerfile or dockerfile, which the Actions backend
+	// also runs. It has no nested uses.
+	Dockerfile bool
+	Err        error
 }
 
 // repoResponse is the raw GraphQL response shape for a single repository alias.
@@ -56,6 +60,8 @@ type repoResponse struct {
 				Text string `json:"text"`
 			} `json:"object"`
 		} `json:"fileYaml"`
+		Dockerfile      *struct{} `json:"dockerfile"`
+		DockerfileLower *struct{} `json:"dockerfileLower"`
 	} `json:"object"`
 }
 
@@ -208,13 +214,10 @@ func buildActionFileQuery(refs []ActionFileRequest) (string, map[string]any, map
 		exprVar := fmt.Sprintf("expr%d", i)
 		ymlVar := fmt.Sprintf("yml%d", i)
 		yamlVar := fmt.Sprintf("yaml%d", i)
+		dockerVar := fmt.Sprintf("docker%d", i)
+		dockerLowerVar := fmt.Sprintf("dockerLower%d", i)
 
-		ymlPath := "action.yml"
-		yamlPath := "action.yaml"
-		if ref.Path != "" {
-			ymlPath = ref.Path + "/action.yml"
-			yamlPath = ref.Path + "/action.yaml"
-		}
+		ymlPath, yamlPath := actionFilePath(ref.Path, "action.yml"), actionFilePath(ref.Path, "action.yaml")
 
 		vars[ownerVar] = ref.Owner
 		vars[nameVar] = ref.Repo
@@ -223,12 +226,14 @@ func buildActionFileQuery(refs []ActionFileRequest) (string, map[string]any, map
 		vars[exprVar] = ref.Ref + "^{commit}"
 		vars[ymlVar] = ymlPath
 		vars[yamlVar] = yamlPath
+		vars[dockerVar] = actionFilePath(ref.Path, "Dockerfile")
+		vars[dockerLowerVar] = actionFilePath(ref.Path, "dockerfile")
 
 		if i > 0 {
 			decl.WriteString(", ")
 		}
-		fmt.Fprintf(&decl, "$%s: String!, $%s: String!, $%s: String!, $%s: String!, $%s: String!",
-			ownerVar, nameVar, exprVar, ymlVar, yamlVar)
+		fmt.Fprintf(&decl, "$%s: String!, $%s: String!, $%s: String!, $%s: String!, $%s: String!, $%s: String!, $%s: String!",
+			ownerVar, nameVar, exprVar, ymlVar, yamlVar, dockerVar, dockerLowerVar)
 
 		fmt.Fprintf(&body, " %s: repository(owner: $%s, name: $%s) {", alias, ownerVar, nameVar)
 		body.WriteString(" nameWithOwner")
@@ -236,6 +241,8 @@ func buildActionFileQuery(refs []ActionFileRequest) (string, map[string]any, map
 		body.WriteString(" ... on Commit { oid")
 		fmt.Fprintf(&body, " file: file(path: $%s) { object { ... on Blob { text } } }", ymlVar)
 		fmt.Fprintf(&body, " fileYaml: file(path: $%s) { object { ... on Blob { text } } }", yamlVar)
+		fmt.Fprintf(&body, " dockerfile: file(path: $%s) { oid }", dockerVar)
+		fmt.Fprintf(&body, " dockerfileLower: file(path: $%s) { oid }", dockerLowerVar)
 		body.WriteString(" }")
 		body.WriteString(" }")
 		body.WriteString(" }")
@@ -286,7 +293,7 @@ func parseActionFileResponse(data map[string]json.RawMessage, refs []ActionFileR
 					// Both metadata spellings are queried; either may be absent.
 					// Reusable workflows can have neither.
 					if item.Type == "NOT_FOUND" && len(item.Path) == 3 && item.Path[1] == "object" &&
-						(item.Path[2] == "file" || item.Path[2] == "fileYaml") {
+						(item.Path[2] == "file" || item.Path[2] == "fileYaml" || item.Path[2] == "dockerfile" || item.Path[2] == "dockerfileLower") {
 						continue
 					}
 					results[idx].Err = fmt.Errorf("%s", item.Message)
@@ -332,6 +339,8 @@ func parseActionFileResponse(data map[string]json.RawMessage, refs []ActionFileR
 			results[idx].ActionYML = repo.Object.File.Object.Text
 		} else if repo.Object.FileYAML != nil && repo.Object.FileYAML.Object != nil {
 			results[idx].ActionYML = repo.Object.FileYAML.Object.Text
+		} else {
+			results[idx].Dockerfile = repo.Object.Dockerfile != nil || repo.Object.DockerfileLower != nil
 		}
 	}
 
@@ -410,4 +419,13 @@ func canonicalize(r *ActionFileResult, canonical string) error {
 	r.OriginalNWO = r.Owner + "/" + r.Repo
 	r.Owner, r.Repo = owner, name
 	return nil
+}
+
+// actionFilePath is name in an action's directory: the repository root, or
+// a sub-action path.
+func actionFilePath(dir, name string) string {
+	if dir == "" {
+		return name
+	}
+	return dir + "/" + name
 }

@@ -250,10 +250,9 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 		var nextPending []resolutionRequest
 		for i := range deps {
 			yml := actionYMLs[i]
+			// No manifest: a reusable workflow or a Dockerfile-only action.
+			// Fetching rejected anything else.
 			if yml == "" {
-				if locked != nil && !isWorkflowCallee(deps[i].Path) {
-					resolveErr = errors.Join(resolveErr, fmt.Errorf("action manifest is missing at locked commit for %s", deps[i].Key()))
-				}
 				continue
 			}
 
@@ -451,7 +450,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 			var errs []error
 			for j, idx := range b.idxs {
 				ref := refs[idx].ref
-				if j < len(res) && res[j].Err == nil && res[j].ActionYML == "" && !isWorkflowCallee(res[j].Path) {
+				if j < len(res) && res[j].Err == nil && res[j].ActionYML == "" && !res[j].Dockerfile && !isWorkflowCallee(res[j].Path) {
 					errs = append(errs, fmt.Errorf("%s@%s: action manifest is missing at %s", ref.NWO(), ref.Ref, res[j].CommitOID))
 				} else if j < len(res) && res[j].Err == nil {
 					d := dep.Dependency{

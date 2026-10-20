@@ -509,3 +509,46 @@ func TestCompareRefs_SSOFallback(t *testing.T) {
 		t.Fatalf("got status=%q base=%q", status, base)
 	}
 }
+
+// TestResolveActionFiles_RESTDockerfileOnlyAction: without action.yml, the
+// Actions backend runs a Dockerfile or dockerfile in the action directory.
+func TestResolveActionFiles_RESTDockerfileOnlyAction(t *testing.T) {
+	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+	for _, tt := range []struct {
+		name, file string
+		want       bool
+	}{
+		{name: "Dockerfile", file: "sub/Dockerfile", want: true},
+		{name: "dockerfile", file: "sub/dockerfile", want: true},
+		{name: "neither", file: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.Contains(r.URL.Path, "/commits/"):
+					json.NewEncoder(w).Encode(map[string]string{"sha": "abc123def456abc123def456abc123def456abc1"})
+				case tt.file != "" && strings.HasSuffix(r.URL.Path, "/contents/"+tt.file):
+					fmt.Fprint(w, "FROM alpine")
+				case strings.Count(r.URL.Path, "/") == 3:
+					json.NewEncoder(w).Encode(map[string]string{"full_name": strings.TrimPrefix(r.URL.Path, "/repos/")})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			c, err := New("github.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.anonBaseURL = srv.URL
+
+			got := c.ResolveActionFiles(context.Background(), []ActionFileRequest{{Owner: "o", Repo: "docker", Path: "sub", Ref: "v1"}})[0]
+			if got.Err != nil {
+				t.Fatal(got.Err)
+			}
+			if got.Dockerfile != tt.want || got.ActionYML != "" {
+				t.Fatalf("Dockerfile = %v, ActionYML = %q; want Dockerfile = %v", got.Dockerfile, got.ActionYML, tt.want)
+			}
+		})
+	}
+}

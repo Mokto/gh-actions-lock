@@ -349,12 +349,7 @@ func (c *Client) resolveAnonymous(ctx context.Context, ref ActionFileRequest) Ac
 	result.CommitOID = sha
 
 	// Fetch action.yml (try .yml first, then .yaml).
-	ymlPath := "action.yml"
-	yamlPath := "action.yaml"
-	if ref.Path != "" {
-		ymlPath = ref.Path + "/action.yml"
-		yamlPath = ref.Path + "/action.yaml"
-	}
+	ymlPath, yamlPath := actionFilePath(ref.Path, "action.yml"), actionFilePath(ref.Path, "action.yaml")
 
 	content, err := c.anonGetFileContent(ctx, base, result.Owner, result.Repo, sha, ymlPath)
 	if err != nil {
@@ -369,6 +364,10 @@ func (c *Client) resolveAnonymous(ctx context.Context, ref ActionFileRequest) Ac
 			// must not silently truncate a composite's dependency graph.
 			if code, _ := StatusCode(err); code != http.StatusNotFound {
 				result.Err = err
+				return result
+			}
+			if !strings.HasPrefix(ref.Path, ".github/workflows/") {
+				result.Dockerfile, result.Err = c.anonDockerfile(ctx, base, result.Owner, result.Repo, sha, ref.Path)
 			}
 			return result
 		}
@@ -453,4 +452,19 @@ func escapeContentPath(p string) string {
 		segments[i] = url.PathEscape(s)
 	}
 	return strings.Join(segments, "/")
+}
+
+// anonDockerfile reports whether an action directory without action.yml
+// holds a Dockerfile or dockerfile, which the Actions backend also runs.
+func (c *Client) anonDockerfile(ctx context.Context, base, owner, repo, sha, dir string) (bool, error) {
+	for _, name := range []string{"Dockerfile", "dockerfile"} {
+		_, err := c.anonGetFileContent(ctx, base, owner, repo, sha, actionFilePath(dir, name))
+		if err == nil {
+			return true, nil
+		}
+		if code, _ := StatusCode(err); code != http.StatusNotFound {
+			return false, err
+		}
+	}
+	return false, nil
 }
