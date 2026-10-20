@@ -199,7 +199,8 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 
 	// Resolve live state for unrecorded refs only.
 	status("resolving " + wr.Path)
-	deps, parentMap, resolveErr := opts.Resolver.ResolveAllRecursive(ctx, unrecordedRefs)
+	graph, resolveErr := opts.Resolver.ResolveGraph(ctx, unrecordedRefs)
+	deps, parentMap := graph.Flatten()
 	if resolveErr != nil {
 		// A resolved root is not pinnable when its transitive graph is incomplete.
 		for _, ref := range unrecordedRefs {
@@ -223,6 +224,10 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	status("pinning " + wr.Path)
 	rewrites := make(map[string]string)
 	preservedDeps := make(map[int]bool)
+	declared := make([]string, len(deps))
+	for i, d := range deps {
+		declared[i] = graphKey(d.NWO, d.Ref)
+	}
 
 	narrowDirectDeps(ctx, opts, deps, rewriteTracker, rewrites, preservedDeps)
 	reRecorded := preserveReRecorded(opts, deps, rewriteTracker, preservedDeps)
@@ -233,10 +238,43 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	if err != nil {
 		return planResult{}, err
 	}
+	// Narrowing and reverse lookup choose another ref for a root at the same
+	// commit. Record that from the graph rather than editing entries: a
+	// composite that names the old ref, itself or through a sub-action,
+	// still needs it.
+	renames := make(map[string]string)
+	for i, d := range deps {
+		if graphKey(d.NWO, d.Ref) != declared[i] {
+			renames[declared[i]] = d.Ref
+		}
+	}
 	// Deps that ReverseLookup couldn't resolve (orphaned commits, bare SHAs
 	// with no containing ref) become Unresolved entries rather than aborting.
+	skipKeys := make(map[string]bool, len(lookupIssues))
+	for _, issue := range lookupIssues {
+		skipKeys[declared[issue.Index]] = true
+	}
+	// The planned deps carry what narrowing and reverse lookup learned (tag,
+	// branch); the graph adds the old refs composites still name, and edges.
+	planned := make(map[string]dep.Dependency, len(deps))
+	for _, d := range deps {
+		planned[graphKey(d.NWO, d.Ref)] = d
+	}
+	deps, parentMap = graph.FlattenRenamed(renames)
+	for i, d := range deps {
+		if p, ok := planned[graphKey(d.NWO, d.Ref)]; ok {
+			deps[i] = p
+		}
+	}
+	rootRefs := make([]parserlock.ActionRef, len(unrecordedRefs))
+	for i, ref := range unrecordedRefs {
+		if newRef, ok := renames[graphKey(ref.NWO(), ref.Ref)]; ok {
+			ref.Ref = newRef
+		}
+		rootRefs[i] = ref
+	}
+	rootTracker = lockfile.NewDirectTracker(rootRefs, deps)
 	if len(lookupIssues) > 0 {
-		skip := make(map[int]bool, len(lookupIssues))
 		for _, issue := range lookupIssues {
 			entries = append(entries, Entry{
 				NWO:        issue.NWO,
@@ -247,39 +285,19 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 				Reason:     issue.Message,
 				Workflows:  []string{wr.Path},
 			})
-			skip[issue.Index] = true
 		}
 		// Remove failed deps so they don't flow into pinning/commit.
 		filtered := deps[:0]
-		for i, d := range deps {
-			if !skip[i] {
+		for _, d := range deps {
+			if !skipKeys[graphKey(d.NWO, d.Ref)] {
 				filtered = append(filtered, d)
 			}
 		}
 		deps = filtered
-		// Rebuild the root tracker against the filtered slice.
-		rootTracker = lockfile.NewDirectTracker(unrecordedRefs, deps)
+		rootTracker = lockfile.NewDirectTracker(rootRefs, deps)
 	}
 	for k, v := range rlRewrites {
 		rewrites[k] = v
-	}
-
-	// Update parent map keys to reflect narrowed/normalized refs.
-	parentRewrites := make(map[string]string)
-	for i := range deps {
-		dep := &deps[i]
-		newKey := dep.Key()
-		// Compare against original key before narrowing.
-		for oldUses, newUses := range rewrites {
-			if newUses == dep.NWO+"@"+dep.Ref {
-				// The dep was rewritten from oldUses.
-				parentRewrites[oldUses] = newKey
-			}
-		}
-		_ = dep
-	}
-	if len(parentRewrites) > 0 {
-		parentMap = dep.RekeyParentMap(parentMap, parentRewrites)
 	}
 
 	// Record workflow plan if there are rewrites.
@@ -316,6 +334,11 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	entries = append(entries, informationalEntries(wr, opts)...)
 
 	return planResult{entries: entries, wplans: wplans}, nil
+}
+
+// graphKey matches Graph's entry key: owner/repo folded, ref exact.
+func graphKey(nwo, ref string) string {
+	return strings.ToLower(nwo) + "@" + ref
 }
 
 // transferRewrites moves each redirected root's `uses:` in this workflow

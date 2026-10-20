@@ -124,6 +124,12 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 	return deps, parents, err
 }
 
+// ResolveGraph is ResolveAllRecursive's graph, for callers that record
+// roots under other refs (see Graph.FlattenRenamed).
+func (r *Resolver) ResolveGraph(ctx context.Context, refs []parserlock.ActionRef) (*Graph, error) {
+	return r.resolveRecursive(ctx, refs, nil)
+}
+
 // UnlockedRefError identifies a dependency discovered in a locked manifest
 // without a recorded commit. Verification must not resolve its mutable ref.
 type UnlockedRefError struct {
@@ -310,7 +316,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 				// Edges are path-aware: a sub-action of the same repo+ref is
 				// its own node, so its own dependencies and any cycle through
 				// it stay visible. The seen{} set makes this enqueue loop-safe.
-				g.addEdge(requested[i], actionRef)
+				g.addEdge(requested[i], actionRef, strings.HasPrefix(use, selfRepositoryPrefix))
 				nextPending = append(nextPending, request)
 			}
 		}

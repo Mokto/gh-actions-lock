@@ -29,6 +29,9 @@ type graphNode struct {
 	dep      dep.Dependency
 	resolved bool
 	children []ghapi.ActionRef
+	// self marks children named with `$/…`: they resolve at whatever ref
+	// their parent runs at, so a renamed parent renames them too.
+	self map[ghapi.ActionRef]bool
 }
 
 func newGraph(roots []parserlock.ActionRef) *Graph {
@@ -59,10 +62,17 @@ func (g *Graph) setResolved(ref parserlock.ActionRef, d dep.Dependency) {
 	g.order = append(g.order, cacheKey(ref))
 }
 
-func (g *Graph) addEdge(parent, child parserlock.ActionRef) {
+func (g *Graph) addEdge(parent, child parserlock.ActionRef, self bool) {
 	n := g.nodes[g.node(parent)]
-	if c := g.node(child); !slices.Contains(n.children, c) {
+	c := g.node(child)
+	if !slices.Contains(n.children, c) {
 		n.children = append(n.children, c)
+	}
+	if self {
+		if n.self == nil {
+			n.self = make(map[ghapi.ActionRef]bool)
+		}
+		n.self[c] = true
 	}
 }
 
@@ -141,10 +151,86 @@ func (g *Graph) cycle() *UsesCycleError {
 // and the edges between them as child key → parent keys. An edge to an
 // action that didn't resolve keeps the name its parent's manifest uses.
 func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap) {
+	return g.FlattenRenamed(nil)
+}
+
+// FlattenRenamed is Flatten with workflow roots recorded under other refs at
+// the same commit, as narrowing (v2 → v2.1.0) and reverse lookup choose.
+// renames maps a root's owner/repo@ref to its new ref. A renamed root keeps
+// its edges, and its `$/…` sub-actions follow it. The old ref stays only
+// where another action's manifest still names it.
+func (g *Graph) FlattenRenamed(renames map[string]string) ([]dep.Dependency, dep.ParentMap) {
+	type item struct {
+		key ghapi.ActionRef
+		// ref overrides the node's ref for a renamed root and its `$/…`
+		// sub-actions.
+		ref string
+	}
+	renamed := make(map[ghapi.ActionRef]bool)
+	var roots []item
+	for _, key := range g.roots {
+		n := g.nodes[key]
+		it := item{key: key}
+		if newRef, ok := renames[flatKey(n.dep.NWO, n.dep.Ref)]; ok && n.resolved {
+			it.ref = newRef
+			renamed[key] = true
+		}
+		roots = append(roots, it)
+	}
+	children := func(it item) []item {
+		n := g.nodes[it.key]
+		out := make([]item, len(n.children))
+		for i, c := range n.children {
+			out[i] = item{key: c}
+			if it.ref != "" && n.self[c] {
+				out[i].ref = it.ref
+			}
+		}
+		return out
+	}
+	reached := make(map[item]bool)
+	var refs map[ghapi.ActionRef][]string
+	queue := roots
+	for len(queue) > 0 {
+		it := queue[0]
+		queue = queue[1:]
+		if reached[it] {
+			continue
+		}
+		reached[it] = true
+		if it.ref != "" {
+			if refs == nil {
+				refs = make(map[ghapi.ActionRef][]string)
+			}
+			refs[it.key] = append(refs[it.key], it.ref)
+		}
+		queue = append(queue, children(it)...)
+	}
+
+	depOf := func(it item) dep.Dependency {
+		d := g.nodes[it.key].dep
+		if it.ref != "" {
+			d.Ref = it.ref
+		} else if renamed[it.key] {
+			// Kept only because a composite names it: not a root here.
+			d.OriginalRefs = nil
+		}
+		return d
+	}
+	var emitted []item
+	for _, key := range g.order {
+		for _, ref := range refs[key] {
+			emitted = append(emitted, item{key: key, ref: ref})
+		}
+		if reached[item{key: key}] {
+			emitted = append(emitted, item{key: key})
+		}
+	}
+
 	var deps []dep.Dependency
 	rep := make(map[string]int)
-	for _, key := range g.order {
-		d := g.nodes[key].dep
+	for _, it := range emitted {
+		d := depOf(it)
 		fk := flatKey(d.NWO, d.Ref)
 		i, ok := rep[fk]
 		if !ok {
@@ -158,18 +244,23 @@ func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap) {
 			}
 		}
 	}
-	name := func(n *graphNode) string {
+	name := func(it item) string {
+		n := g.nodes[it.key]
 		if n.resolved {
-			return deps[rep[flatKey(n.dep.NWO, n.dep.Ref)]].Key()
+			d := depOf(it)
+			return deps[rep[flatKey(d.NWO, d.Ref)]].Key()
 		}
-		return n.ref.NWO() + "@" + n.ref.Ref
+		ref := n.ref.Ref
+		if it.ref != "" {
+			ref = it.ref
+		}
+		return n.ref.NWO() + "@" + ref
 	}
 	parents := make(dep.ParentMap)
-	for _, key := range g.order {
-		n := g.nodes[key]
-		pk := name(n)
-		for _, c := range n.children {
-			ck := name(g.nodes[c])
+	for _, it := range emitted {
+		pk := name(it)
+		for _, c := range children(it) {
+			ck := name(c)
 			// Sub-actions of one owner/repo@ref share its lockfile entry.
 			if foldNWO(ck) == foldNWO(pk) || slices.Contains(parents[ck], pk) {
 				continue

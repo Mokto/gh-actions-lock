@@ -43,6 +43,9 @@ type graphTransport struct {
 	// parentUsesOwnSub makes acme/parent and its sub-actions use $/sub, so
 	// acme/parent/sub calls itself.
 	parentUsesOwnSub bool
+	// parentUsesSubAtV1 makes acme/parent use acme/parent/sub@v1, a node
+	// action, naming v1 even when the workflow narrows acme/parent.
+	parentUsesSubAtV1 bool
 }
 
 func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -67,6 +70,12 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/child@v2\n"
 				if g.parentUsesOwnSub {
 					yml = "runs:\n  using: composite\n  steps:\n    - uses: $/sub\n"
+				}
+				if g.parentUsesSubAtV1 {
+					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/parent/sub@v1\n"
+					if body.Variables[fmt.Sprintf("yml%d", i)] == "sub/action.yml" {
+						yml = nodeActionYAML
+					}
 				}
 				if g.movedParent && ref == "v1.0.0" {
 					sha, yml = graphLeafSHA, nodeActionYAML
@@ -119,7 +128,9 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/repos/acme/") {
 		switch req.URL.Path {
 		case "/repos/acme/parent/tags":
-			return httpmock.JSONResponse(httpmock.TagListResponse("v1.0.0", graphParentSHA))(req)
+			return httpmock.JSONResponse(httpmock.TagListResponse("v1.0.0", graphParentSHA, "v1", graphParentSHA))(req)
+		case "/repos/acme/child/tags":
+			return httpmock.JSONResponse(httpmock.TagListResponse("v2.1.0", graphChildSHA, "v2", graphChildSHA))(req)
 		case "/repos/acme/parent/git/ref/tags/main":
 			return httpmock.StatusResponse(http.StatusNotFound)(req)
 		case "/repos/acme/parent/branches":
@@ -548,6 +559,55 @@ func TestCompleteness_TerminalPointsDamagedGraphsAtRelock(t *testing.T) {
 			require.ErrorIs(t, err, errSilent, stderr)
 			assert.Contains(t, stderr, "gh actions-lock --relock")
 			assert.NotContains(t, stderr, tt.plainHint)
+		})
+	}
+}
+
+// TestCompleteness_NarrowingKeepsRefsCompositesName: narrowing a workflow's
+// v2 to v2.1.0 must not drop v2 when a composite's manifest still names it,
+// or the next --verify (and the Actions backend) rejects the lock.
+func TestCompleteness_NarrowingKeepsRefsCompositesName(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		workflow  string
+		transport *graphTransport
+		wantEdges map[string][]string
+	}{
+		{
+			name:      "dependency the workflow and a composite both use",
+			workflow:  graphWorkflow + "      - uses: acme/child@v2\n",
+			transport: &graphTransport{},
+			wantEdges: map[string][]string{
+				"acme/parent@v1.0.0": {"acme/child@v2"},
+				"acme/child@v2":      {"acme/leaf@v3"},
+				"acme/child@v2.1.0":  {"acme/leaf@v3"},
+			},
+		},
+		{
+			name:      "sub-action named at the ref the workflow narrows",
+			workflow:  strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/parent@v1", 1),
+			transport: &graphTransport{parentUsesSubAtV1: true},
+			wantEdges: map[string][]string{
+				"acme/parent@v1.0.0": {"acme/parent@v1"},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, tt.workflow)
+			_, stderr, err := runCommandWithHTTP(t, tt.transport, path)
+			require.NoError(t, err, stderr)
+			file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+			require.NoError(t, err)
+			edges := map[string][]string{}
+			for key, action := range file.Dependencies {
+				if len(action.Uses) > 0 {
+					edges[key] = action.Uses
+				}
+			}
+			assert.Equal(t, tt.wantEdges, edges)
+
+			_, stderr, err = runCommandWithHTTP(t, tt.transport, "--verify", path)
+			require.NoError(t, err, stderr)
 		})
 	}
 }
