@@ -238,3 +238,23 @@ func TestResolveLockedRecursiveDoesNotFoldRefCasing(t *testing.T) {
 	require.ErrorAs(t, err, &missing)
 	assert.Equal(t, "Main", missing.Ref.Ref)
 }
+
+func TestResolveAllRecursiveRejectsConflictingCommits(t *testing.T) {
+	const (
+		first  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		second = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
+		ghapi.ForActionRef("o", "action", "", "main"): {
+			dep:       dep.Dependency{NWO: "o/action", Ref: "main", SHA: first},
+			actionYML: "runs:\n  using: composite\n  steps:\n    - uses: o/action/sub@main\n",
+		},
+		// main advanced before the sub-action was fetched.
+		ghapi.ForActionRef("o", "action", "sub", "main"): {
+			dep:       dep.Dependency{NWO: "o/action", Path: "sub", Ref: "main", SHA: second},
+			actionYML: "runs:\n  using: node20\n",
+		},
+	})
+	_, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "action", Ref: "main"}})
+	require.ErrorContains(t, err, "o/action@main resolved to both")
+}
