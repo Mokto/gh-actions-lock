@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pinpool"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDiscoverContaining_PrefersHintTag(t *testing.T) {
@@ -542,5 +545,60 @@ func TestDiscoverContaining_SkipsRejectedRefNames(t *testing.T) {
 	}
 	if branch != "main" {
 		t.Fatalf("expected branch main, got %q", branch)
+	}
+}
+
+// TestDiscoverContaining_RefsOnLaterPages: a commit reachable only through a
+// tag or branch past the listings' first pages is placed, not called
+// off-history; one no ref contains still is.
+func TestDiscoverContaining_RefsOnLaterPages(t *testing.T) {
+	page := func(prefix string, n int, sha string) []string {
+		var out []string
+		for i := range n {
+			out = append(out, fmt.Sprintf("%s%03d", prefix, i), sha)
+		}
+		return out
+	}
+	tests := []struct {
+		name       string
+		branches   [][]string
+		tagPage2   []string
+		wantTag    string
+		wantBranch string
+		wantNone   bool
+	}{
+		{name: "tag on page 2", branches: [][]string{page("b", 3, "zzz")}, tagPage2: []string{"twin", "abc"}, wantTag: "twin"},
+		{name: "branch on page 4", branches: [][]string{page("a", 100, "zzz"), page("b", 100, "zzz"), page("c", 100, "zzz"), {"late", "abc"}}, wantBranch: "late"},
+		{name: "no ref contains it", branches: [][]string{page("b", 3, "zzz")}, wantNone: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			for i, p := range tt.branches {
+				reg.RegisterReusable(httpmock.RESTWithQuery("GET", `repos/o/r/branches`, fmt.Sprintf("&page=%d", i+1)),
+					httpmock.JSONResponse(httpmock.BranchListResponse(p...)))
+			}
+			reg.RegisterReusable(httpmock.REST("GET", `repos/o/r/compare/abc\.\.\.zzz`), httpmock.StatusResponse(http.StatusNotFound))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/o/r/compare/abc\.\.\.abc`), httpmock.JSONResponse(httpmock.CompareAncestorResponse("abc")))
+			first := httpmock.JSONResponse(httpmock.TagListResponse(page("v", 100, "zzz")...))
+			reg.RegisterReusable(httpmock.RESTWithQuery("GET", `repos/o/r/tags`, "&page=2"), httpmock.JSONResponse(httpmock.TagListResponse(tt.tagPage2...)))
+			reg.RegisterReusable(httpmock.RESTWithQuery("GET", `repos/o/r/tags`, "per_page=100"), first)
+			httpmock.NoTagsNamed(reg, "o", "r")
+			reg.RegisterReusable(httpmock.REST("GET", `repos/o/r/git/ref/heads/`), httpmock.StatusResponse(http.StatusNotFound))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/o/r/git/matching-refs/`), httpmock.JSONResponse([]any{}))
+			reg.RegisterReusable(httpmock.REST("GET", `repos/o/r$`), httpmock.JSONResponse(map[string]any{"default_branch": "main"}))
+
+			r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+			require.NoError(t, err)
+			tag, branch, err := r.DiscoverContaining(context.Background(), "o", "r", "abc", "abc")
+			require.NoError(t, err)
+			if tt.wantNone {
+				assert.Empty(t, tag)
+				assert.Empty(t, branch)
+				return
+			}
+			assert.Equal(t, tt.wantTag, tag)
+			assert.Equal(t, tt.wantBranch, branch)
+		})
 	}
 }

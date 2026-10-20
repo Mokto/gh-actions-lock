@@ -44,7 +44,9 @@ func (c *Client) ListBranches(ctx context.Context, owner, repo string) ([]Branch
 			return cached, nil
 		}
 		var all []BranchHead
-		for page := 1; page <= 3; page++ {
+		// Every page: this listing runs only after the likely branches
+		// missed, and a commit on a later page is not an impostor.
+		for page := 1; ; page++ {
 			path := fmt.Sprintf("repos/%s/%s/branches?per_page=100&page=%d",
 				url.PathEscape(owner), url.PathEscape(repo), page)
 			var resp []struct {
@@ -78,6 +80,41 @@ func (c *Client) ListBranches(ctx context.Context, owner, repo string) ([]Branch
 		return nil, err
 	}
 	return v.([]BranchHead), nil
+}
+
+// TagsAtCommit returns the names of every tag in owner/repo whose commit is
+// sha, reading every page of the tag listing (one request per 100 tags).
+// Use it only where a later page matters: ListTags reads the first page.
+func (c *Client) TagsAtCommit(ctx context.Context, owner, repo, sha string) ([]string, error) {
+	c, err := c.ForRepo(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("repos/%s/%s/tags?per_page=100&page=%d", url.PathEscape(owner), url.PathEscape(repo), page)
+		var resp []struct {
+			Name   string `json:"name"`
+			Commit struct {
+				SHA string `json:"sha"`
+			} `json:"commit"`
+		}
+		found, err := c.restGet(ctx, owner, path, &resp)
+		if err != nil {
+			return nil, fmt.Errorf("listing tags for %s/%s: %w", owner, repo, err)
+		}
+		if !found {
+			return names, nil
+		}
+		for _, t := range resp {
+			if strings.EqualFold(t.Commit.SHA, sha) {
+				names = append(names, t.Name)
+			}
+		}
+		if len(resp) < 100 {
+			return names, nil
+		}
+	}
 }
 
 // ListTags returns all tags with their commit SHAs for a repo (first page,

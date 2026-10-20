@@ -191,7 +191,7 @@ func (c *Client) anonGet(ctx context.Context, path string, dest any) error {
 // anonListBranches fetches branches for a public repo without authentication.
 func (c *Client) anonListBranches(ctx context.Context, owner, repo string) ([]BranchHead, error) {
 	var all []BranchHead
-	for page := 1; page <= 3; page++ {
+	for page := 1; ; page++ {
 		path := fmt.Sprintf("repos/%s/%s/branches?per_page=100&page=%d",
 			url.PathEscape(owner), url.PathEscape(repo), page)
 		var resp []struct {

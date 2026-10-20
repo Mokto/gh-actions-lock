@@ -75,6 +75,20 @@ func (r *Resolver) DiscoverContainingDefault(ctx context.Context, owner, repo, s
 			tagNames = append(tagNames, t.Name)
 		}
 	}
+	// The listing above is one page. With no containing branch, a tag on a
+	// later page is the commit's only ref, so read them all before calling
+	// it off-history.
+	if branch == "" && len(tagNames) == 0 && len(allTags) >= 100 {
+		later, err := r.gh.TagsAtCommit(ctx, owner, repo, sha)
+		if err != nil {
+			return "", "", err
+		}
+		for _, name := range later {
+			if ghapi.AcceptedRefName(name) {
+				tagNames = append(tagNames, name)
+			}
+		}
+	}
 	tag = pickPreferredTag(tagNames, hintRef)
 
 	return tag, branch, nil

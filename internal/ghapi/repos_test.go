@@ -2,10 +2,13 @@ package ghapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOrderedBranches(t *testing.T) {
@@ -289,5 +292,29 @@ func TestMatchingHeadRefs(t *testing.T) {
 	}
 	if branches[0].Name != "release/v3" {
 		t.Fatalf("unexpected first branch: %+v", branches[0])
+	}
+}
+
+func TestTagsAtCommit_ReadsEveryPage(t *testing.T) {
+	for _, proxy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "authenticated", true: "dependabot proxy"}[proxy], func(t *testing.T) {
+			if proxy {
+				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+			}
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			var first []string
+			for i := range 100 {
+				first = append(first, fmt.Sprintf("v%03d", i), "zzz")
+			}
+			reg.Register(httpmock.RESTWithQuery("GET", `^/repos/o/r/tags$`, "&page=1"), httpmock.JSONResponse(httpmock.TagListResponse(first...)))
+			reg.Register(httpmock.RESTWithQuery("GET", `^/repos/o/r/tags$`, "&page=2"), httpmock.JSONResponse(httpmock.TagListResponse("twin", "abc", "other", "zzz")))
+
+			c := newTestClient(t, reg)
+			c.anonHTTP = &http.Client{Transport: reg}
+			names, err := c.TagsAtCommit(context.Background(), "o", "r", "abc")
+			require.NoError(t, err)
+			assert.Equal(t, []string{"twin"}, names)
+		})
 	}
 }
