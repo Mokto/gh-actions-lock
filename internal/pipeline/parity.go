@@ -80,7 +80,6 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		owners[i] = append(owners[i], o)
 	}
 	fresh := freshClosure(resolved, parents)
-	graph := newFreshGraph(resolved)
 	for _, pw := range parsed {
 		ri, ok := reportIdx[pw.Path]
 		if !ok || isBlocked(pw) {
@@ -95,13 +94,15 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			_, ok := direct[strings.ToLower(p.Owner+"/"+p.Repo)+"@"+p.Ref]
 			return ok
 		}
-		var freshOwners []parityOwner
-		var freshRoots map[string]bool
-		if !pw.Resolved {
-			freshOwners, freshRoots = fresh(pw, recordedKeys)
+		// Planning writes a recorded entry back verbatim unless one of
+		// these findings prunes it.
+		pruned := map[string]bool{}
+		for _, f := range report.Workflows[ri].Findings {
+			if checks.PrunesDependency(f, mode.acceptMoved, mode.relock) {
+				pruned[checks.PruneKey(f.Dependency.NWO, f.Dependency.Ref, f.Dependency.SHA)] = true
+			}
 		}
 		closure := store.Closure(workflowfile.KeyFromPath(pw.Path), live)
-		root := closureRoots(closure)
 		edges := compositeEdges(closure)
 		for _, lp := range closure {
 			ref := direct[strings.ToLower(lp.Pin.Owner+"/"+lp.Pin.Repo)+"@"+lp.Pin.Ref]
@@ -110,11 +111,14 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 			k := lp.Pin.String()
 			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref,
-				replaced: freshRoots[root[k]] && graph.replaces(lp),
+				pruned:   pruned[checks.PruneKey(lp.Pin.NWO, lp.Pin.Ref, lockedSHA(lp.Action.Commit))],
 				pinnedBy: firstParent(edges[k]),
 			})
 		}
-		for _, o := range freshOwners {
+		if pw.Resolved {
+			continue
+		}
+		for _, o := range fresh(pw, recordedKeys) {
 			o.report = ri
 			add(o)
 		}
@@ -168,7 +172,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if !ok && mode.verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
 			}
-			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, replaced: o.replaced, pinnedBy: o.pinnedBy, head: pins[i].Head, inconclusive: st.Err != nil}) {
+			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, pruned: o.pruned, pinnedBy: o.pinnedBy, head: pins[i].Head, inconclusive: st.Err != nil}) {
 				continue
 			}
 			wr := &report.Workflows[o.report]
@@ -193,8 +197,8 @@ type parityOwner struct {
 	lp     lockfile.LockedPin
 	ref    parserlock.ActionRef
 	fresh  bool
-	// replaced marks a recorded pin under a root this run re-resolved.
-	replaced bool
+	// pruned marks a recorded entry planning re-resolves.
+	pruned bool
 	// pinnedBy is a composite (NWO@ref) whose recorded `uses:` also lists
 	// this entry, though Closure reports it as the workflow's own pin.
 	pinnedBy string
@@ -214,44 +218,6 @@ func compositeEdges(closure []lockfile.LockedPin) map[string][]lockfile.LockedPi
 	return out
 }
 
-// freshGraph is what this run's resolve found: each resolved pin's commit,
-// keyed by Pin.String.
-type freshGraph map[string]string
-
-func newFreshGraph(resolved []dep.Dependency) freshGraph {
-	g := freshGraph{}
-	for _, d := range resolved {
-		if d.SHA == "" {
-			continue
-		}
-		keys := []string{d.Key()}
-		for _, ref := range d.OriginalRefs {
-			keys = append(keys, ref.NWO()+"@"+ref.Ref)
-		}
-		for _, k := range keys {
-			if p, ok := parserlock.ParsePin(k); ok {
-				g[p.String()] = d.SHA
-			}
-		}
-	}
-	return g
-}
-
-// replaces reports whether what this run writes for a recorded entry is
-// what it verified afresh. Planning writes a resolved direct pin from the
-// fresh resolve, but keeps a composite's recorded edges and their entries:
-// a child is covered only when it resolved to the very commit recorded. A
-// child missing from the fresh graph, because its resolution failed above
-// it or its composite dropped it, or one that resolved elsewhere, stays in
-// the lock as recorded and unverified.
-func (g freshGraph) replaces(lp lockfile.LockedPin) bool {
-	live := g[lp.Pin.String()]
-	if lp.Parent == "" {
-		return live != ""
-	}
-	return live != "" && strings.EqualFold(live, lockedSHA(lp.Action.Commit))
-}
-
 // firstParent is the first of composites as NWO@ref, or "".
 func firstParent(composites []lockfile.LockedPin) string {
 	if len(composites) == 0 {
@@ -260,35 +226,10 @@ func firstParent(composites []lockfile.LockedPin) string {
 	return composites[0].Pin.NWO + "@" + composites[0].Pin.Ref
 }
 
-// closureRoots maps each pin of a recorded closure to the workflow's direct
-// pin that pulls it in. Keys are Pin.String.
-func closureRoots(closure []lockfile.LockedPin) map[string]string {
-	parent := make(map[string]string, len(closure))
-	for _, lp := range closure {
-		if p, ok := parserlock.ParsePin(lp.Parent); ok {
-			parent[lp.Pin.String()] = p.String()
-		}
-	}
-	roots := make(map[string]string, len(closure))
-	for _, lp := range closure {
-		k := lp.Pin.String()
-		for i := 0; i < len(closure); i++ {
-			p, ok := parent[k]
-			if !ok {
-				break
-			}
-			k = p
-		}
-		roots[lp.Pin.String()] = k
-	}
-	return roots
-}
-
 // freshClosure returns a function yielding the closure of a workflow's
 // unrecorded refs from this run's single resolve, so no further requests
-// are made per workflow, and the set of those refs that resolved, keyed by
-// Pin.String.
-func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(checks.ParsedWorkflow, map[string]bool) ([]parityOwner, map[string]bool) {
+// are made per workflow.
+func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(checks.ParsedWorkflow, map[string]bool) []parityOwner {
 	children := map[string][]dep.Dependency{}
 	byKey := map[string][]dep.Dependency{}
 	for _, d := range resolved {
@@ -306,9 +247,8 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 			}
 		}
 	}
-	return func(pw checks.ParsedWorkflow, recordedKeys map[string]bool) ([]parityOwner, map[string]bool) {
+	return func(pw checks.ParsedWorkflow, recordedKeys map[string]bool) []parityOwner {
 		var out []parityOwner
-		roots := map[string]bool{}
 		seen := map[string]bool{}
 		var walk func(d dep.Dependency, ref parserlock.ActionRef, parent string)
 		walk = func(d dep.Dependency, ref parserlock.ActionRef, parent string) {
@@ -335,11 +275,10 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 				continue
 			}
 			for _, d := range byKey[key] {
-				roots[parserlock.Pin{Owner: ref.Owner, Repo: ref.Repo, Ref: ref.Ref}.String()] = true
 				walk(d, ref, "")
 			}
 		}
-		return out, roots
+		return out
 	}
 }
 

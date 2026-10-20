@@ -132,28 +132,11 @@ func TestFreshClosure_EntryRef(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pw := checks.ParsedWorkflow{Path: ".github/workflows/ci.yml", Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: tt.d.Ref}}}
-			got, _ := freshClosure([]dep.Dependency{tt.d}, nil)(pw, nil)
+			got := freshClosure([]dep.Dependency{tt.d}, nil)(pw, nil)
 			require.Len(t, got, 1)
 			assert.Equal(t, tt.want, got[0].lp.Action.Ref)
 		})
 	}
-}
-
-// TestFreshClosure_Roots: every workflow ref that resolved is a root, also
-// one a composite walked first already reached as its child.
-func TestFreshClosure_Roots(t *testing.T) {
-	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
-	composite := dep.Dependency{NWO: "octo/composite", Ref: "v1", SHA: sha}
-	child := dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha}
-	parents := map[string][]string{child.Key(): {composite.Key()}}
-	pw := checks.ParsedWorkflow{Refs: []parserlock.ActionRef{
-		{Owner: "octo", Repo: "composite", Ref: "v1"},
-		{Owner: "actions", Repo: "checkout", Ref: sha},
-		{Owner: "actions", Repo: "cache", Ref: "v4"},
-	}}
-
-	_, roots := freshClosure([]dep.Dependency{composite, child}, parents)(pw, nil)
-	assert.Equal(t, map[string]bool{"octo/composite@v1": true, "actions/checkout@" + sha: true}, roots)
 }
 
 // TestParityFinding_FullSHAKey covers the verdicts for a full-SHA key
@@ -253,25 +236,6 @@ func TestMovedTagFinding(t *testing.T) {
 	}
 }
 
-func TestClosureRoots(t *testing.T) {
-	pin := func(k string) parserlock.Pin {
-		p, ok := parserlock.ParsePin(k)
-		require.True(t, ok)
-		return p
-	}
-	closure := []lockfile.LockedPin{
-		{Pin: pin("Octo/Composite@v1")},
-		{Pin: pin("actions/checkout@v4"), Parent: "Octo/Composite@v1"},
-		{Pin: pin("actions/cache@v3"), Parent: "actions/checkout@v4"},
-		{Pin: pin("actions/setup-go@v5")},
-	}
-	roots := closureRoots(closure)
-	assert.Equal(t, "octo/composite@v1", roots["octo/composite@v1"], "a direct pin is its own root")
-	assert.Equal(t, "octo/composite@v1", roots["actions/checkout@v4"])
-	assert.Equal(t, "octo/composite@v1", roots["actions/cache@v3"], "a grandchild traces to the workflow's pin")
-	assert.Equal(t, "actions/setup-go@v5", roots["actions/setup-go@v5"])
-}
-
 func TestCompositeEdges(t *testing.T) {
 	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
 	pin := func(k string) parserlock.Pin {
@@ -287,41 +251,4 @@ func TestCompositeEdges(t *testing.T) {
 	require.Len(t, edges, 1)
 	require.Len(t, edges["actions/checkout@"+sha], 1, "a direct pin a composite also lists keeps that edge")
 	assert.Equal(t, "octo/composite@v1", edges["actions/checkout@"+sha][0].Pin.String())
-}
-
-func TestFreshGraph(t *testing.T) {
-	const (
-		recorded = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-		live     = "ffffffffffffffffffffffffffffffffffffffff"
-	)
-	pin := func(k, sha, parent string) lockfile.LockedPin {
-		p, ok := parserlock.ParsePin(k)
-		require.True(t, ok)
-		return lockfile.LockedPin{Pin: p, Action: parserlock.Action{Commit: "sha1-" + sha}, Parent: parent}
-	}
-	g := newFreshGraph([]dep.Dependency{
-		{NWO: "Octo/Root", Ref: "v1", SHA: live},
-		{NWO: "octo/same", Ref: "v1", SHA: recorded},
-		{NWO: "octo/moved", Ref: "v1", SHA: live},
-		{NWO: "octo/renamed", Ref: "v2", SHA: recorded, OriginalRefs: []parserlock.ActionRef{{Owner: "octo", Repo: "old", Ref: "v2"}}},
-		{NWO: "octo/failed", Ref: "v1"},
-	})
-	tests := []struct {
-		name string
-		lp   lockfile.LockedPin
-		want bool
-	}{
-		{"a resolved direct pin is written afresh", pin("octo/root@v1", recorded, ""), true},
-		{"a child resolved to its recorded commit is covered", pin("octo/same@v1", recorded, "octo/root@v1"), true},
-		{"a child resolved elsewhere stays as recorded", pin("octo/moved@v1", recorded, "octo/root@v1"), false},
-		{"a redirected child counts under the name it was asked for", pin("octo/old@v2", recorded, "octo/root@v1"), true},
-		{"a child without a commit didn't resolve", pin("octo/failed@v1", recorded, "octo/root@v1"), false},
-		{"absence from the fresh graph proves nothing", pin("octo/child@v1", recorded, "octo/root@v1"), false},
-		{"nor for a direct pin", pin("octo/child@v1", recorded, ""), false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, g.replaces(tt.lp))
-		})
-	}
 }
