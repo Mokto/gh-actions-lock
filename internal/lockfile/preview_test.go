@@ -46,6 +46,7 @@ func TestPreview(t *testing.T) {
 	assert.Equal(t, []string{"o/child@v2"}, got.Uses, "writing a workflow keeps recorded edges")
 	_, ok = preview.Entry("o/child@v2")
 	assert.True(t, ok, "a recorded edge keeps its child through GC")
+	assert.Equal(t, []string{"o/root@v1"}, preview.UsedBy("o/child@v2"))
 	_, ok = preview.Entry("o/new@v1")
 	assert.True(t, ok)
 

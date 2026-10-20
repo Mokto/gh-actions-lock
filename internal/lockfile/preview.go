@@ -56,6 +56,21 @@ func (s *State) Entry(key string) (parserlock.Action, bool) {
 	return a, ok
 }
 
+// UsedBy returns the keys of the entries whose recorded `uses:` lists key,
+// sorted.
+func (s *State) UsedBy(key string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for k, a := range s.file.Dependencies {
+		if slices.Contains(a.Uses, key) {
+			out = append(out, k)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // EntryKey is a pin's on-disk key.
 func EntryKey(p parserlock.Pin) string {
 	return p.Canonical().String()

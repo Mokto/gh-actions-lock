@@ -49,6 +49,7 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 				if d.Restored || written(preview, report.Verified, d) {
 					continue
 				}
+				adviseHolder(preview, &wr.Deferred[j])
 				was := wr.SkipCommit
 				wr.Restore(j)
 				blocked = blocked || wr.SkipCommit && !was
@@ -57,6 +58,23 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 		if !blocked {
 			return nil
 		}
+	}
+}
+
+// adviseHolder points an unreachable pin's advice at the entry that kept
+// it: the write the override planned left it to that entry's recorded
+// edge, so rerunning the override can't help.
+func adviseHolder(preview *lockfile.State, d *checks.Deferred) {
+	f := &d.Finding
+	if f.Category != checks.UnreachablePin || f.RefMissing || f.Dependency == nil {
+		return
+	}
+	holders := preview.UsedBy(d.Key)
+	if len(holders) == 0 {
+		return
+	}
+	if p, ok := parserlock.ParsePin(holders[0]); ok {
+		f.Remediation = checks.UnreachableRemediation(p.NWO+"@"+p.Ref, f.Dependency.NWO)
 	}
 }
 

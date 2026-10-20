@@ -2877,6 +2877,8 @@ jobs:
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
 	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
+	assert.Contains(t, stderr, "upgrade or replace octo/root@v1 with a version whose pin of octo/old can be verified", "the advice names what keeps the entry, not the override that just failed")
+	assert.NotContains(t, stderr, "run `gh actions-lock --accept-moved`")
 	assert.Contains(t, stderr, "octo/old")
 	assert.Equal(t, lock, string(after), "nothing is written")
 	wfAfter, err := os.ReadFile(path)
