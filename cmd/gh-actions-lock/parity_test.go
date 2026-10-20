@@ -1420,6 +1420,49 @@ jobs:
 	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
 }
 
+// TestParity_RelockKeepsFreshPinFailures: --relock ignores recorded pins'
+// findings because it replaces them, but a pin it just resolved is what it
+// would write, so its failures still block.
+func TestParity_RelockKeepsFreshPinFailures(t *testing.T) {
+	reg := &httpmock.Registry{}
+	// The parity stub goes first: the resolve stub matches any query for the repo.
+	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": map[string]any{
+			"nameWithOwner": "actions/checkout",
+			"databaseId":    1,
+			"commit":        map[string]any{"oid": parityTestSHA},
+			"tag":           map[string]any{"oid": parityTestMoved},
+		}},
+	}))
+	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+	}))
+	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+		"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+	}))
+	reg.Register(httpmock.REST("GET", `compare/`), httpmock.JSONResponse(map[string]any{
+		"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"},
+	}))
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1.0.0
+`)
+
+	p, err := runParity(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent)
+	var categories []string
+	for _, f := range p.Findings {
+		categories = append(categories, f.Category)
+	}
+	assert.Contains(t, categories, "unreachable-pin")
+	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
+}
+
 // writeFullSHAWorkflow writes a workflow using actions/checkout at
 // parityTestSHA, locked to that commit with the given recorded ref.
 func writeFullSHAWorkflow(t *testing.T, ref string) string {

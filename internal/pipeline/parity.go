@@ -156,7 +156,9 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			case ok && pins[i].Head != "" && st.Err != nil && keep(checks.Finding{Category: checks.UnreachablePin}, o.lp.Pin):
 				f.Severity = checks.SeverityError
 				f.Remediation = "retry; a pin is accepted only once its commit is traced to its tag or branch"
-			case !ok || !keep(f, o.lp.Pin):
+			// keep filters recorded pins a relock is about to replace; a
+			// freshly resolved pin is what the run would write.
+			case !ok || !o.fresh && !keep(f, o.lp.Pin):
 				continue
 			}
 			wr := &report.Workflows[o.report]
