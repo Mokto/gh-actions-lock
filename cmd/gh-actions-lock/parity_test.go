@@ -1571,6 +1571,83 @@ jobs:
 	assert.Equal(t, lockBefore, readTempLockfilePins(t))
 }
 
+// TestParity_RelockKeepsUnresolvedChildBlocking: a composite that resolves
+// doesn't vouch for a child that didn't. If the child's resolution and its
+// parity check both fail, nothing replaces its recorded entry, so --relock
+// must block rather than keep it unverified.
+func TestParity_RelockKeepsUnresolvedChildBlocking(t *testing.T) {
+	const parentSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			// The child's tag moved, so its history check needs a compare.
+			head := v
+			if nwo == "actions/checkout" {
+				head = parityTestMoved
+			}
+			data["a"+i] = map[string]any{
+				"nameWithOwner": nwo,
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": v},
+				"tag":           map[string]any{"oid": head},
+				"tagRef":        map[string]any{"oid": head},
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQLForRepo("octo", "composite"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("octo/composite", parentSHA, composite)},
+	}))
+	rt := childDown{reg}
+	useDefaultTransport(t, rt)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/composite@v1
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/composite@v1':\n    ref: 'v1'\n    commit: 'sha1-" + parentSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@v4'\n" +
+		"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/composite@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, rt, "--relock", "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent, stderr)
+	assert.Contains(t, stderr, "could not check v4 history")
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
+// childDown fails every request about actions/checkout except the parity
+// query, which reports the pin itself.
+type childDown struct{ inner http.RoundTripper }
+
+func (c childDown) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !httpmock.GraphQL(`commit: object\(oid`)(req) &&
+		(strings.Contains(req.URL.Path, "/repos/actions/checkout") || httpmock.GraphQLForRepo("actions", "checkout")(req)) {
+		return httpmock.StatusResponse(http.StatusServiceUnavailable)(req)
+	}
+	return c.inner.RoundTrip(req)
+}
+
 // TestParity_AcceptMovedRepairsGoneRecordedRef: the recorded tag of a
 // full-SHA entry was deleted. The finding recommends --accept-moved, so
 // --accept-moved must record a branch that contains the commit, and still
@@ -1775,9 +1852,19 @@ jobs:
 // workflow uses directly, and a composite also pins, is one lock entry.
 // --accept-moved repairs the direct use, but planning doesn't rebuild an
 // unchanged composite's dependencies, so the entry would keep its gone ref
-// and the next --verify would reject it. It must keep blocking.
+// and the next --verify would reject it. It must keep blocking. A composite
+// that moved is rebuilt, so there the repair goes through.
 func TestParity_AcceptMovedKeepsSharedFullSHAPinBlocking(t *testing.T) {
+	t.Run("unchanged composite blocks", func(t *testing.T) { testAcceptMovedSharedPin(t, false) })
+	t.Run("moved composite repairs", func(t *testing.T) { testAcceptMovedSharedPin(t, true) })
+}
+
+func testAcceptMovedSharedPin(t *testing.T, moved bool) {
 	const parentSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	liveParent := parentSHA
+	if moved {
+		liveParent = "ffffffffffffffffffffffffffffffffffffffff"
+	}
 	const head = "dddddddddddddddddddddddddddddddddddddddd"
 	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@" + parityTestSHA + "\n"
 	reg := &httpmock.Registry{}
@@ -1797,8 +1884,8 @@ func TestParity_AcceptMovedKeepsSharedFullSHAPinBlocking(t *testing.T) {
 				"databaseId":    1,
 				"commit":        map[string]any{"oid": v},
 			}
-			if v == parentSHA {
-				repo["tag"], repo["tagRef"] = map[string]any{"oid": parentSHA}, map[string]any{}
+			if v == parentSHA || v == liveParent {
+				repo["tag"], repo["tagRef"] = map[string]any{"oid": liveParent}, map[string]any{"oid": liveParent}
 			}
 			data["a"+i] = repo
 		}
@@ -1806,7 +1893,7 @@ func TestParity_AcceptMovedKeepsSharedFullSHAPinBlocking(t *testing.T) {
 	})
 	// Both direct refs resolve in one batch.
 	repos := map[string]map[string]any{
-		"octo/composite":   testRepoResponse("octo/composite", parentSHA, composite),
+		"octo/composite":   testRepoResponse("octo/composite", liveParent, composite),
 		"actions/checkout": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML),
 	}
 	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
@@ -1831,6 +1918,8 @@ func TestParity_AcceptMovedKeepsSharedFullSHAPinBlocking(t *testing.T) {
 	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
 	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
 		httpmock.JSONResponse(map[string]any{"status": "behind", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/octo/composite/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parentSHA}}))
 	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	path := writeTempWorkflow(t, `
 name: ci
@@ -1853,6 +1942,12 @@ jobs:
 	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path)
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
+	if moved {
+		require.NoError(t, err, stderr)
+		assert.Contains(t, string(after), "sha1-"+liveParent)
+		assert.NotContains(t, string(after), "v4-gone", "the rebuilt composite's child gets a ref that vouches for it")
+		return
+	}
 	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
 	assert.Contains(t, stderr, "ref v4-gone is not a tag or branch of actions/checkout")
 	assert.Contains(t, stderr, "upgrade or replace octo/composite@v1 with a version whose pin of actions/checkout can be verified, or stop using it")

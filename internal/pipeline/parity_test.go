@@ -284,5 +284,41 @@ func TestCompositeEdges(t *testing.T) {
 		{Pin: pin("actions/checkout@" + sha)},
 	}
 	edges := compositeEdges(closure)
-	assert.Equal(t, map[string]string{"actions/checkout@" + sha: "octo/composite@v1"}, edges, "a direct pin a composite also lists keeps that edge")
+	require.Len(t, edges, 1)
+	require.Len(t, edges["actions/checkout@"+sha], 1, "a direct pin a composite also lists keeps that edge")
+	assert.Equal(t, "octo/composite@v1", edges["actions/checkout@"+sha][0].Pin.String())
+}
+
+func TestFreshGraph(t *testing.T) {
+	const (
+		recorded = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		live     = "ffffffffffffffffffffffffffffffffffffffff"
+	)
+	composite := func(sha string) dep.Dependency { return dep.Dependency{NWO: "octo/composite", Ref: "v1", SHA: sha} }
+	parents := map[string][]string{"actions/checkout@v4": {"octo/composite@v1"}}
+	lp := lockfile.LockedPin{Pin: parserlock.Pin{NWO: "octo/composite", Owner: "octo", Repo: "composite", Ref: "v1"}, Action: parserlock.Action{Commit: "sha1-" + recorded}}
+
+	t.Run("a child that failed to resolve is not replaced", func(t *testing.T) {
+		g := newFreshGraph([]dep.Dependency{composite(recorded)}, parents)
+		assert.False(t, g.replaces("actions/checkout@v4"))
+	})
+	t.Run("a resolved child is replaced", func(t *testing.T) {
+		g := newFreshGraph([]dep.Dependency{composite(recorded), {NWO: "actions/checkout", Ref: "v4", SHA: live}}, parents)
+		assert.True(t, g.replaces("actions/checkout@v4"))
+	})
+	t.Run("a child no composite uses any more is dropped", func(t *testing.T) {
+		g := newFreshGraph([]dep.Dependency{composite(live)}, nil)
+		assert.True(t, g.replaces("actions/checkout@v4"))
+	})
+	t.Run("an unchanged composite keeps its dependencies", func(t *testing.T) {
+		g := newFreshGraph([]dep.Dependency{composite(recorded)}, parents)
+		assert.Equal(t, "octo/composite@v1", g.unchangedParent([]lockfile.LockedPin{lp}))
+	})
+	t.Run("an unresolved composite keeps its dependencies", func(t *testing.T) {
+		assert.Equal(t, "octo/composite@v1", newFreshGraph(nil, nil).unchangedParent([]lockfile.LockedPin{lp}))
+	})
+	t.Run("a moved composite is rebuilt", func(t *testing.T) {
+		g := newFreshGraph([]dep.Dependency{composite(live)}, parents)
+		assert.Empty(t, g.unchangedParent([]lockfile.LockedPin{lp}))
+	})
 }
