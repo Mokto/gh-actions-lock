@@ -82,11 +82,15 @@ control or regenerate it from reviewed workflow refs; do not replace invalid
 metadata with guessed ref names.
 
 Online validation rejects pins whose recorded ref is missing or no longer
-contains the commit. Exact version tags must still point at that commit.
+contains the commit. This history check includes exact version tags: a tag
+that moved ahead but still contains the locked commit is accepted, with a
+non-blocking `ref-moved` warning only under `--verify`. Ordinary sticky runs
+keep the locked commit without that warning.
 An inconclusive online parity check now blocks exact-tag keys too: outside
 the Dependabot proxy it emits an error-severity `reachability-unknown` finding
 and exits 1 without writing; proxy lookup failures retain exit 2 for retry.
-This replaces the prior warning/exit-0 result for recorded exact tags.
+This replaces the prior warning/exit-0 result for inconclusive recorded
+exact-tag checks, not the accepted moved-ahead case.
 The diagnostic identifies the entry and says verification was inconclusive,
 not that the lockfile is invalid. Cover this exit-code/severity change in
 Dependabot compatibility coordination. Offline `--verify-local` still makes
@@ -94,7 +98,11 @@ no API or provenance claim.
 Restoring the trusted recorded ref or explicitly reviewing a different ref is
 required for a deleted ref; another ref containing the commit is not a fallback.
 `--relock --accept-moved` can deliberately select current commits from existing
-refs, but cannot bypass a missing or ambiguous recorded ref.
+symbolic refs that lost the old commit; `--relock` alone still blocks that case.
+Neither can bypass an inconclusive check, a missing or ambiguous recorded ref,
+or an unreachable full-SHA key. Rewriting a full-SHA key to its recorded tag
+still requires that tag to point at the commit now; history alone does not
+justify changing its name.
 
 Generation, relocking, and verification check tags before branches. If both
 names exist at different commits, the CLI emits a blocking `unreachable-pin`
