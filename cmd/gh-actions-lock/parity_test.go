@@ -1663,6 +1663,68 @@ func TestParity_FullSHAKeyMovedTagWarns(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(stderr, "pinned to a bare SHA"), "the sha-as-ref notice still shows once")
 }
 
+// TestParity_AcceptMovedKeepsTransitiveFullSHAPinBlocking: a composite's
+// full-SHA child whose recorded ref is gone isn't repaired by
+// --accept-moved, which doesn't rebuild an unchanged composite's
+// dependencies, so it must keep blocking rather than pass unchanged.
+func TestParity_AcceptMovedKeepsTransitiveFullSHAPinBlocking(t *testing.T) {
+	const parentSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@" + parityTestSHA + "\n"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			repo := map[string]any{
+				"nameWithOwner": body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string),
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": v},
+			}
+			if v == parentSHA {
+				repo["tag"], repo["tagRef"] = map[string]any{"oid": parentSHA}, map[string]any{}
+			}
+			data["a"+i] = repo
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQLForRepo("octo", "composite"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("octo/composite", parentSHA, composite)},
+	}))
+	reg.RegisterReusable(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+	}))
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/composite@v1
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/composite@v1':\n    ref: 'v1'\n    commit: 'sha1-" + parentSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@" + parityTestSHA + "'\n" +
+		"  'actions/checkout@" + parityTestSHA + "':\n    ref: 'v4-gone'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/composite@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent, stderr)
+	assert.Contains(t, stderr, "ref v4-gone is not a tag or branch of actions/checkout")
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
 // writeFullSHAWorkflow writes a workflow using actions/checkout at
 // parityTestSHA, locked to that commit with the given recorded ref.
 func writeFullSHAWorkflow(t *testing.T, ref string) string {
