@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -120,7 +119,9 @@ const batchActionFileSize = 20
 // The returned ParentMap (child dep key → parent dep keys) is owned by the
 // caller and safe to mutate or hold across concurrent resolver calls.
 func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.ActionRef) ([]dep.Dependency, dep.ParentMap, error) {
-	return r.resolveRecursive(ctx, refs, nil)
+	g, err := r.resolveRecursive(ctx, refs, nil)
+	deps, parents := g.Flatten()
+	return deps, parents, err
 }
 
 // UnlockedRefError identifies a dependency discovered in a locked manifest
@@ -143,13 +144,14 @@ func (r *Resolver) ResolveLockedRecursive(ctx context.Context, refs []parserlock
 			locked[ghapi.ForNWORef(owner, repo, d.Ref)] = d.SHA
 		}
 	}
-	return r.resolveRecursive(ctx, refs, locked)
+	g, err := r.resolveRecursive(ctx, refs, locked)
+	deps, parents := g.Flatten()
+	return deps, parents, err
 }
 
-func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.ActionRef, locked map[ghapi.NWORef]string) ([]dep.Dependency, dep.ParentMap, error) {
+func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.ActionRef, locked map[ghapi.NWORef]string) (*Graph, error) {
 	seen := make(map[ghapi.ActionRef]bool)
-	var allDeps []dep.Dependency
-	parentMap := make(dep.ParentMap)
+	g := newGraph(refs)
 
 	pending := make([]resolutionRequest, len(refs))
 	for i, ref := range refs {
@@ -192,7 +194,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 
 	for len(pending) > 0 {
 		if depth >= r.MaxRecursionDepth {
-			return allDeps, parentMap, fmt.Errorf("composite action recursion exceeded max depth %d", r.MaxRecursionDepth)
+			return g, fmt.Errorf("composite action recursion exceeded max depth %d", r.MaxRecursionDepth)
 		}
 
 		var toResolve []resolutionRequest
@@ -215,10 +217,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 			break
 		}
 
-		var deps []dep.Dependency
-		var actionYMLs []string
-		var err error
-		deps, actionYMLs, err = r.resolveWithActionYMLParallel(ctx, toResolve, depth, &resolveDone, &resolveTotal, locked != nil)
+		deps, actionYMLs, requested, err := r.resolveWithActionYMLParallel(ctx, toResolve, depth, &resolveDone, &resolveTotal, locked != nil)
 		if depth > 0 || ghapi.DependabotProxy() || locked != nil {
 			// A remote composite's `uses:` can't be rewritten here, and the
 			// runner looks it up as written, so keep the name it uses. Nor
@@ -235,7 +234,9 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 		// renderers degrade gracefully per-ref instead of marking everything
 		// unresolved. Continue BFS so transitive deps of successful refs are
 		// still discovered.
-		allDeps = append(allDeps, deps...)
+		for i := range deps {
+			g.setResolved(requested[i], deps[i])
+		}
 		if err != nil {
 			resolveErr = errors.Join(resolveErr, err)
 		}
@@ -258,11 +259,6 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 				continue
 			}
 
-			// parentMap is keyed at runner-download granularity (NWO@Ref =
-			// Dependency.Key()). BFS traversal above is path-aware via
-			// cacheKey/seen{} so we visit every sub-action's action.yml,
-			// but the recorded edges flatten subpaths back into one node
-			// per tarball — same model the runner uses.
 			parentKey := deps[i].Key()
 			for _, rawUse := range meta.NestedUses {
 				use := strings.TrimSpace(rawUse)
@@ -311,34 +307,10 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 				if actionRef.Owner == "" {
 					continue
 				}
-				childKey := actionRef.NWO() + "@" + actionRef.Ref
-				// Same-tarball edge: a composite whose `uses:` names another
-				// subpath in its own repo+ref. At runner-download granularity
-				// this is not a new transitive dependency (same tarball, same
-				// SHA), so we must not record a parentMap edge — once subpaths
-				// collapse to NWO@Ref it would become a self-edge. But we must
-				// still descend into the sibling sub-action's action.yml: it
-				// can pull in cross-repo transitive deps the parent never
-				// references directly (e.g. nested-composite → simple-composite
-				// → other-repo). The path-aware seen{} set keys on FullName@Ref
-				// and so prevents re-resolving an exact self repository reference, making
-				// this enqueue loop-safe.
-				if strings.EqualFold(actionRef.NWO(), deps[i].NWO) && actionRef.Ref == deps[i].Ref {
-					nextPending = append(nextPending, request)
-					continue
-				}
-				// Track all parents, deduplicating.
-				parents := parentMap[childKey]
-				found := false
-				for _, p := range parents {
-					if p == parentKey {
-						found = true
-						break
-					}
-				}
-				if !found {
-					parentMap[childKey] = append(parents, parentKey)
-				}
+				// Edges are path-aware: a sub-action of the same repo+ref is
+				// its own node, so its own dependencies and any cycle through
+				// it stay visible. The seen{} set makes this enqueue loop-safe.
+				g.addEdge(requested[i], actionRef)
 				nextPending = append(nextPending, request)
 			}
 		}
@@ -347,57 +319,10 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 		depth++
 	}
 
-	if err := conflictingCommits(allDeps); err != nil {
+	if err := g.conflictingCommits(); err != nil {
 		resolveErr = errors.Join(resolveErr, err)
 	}
-	deps := dep.Dedup(allDeps)
-	return deps, canonicalParents(deps, parentMap), resolveErr
-}
-
-// conflictingCommits rejects a run that resolved one NWO@Ref to two commits,
-// e.g. a branch that advanced between fetching a composite and a sub-action
-// in the same repository. Dedup would keep one commit but every manifest's
-// edges.
-func conflictingCommits(deps []dep.Dependency) error {
-	commits := make(map[string]string, len(deps))
-	for _, d := range deps {
-		key := strings.ToLower(d.NWO) + "@" + d.Ref
-		if prev, ok := commits[key]; ok && !strings.EqualFold(prev, d.SHA) {
-			return fmt.Errorf("%s resolved to both %s and %s in one run; retry", d.Key(), prev, d.SHA)
-		}
-		commits[key] = d.SHA
-	}
-	return nil
-}
-
-// canonicalParents rewrites parent-map keys to the owner/repo casing of the
-// returned dependencies. A manifest can name an action with different
-// casing than the cached dependency it resolves to, and the writer looks
-// edges up by Dependency.Key. Ref casing is preserved.
-func canonicalParents(deps []dep.Dependency, parents dep.ParentMap) dep.ParentMap {
-	canon := make(map[string]string, len(deps))
-	for _, d := range deps {
-		canon[strings.ToLower(d.NWO)+"@"+d.Ref] = d.Key()
-	}
-	key := func(k string) string {
-		// Refs can contain "@"; owner/repo can't.
-		if i := strings.Index(k, "@"); i >= 0 {
-			if c, ok := canon[strings.ToLower(k[:i])+k[i:]]; ok {
-				return c
-			}
-		}
-		return k
-	}
-	out := make(dep.ParentMap, len(parents))
-	for child, pp := range parents {
-		c := key(child)
-		for _, p := range pp {
-			if p = key(p); !slices.Contains(out[c], p) {
-				out[c] = append(out[c], p)
-			}
-		}
-	}
-	return out
+	return g, resolveErr
 }
 
 // resolveWithActionYMLParallel resolves refs one-per-worker via the shared pool
@@ -407,7 +332,8 @@ func canonicalParents(deps []dep.Dependency, parents dep.ParentMap) dep.ParentMa
 // resolveDone and resolveTotal are rolling counters owned by ResolveAllRecursive
 // that span every BFS depth, so a single non-jumping progress bar can cover
 // direct + transitive resolution as one phase.
-func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []resolutionRequest, depth int, resolveDone, resolveTotal *atomic.Int64, locked bool) ([]dep.Dependency, []string, error) {
+// The returned requests align with the returned deps.
+func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []resolutionRequest, depth int, resolveDone, resolveTotal *atomic.Int64, locked bool) ([]dep.Dependency, []string, []parserlock.ActionRef, error) {
 	type resolveResult struct {
 		dep dep.Dependency
 		yml string
@@ -431,23 +357,25 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 		}
 	}
 
-	flatten := func() ([]dep.Dependency, []string) {
+	flatten := func() ([]dep.Dependency, []string, []parserlock.ActionRef) {
 		var deps []dep.Dependency
 		var ymls []string
-		for _, res := range results {
+		var requested []parserlock.ActionRef
+		for i, res := range results {
 			if !res.ok {
 				continue
 			}
 			deps = append(deps, res.dep)
 			ymls = append(ymls, res.yml)
+			requested = append(requested, refs[i].ref)
 		}
-		return deps, ymls
+		return deps, ymls, requested
 	}
 
 	total := len(uncachedIdx)
 	if total == 0 {
-		deps, ymls := flatten()
-		return deps, ymls, nil
+		deps, ymls, requested := flatten()
+		return deps, ymls, requested, nil
 	}
 
 	// Grow the rolling resolve total by the new uncached refs at this depth.
@@ -553,8 +481,8 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 		poolErr = errors.Join(batchErrs...)
 	}
 
-	deps, ymls := flatten()
-	return deps, ymls, poolErr
+	deps, ymls, requested := flatten()
+	return deps, ymls, requested, poolErr
 }
 
 // isWorkflowCallee reports whether path names a reusable workflow, which has
