@@ -450,7 +450,7 @@ func reverseLookupRewrites(ctx context.Context, opts PlanOptions, wr checks.Work
 
 // buildPinnedEntries emits an entry for every resolved dep, marking it Verified
 // when the lockfile already records the same SHA and Pinned otherwise. Deps
-// already emitted from inventory (by NWO:SHA) are skipped.
+// already emitted from inventory under the same key and commit are skipped.
 func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.Dependency, parentMap dep.ParentMap, directTracker lockfile.DirectTracker, inventorySHA map[string]bool) []Entry {
 	// Load existing lockfile state so re-runs are noops for unchanged deps.
 	existingSHA := make(map[string]string) // NWO@Ref -> SHA
@@ -466,8 +466,9 @@ func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.D
 	directKeys := directTracker.Keys(deps)
 	var out []Entry
 	for _, dep := range deps {
-		nwoSHA := strings.ToLower(dep.NWO) + ":" + strings.ToLower(dep.SHA)
-		if inventorySHA[nwoSHA] {
+		// Each key needs its own entry: a ref that moved onto a commit a
+		// sibling ref is locked at must still be written.
+		if inventorySHA[checks.PruneKey(dep.NWO, dep.Ref, dep.SHA)] {
 			continue // already emitted as Verified from inventory
 		}
 		depKey := dep.Key()
@@ -548,7 +549,7 @@ func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.A
 	for _, inv := range inventory {
 		nwo := strings.ToLower(inv.Dep.NWO)
 		byKey[nwo+"@"+inv.Dep.Ref] = true
-		shaSeen[nwo+":"+strings.ToLower(inv.Dep.SHA)] = true
+		shaSeen[checks.PruneKey(inv.Dep.NWO, inv.Dep.Ref, inv.Dep.SHA)] = true
 	}
 	for _, ref := range refs {
 		key := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref

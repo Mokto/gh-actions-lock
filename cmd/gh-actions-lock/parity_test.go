@@ -2609,6 +2609,91 @@ jobs:
 	assert.Equal(t, string(wfBefore), string(wfAfter))
 }
 
+// TestParity_RelockKeepsSiblingTagAtSameCommit: v4 moved onto the commit
+// v4.2.1 is already locked at. Re-locking v4 must still write v4's own
+// entry, so the workflow's `uses: v4` stays locked and verifies; so must a
+// composite's edge to v4.
+func TestParity_RelockKeepsSiblingTagAtSameCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		cmp       string
+		base      string
+		composite bool
+	}{
+		{"relock, moved ahead", []string{"--relock"}, "ahead", parityTestSHA, false},
+		{"accept-moved, history rewritten", []string{"--accept-moved"}, "diverged", "cccccccccccccccccccccccccccccccccccccccc", false},
+		{"relock, moved ahead, composite", []string{"--relock"}, "ahead", parityTestSHA, true},
+		{"accept-moved, history rewritten, composite", []string{"--accept-moved"}, "diverged", "cccccccccccccccccccccccccccccccccccccccc", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+			reg := &httpmock.Registry{}
+			reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+				var body struct {
+					Variables map[string]any `json:"variables"`
+				}
+				require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+				data := map[string]any{}
+				for k, v := range body.Variables {
+					if i, ok := strings.CutPrefix(k, "oid"); ok {
+						nwo, head := "actions/checkout", parityTestMoved
+						if body.Variables["owner"+i] == "octo" {
+							nwo, head = "octo/root", rootSHA
+						}
+						data["a"+i] = map[string]any{"nameWithOwner": nwo, "databaseId": 1, "commit": map[string]any{"oid": v},
+							"tag": map[string]any{"oid": head}, "tagRef": map[string]any{"oid": head}}
+					}
+				}
+				return httpmock.JSONResponse(map[string]any{"data": data})(req)
+			})
+			reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
+				var body struct {
+					Variables map[string]any `json:"variables"`
+				}
+				require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+				data := map[string]any{}
+				for k, v := range body.Variables {
+					if i, ok := strings.CutPrefix(k, "owner"); ok {
+						if v == "octo" {
+							data["a"+i] = testRepoResponse("octo/root", rootSHA, "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n")
+							continue
+						}
+						data["a"+i] = testRepoResponse("actions/checkout", parityTestMoved, nodeActionYAML)
+					}
+				}
+				return httpmock.JSONResponse(map[string]any{"data": data})(req)
+			})
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+				httpmock.JSONResponse(map[string]any{"status": tc.cmp, "merge_base_commit": map[string]any{"sha": tc.base}}))
+			useDefaultTransport(t, reg)
+			steps, roots, root := "", "", ""
+			if tc.composite {
+				steps = "      - uses: octo/root@v1\n"
+				roots = "    - 'octo/root@v1'\n"
+				root = "  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n    uses:\n      - 'actions/checkout@v4'\n"
+			}
+			path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+steps+
+				"      - uses: actions/checkout@v4\n      - uses: actions/checkout@v4.2.1\n")
+			lock := "version: '" + parserlock.Version + "'\ndependencies:\n" + root +
+				"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+				"  'actions/checkout@v4.2.1':\n    ref: 'v4.2.1'\n    commit: 'sha1-" + parityTestMoved + "'\n    owner_id: 1\n    repo_id: 1\n" +
+				"workflows:\n  '.github/workflows/workflow.yml':\n    - 'actions/checkout@v4'\n    - 'actions/checkout@v4.2.1'\n" + roots
+			lockPath := filepath.Join(".github", "workflows", "actions.lock")
+			require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, reg, append(tc.args, "--no-narrow", "--no-interactive", path)...)
+			after, rerr := os.ReadFile(lockPath)
+			require.NoError(t, rerr)
+			require.NoError(t, err, "%s\n%s", stderr, after)
+			assert.Contains(t, string(after), "'actions/checkout@v4':\n        ref: 'v4'\n        commit: 'sha1-"+parityTestMoved+"'")
+			assert.NotContains(t, string(after), parityTestSHA)
+			_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
+			require.NoError(t, err, "the relocked lock verifies: %s", stderr)
+		})
+	}
+}
+
 // reposDown fails every request about the given owner/repos except the
 // parity query, which reports the pins themselves.
 type reposDown struct {
