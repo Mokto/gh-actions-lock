@@ -866,13 +866,24 @@ scenarios:
 
   - name: transitive_closure_cross_repo
     category: multi_workflow
-    description: "Composite actions produce full transitive closure in lockfile — cross-repo deps and uses: chains preserved even when a shared dep appears in multiple workflows"
+    description: "Real-binary live composite resolution preserves cross-repo uses: chains and shared dependencies across three controlled workflow roots, independently of the fixture repository's own reusable-workflow policy"
     needs_token: true
     tags: [real_repo]
-    live_repo: nodeselector/actions-test-fixtures
-    flags: [".github/workflows/happy-path.yml", ".github/workflows/deep-self-ref.yml", ".github/workflows/reusable-build.yml"]
+    flags: [".github/workflows/composite.yml", ".github/workflows/self.yml", ".github/workflows/shared.yml"]
     fixtures:
-      delete_lockfile: true
+      workflows:
+        composite.yml:
+          actions:
+            - "actions/checkout@v4.3.1"
+            - "nodeselector/actions-test-fixtures/nested-composite@v1"
+        self.yml:
+          actions:
+            - "actions/checkout@v4.3.1"
+            - "nodeselector/actions-test-fixtures/deep-self-ref@main"
+        shared.yml:
+          actions:
+            - "actions/checkout@v4.3.1"
+            - "nodeselector/actions-test-fixtures/simple-node@main"
     expect:
       exit: 0
       lockfile_deps_cover_direct: true
@@ -1607,13 +1618,13 @@ scenarios:
           name: Blocked
           actions:
             - "nodeselector/actions-test-fixtures/composite-with-local-path@main"
-            - "nodeselector/actions-test-fixtures/simple-node@tampered"
+            - "nodeselector/actions-test-fixtures/simple-node@__gh_actions_lock_missing_ref__"
         main.yml:
           name: Main
           actions: ["nodeselector/actions-test-fixtures/simple-node@main"]
-        updated.yml:
-          name: Updated
-          actions: ["nodeselector/actions-test-fixtures/simple-node@updated"]
+        nested.yml:
+          name: Nested
+          actions: ["nodeselector/actions-test-fixtures/nested-composite@v1"]
         v1.yml:
           name: V1
           actions: ["nodeselector/actions-test-fixtures/simple-node@v1"]
@@ -1621,7 +1632,7 @@ scenarios:
       exit: 1
       output_contains:
         - "1 of 4 workflows failed"
-        - "local action"
+        - "__gh_actions_lock_missing_ref__"
         - "Nothing was written"
       output_excludes:
         - "4 of 4 workflows failed"
@@ -2098,13 +2109,16 @@ scenarios:
 
   - name: onboard_roundtrip_v003
     category: onboarding
-    description: "Real-binary GitHub.com onboarding emits v0.0.3 without hostnames and a complete live transitive dependency graph"
+    description: "Real-binary GitHub.com onboarding of a controlled workflow emits v0.0.3 without hostnames and resolves a complete live composite graph, independently of the fixture repository's own reusable-workflow policy"
     needs_token: true
     tags: [real_repo]
-    live_repo: nodeselector/actions-test-fixtures
-    flags: [".github/workflows/happy-path.yml"]
+    flags: [".github/workflows/ci.yml"]
     fixtures:
-      delete_lockfile: true
+      workflows:
+        ci.yml:
+          actions:
+            - "actions/checkout@v4.3.1"
+            - "nodeselector/actions-test-fixtures/nested-composite@v1"
     expect:
       exit: 0
       lockfile_exists: true
