@@ -60,6 +60,7 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 					if inspection.keys[key] {
 						retained = append(retained, manifest.Ref)
 						covered[key] = true
+						appendLocalActionNotices(wr, manifest.LocalActions)
 					}
 				}
 			}

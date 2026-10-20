@@ -18,7 +18,9 @@ import (
 // discovery loses sub-action edges, cycles within a repository, and the
 // refs a manifest names.
 type Graph struct {
-	nodes map[ghapi.ActionRef]*graphNode
+	// LocalActions discloses opaque workspace references, not graph edges.
+	LocalActions []string
+	nodes        map[ghapi.ActionRef]*graphNode
 	// order lists resolved nodes in resolution order.
 	order []ghapi.ActionRef
 	roots []ghapi.ActionRef
@@ -29,11 +31,12 @@ type Graph struct {
 
 type graphNode struct {
 	// ref is the reference as first requested; it names an unresolved node.
-	ref      parserlock.ActionRef
-	dep      dep.Dependency
-	resolved bool
-	children []graphEdge
-	err      error
+	ref          parserlock.ActionRef
+	dep          dep.Dependency
+	resolved     bool
+	children     []graphEdge
+	err          error
+	localActions []string
 }
 
 // graphEdge is one `uses:` as its manifest writes it. A manifest can't be
@@ -101,9 +104,10 @@ func (g *Graph) Roots() []parserlock.ActionRef {
 
 // Manifest preserves an action file's path and its own dependency edges.
 type Manifest struct {
-	Ref     parserlock.ActionRef
-	Entry   Entry
-	Parents dep.ParentMap
+	Ref          parserlock.ActionRef
+	Entry        Entry
+	Parents      dep.ParentMap
+	LocalActions []string
 }
 
 // Manifests keeps sibling action files separate while deriving their entry
@@ -132,7 +136,7 @@ func (g *Graph) Manifests(roots []parserlock.ActionRef) ([]Manifest, error) {
 		err = errors.Join(err, flatErr)
 		for _, entry := range entries {
 			if entry.Root {
-				out = append(out, Manifest{Ref: n.ref, Entry: entry, Parents: parents})
+				out = append(out, Manifest{Ref: n.ref, Entry: entry, Parents: parents, LocalActions: slices.Clone(n.localActions)})
 			}
 		}
 	}

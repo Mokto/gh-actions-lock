@@ -67,3 +67,12 @@ needs this decision. Unreleased changes of that kind:
   and exit 1; a fix run re-records its tag or branch and exits 0, or fails
   when no tag or branch contains the commit; a run given workflow paths warns
   about another workflow's such entry and exits 0.
+
+## Workspace-local action coverage
+
+Local `./…` actions no longer block locking or verification. They are never
+followed, locked, or automatically migrated to `$/…`; their nested dependencies
+remain outside lockfile coverage. The existing `local-action` finding is now
+informational and visible in JSON. Validate these severity and exit-code changes
+with Dependabot, including workflows that mix local actions with missing or
+rejected remote pins. `--no-migrate-local-actions` remains a compatibility no-op.

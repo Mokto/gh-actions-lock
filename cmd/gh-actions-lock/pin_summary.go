@@ -190,7 +190,7 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	}
 
 	// Surface error-severity findings that the autofix can't resolve
-	// (e.g. local-action on an already-onboarded workflow).
+	// (e.g. an invalid self-repository reference).
 	// PresentResults already rendered these during the diagnose phase,
 	// but the narration log was attached (discarded in terminal mode)
 	// so they didn't reach stderr. Temporarily detach the log so the

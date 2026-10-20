@@ -723,7 +723,7 @@ func TestResolveAllRecursiveTerminatesOnCycle(t *testing.T) {
 	}
 }
 
-func TestResolveAllRecursiveCompositeLocalPathError(t *testing.T) {
+func TestResolveCompositeLocalPathIsAllowedWithoutTraversal(t *testing.T) {
 	r := seedCache(&Resolver{
 		MaxRecursionDepth: DefaultMaxRecursionDepth,
 	}, map[ghapi.ActionRef]resolvedEntry{
@@ -737,29 +737,24 @@ func TestResolveAllRecursiveCompositeLocalPathError(t *testing.T) {
 		},
 	})
 
-	deps, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
+	graph, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{
 		{Owner: "owner", Repo: "composite", Ref: "v1"},
 	})
-	if err == nil {
-		t.Fatal("expected CompositeLocalPathError, got nil")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !IsCompositeLocalPath(err) {
-		t.Fatalf("expected CompositeLocalPathError, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "./helper") {
-		t.Errorf("error should mention the local path, got: %v", err)
-	}
-	// Partial results should still be returned (checkout resolved).
-	if len(deps) < 2 {
-		t.Errorf("expected partial results with at least 2 deps, got %d", len(deps))
+	require.Equal(t, []string{LocalActionWarning("owner/composite@v1", "./helper")}, graph.LocalActions)
+	deps, _, err := graph.Flatten()
+	require.NoError(t, err)
+	if len(deps) != 2 {
+		t.Errorf("expected both remotely named dependencies, got %d", len(deps))
 	}
 }
 
-func TestResolveAllRecursiveCompositeLocalPathErrorDeep(t *testing.T) {
+func TestResolveNestedLocalPathIsAllowedWithoutTraversal(t *testing.T) {
 	// A `$/` self repository chain three levels deep whose leaf uses a `./`
 	// local path. Every hop before the leaf is a valid same-tarball self
-	// reference, so the block must surface transitively rather than at the
-	// entry action. Mirrors the deep-blocked fixture in actions-test-fixtures.
+	// reference; only the workspace path remains outside lockfile coverage.
 	const appSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	step := func(uses string) string { return "    - uses: " + uses + "\n" }
 
@@ -780,18 +775,13 @@ func TestResolveAllRecursiveCompositeLocalPathErrorDeep(t *testing.T) {
 		},
 	})
 
-	_, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
+	graph, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{
 		{Owner: "owner", Repo: "app", Path: "l0", Ref: "main"},
 	})
-	if err == nil {
-		t.Fatal("expected CompositeLocalPathError, got nil")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !IsCompositeLocalPath(err) {
-		t.Fatalf("expected CompositeLocalPathError, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "./leaf-helper") {
-		t.Errorf("error should mention the transitive local path, got: %v", err)
-	}
+	assert.Equal(t, []string{LocalActionWarning("owner/app/l2@main", "./leaf-helper")}, graph.LocalActions)
 }
 
 func TestNewAndLatestRef(t *testing.T) {

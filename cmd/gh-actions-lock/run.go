@@ -70,9 +70,7 @@ type checkOptions struct {
 	// in scanned workflows must have a corresponding lockfile entry.
 	// No auth, no resolution, no reachability — ideal for pre-commit hooks.
 	verifyLocal bool
-	// noMigrateLocalActions opts out of rewriting same-repo `./…` composite
-	// action refs to the inherently-pinned `$/…` form. Migration runs by
-	// default on fix runs; set this to leave `./…` refs on disk untouched.
+	// noMigrateLocalActions is a compatibility no-op: local paths are never migrated.
 	noMigrateLocalActions bool
 }
 
@@ -98,8 +96,7 @@ func bindCheckFlags(cmd *cobra.Command, opts *checkOptions) {
 			"It does not check that the entries are trustworthy; use --verify in CI for that.")
 	cmd.Flags().StringVar(&opts.profileDir, "profile", "", "Enable profiling: write trace, CPU profile, and HTTP log to `dir`")
 	cmd.Flags().BoolVar(&opts.noMigrateLocalActions, "no-migrate-local-actions", false,
-		"Do not rewrite same-repo `uses: ./…` actions to the inherently-pinned `uses: $/…` form.\n"+
-			"Migration runs by default on fix runs (never under --verify or --verify-local); this leaves `./…` refs on disk untouched.")
+		"Compatibility no-op: local ./ actions are always left unchanged and never followed")
 }
 
 // validateOutputFlags rejects incoherent structured-output flag combinations.
@@ -217,13 +214,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 					return fmt.Errorf("scanning %s: %w", pw.Path, pw.LoadErr)
 				}
 				scanErrors := append(pw.SelfRepositoryRefErrs, pw.SelfRepositoryResolutionErrs...)
-				localRefs, warnings := workflowfile.ExtractLocalCompositeRefs(pw.Path, pw.LocalPaths)
-				scanErrors = append(scanErrors, warnings...)
 				if len(scanErrors) > 0 {
 					return fmt.Errorf("scanning %s: %s", pw.Path, strings.Join(scanErrors, "; "))
 				}
 				refs = append(refs, pw.Refs...)
-				refs = append(refs, localRefs...)
 			}
 			// Drop obsolete pins before binding hosts or verifying identities.
 			// This is in-memory only; a failed run leaves the file untouched.
@@ -269,29 +263,6 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	endSetup()
 
 	opts.workflowPaths = paths
-
-	// committed guards the all-or-nothing rule: until pin.Commit succeeds,
-	// every disk write this run made is rolled back.
-	committed := false
-
-	// Rewrite same-repo `./…` action refs to the inherently-pinned `$/…` form
-	// before scanning, so the diagnosis sees compliant refs. Runs by default on
-	// fix runs; opt out with --no-migrate-local-actions. Read-only runs
-	// (--no-fix) never touch disk.
-	migrated := 0
-	if !opts.noMigrateLocalActions && !opts.noFix {
-		var undo func()
-		var err error
-		migrated, undo, err = migrateLocalActions(opts.workflowPaths)
-		defer func() {
-			if !committed {
-				undo()
-			}
-		}()
-		if err != nil {
-			return err
-		}
-	}
 
 	// Detailed narration is suppressed from the terminal during the run so the
 	// output stays limited to phase labels, prompts, and the final summary.
@@ -547,13 +518,9 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		console.StopProgress()
 		return fmt.Errorf("committing pins: %w", err)
 	}
-	committed = true
 	endCommit()
 
 	console.StopProgress()
-	if migrated > 0 && opts.jsonFields == "" {
-		console.TermSuccess("Migrated %d local %s to `$/…`", migrated, ui.Pluralize(migrated, "action", "actions"))
-	}
 
 	appendUnselectedOwnSHAWarnings(report, store)
 
@@ -680,96 +647,4 @@ func cliVersion() string {
 		return info.Main.Version
 	}
 	return "unknown"
-}
-
-// migrateLocalActions rewrites same-repo `./…` action refs to `$/…` and writes
-// changes to disk. It covers two kinds of files: the discovered workflow files,
-// and every in-repo composite action definition file (action.yml/action.yaml)
-// found under the repository root. The latter is why a composite action that
-// internally uses `uses: ./helper` gets fixed too, not just the workflow that
-// calls it. Returns the total number of `uses:` lines rewritten and an undo
-// func that restores the original contents; undo is never nil.
-func migrateLocalActions(paths []string) (int, func(), error) {
-	var written []plannedMigration
-	undo := func() {
-		for _, m := range written {
-			_ = os.WriteFile(m.path, m.original, 0o644)
-		}
-	}
-	files := append([]string(nil), paths...)
-
-	// Also sweep in-repo composite action files. The repo root is derived from
-	// a workflow path (they live under .github/workflows/); onboarding only
-	// runs when workflows exist, so an empty paths list means nothing to do.
-	if len(paths) > 0 {
-		root, err := workflowfile.FindRepoRoot(paths[0])
-		if err != nil {
-			return 0, undo, err
-		}
-		if root != "" {
-			actionFiles, err := workflowfile.DiscoverCompositeActionFiles(root)
-			if err != nil {
-				return 0, undo, err
-			}
-			files = append(files, actionFiles...)
-		}
-	}
-
-	var migrations []plannedMigration
-	seen := make(map[string]bool)
-	for _, path := range files {
-		absPath, err := filepath.Abs(path)
-		if err != nil {
-			return 0, undo, fmt.Errorf("resolving migration path %s: %w", path, err)
-		}
-		if seen[absPath] {
-			continue
-		}
-		seen[absPath] = true
-
-		root, err := workflowfile.FindRepoRoot(path)
-		if err != nil {
-			return 0, undo, fmt.Errorf("refusing to migrate %s: %w", path, err)
-		}
-		if root != "" {
-			if err := workflowfile.ValidatePathWithinRoot(root, path); err != nil {
-				return 0, undo, fmt.Errorf("refusing to migrate %s: %w", path, err)
-			}
-		}
-		original, err := os.ReadFile(path)
-		if err != nil {
-			return 0, undo, fmt.Errorf("loading %s: %w", path, err)
-		}
-		wf, err := workflowfile.Load(path)
-		if err != nil {
-			return 0, undo, fmt.Errorf("loading %s: %w", path, err)
-		}
-		content, changed, err := wf.MigrateLocalActionsToSelfRepository()
-		if err != nil {
-			return 0, undo, fmt.Errorf("refusing to migrate %s: %w", path, err)
-		}
-		if changed == 0 {
-			continue
-		}
-		migrations = append(migrations, plannedMigration{path: path, original: original, content: content, changed: changed})
-	}
-
-	// Do not write anything until every candidate has passed structural and
-	// repository-boundary validation.
-	total := 0
-	for _, plan := range migrations {
-		written = append(written, plan)
-		if err := os.WriteFile(plan.path, plan.content, 0o644); err != nil {
-			return total, undo, fmt.Errorf("writing %s: %w", plan.path, err)
-		}
-		total += plan.changed
-	}
-	return total, undo, nil
-}
-
-type plannedMigration struct {
-	path     string
-	original []byte
-	content  []byte
-	changed  int
 }

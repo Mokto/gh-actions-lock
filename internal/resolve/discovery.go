@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,25 +16,11 @@ import (
 	"github.com/github/gh-actions-lock/internal/uses"
 )
 
-// CompositeLocalPathError is returned when a remote composite action uses a
-// local path (./…) reference in its steps. We cannot resolve transitive
-// dependencies behind such references, so the workflow must be blocked.
-type CompositeLocalPathError struct {
-	// Parent is the NWO@Ref of the composite action containing the local path.
-	Parent string
-	// LocalPath is the ./… value found in the composite's steps.
-	LocalPath string
-}
+const localActionWarningPrefix = "Local actions are allowed but never followed or locked"
 
-func (e *CompositeLocalPathError) Error() string {
-	return fmt.Sprintf("composite action %s uses local path %q which cannot be resolved for pinning", e.Parent, e.LocalPath)
-}
-
-// IsCompositeLocalPath reports whether err (or any error in its chain)
-// is a CompositeLocalPathError.
-func IsCompositeLocalPath(err error) bool {
-	var target *CompositeLocalPathError
-	return errors.As(err, &target)
+// LocalActionWarning identifies a workspace path whose dependencies are not covered.
+func LocalActionWarning(parent, localPath string) string {
+	return fmt.Sprintf("%s: %s uses %s; its uses: dependencies are not covered by this lockfile", localActionWarningPrefix, parent, localPath)
 }
 
 // InvalidSelfRepositoryRefError is returned when a fetched composite carries
@@ -377,11 +364,13 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 			parentKey := deps[i].Key()
 			for _, rawUse := range meta.NestedUses {
 				use := strings.TrimSpace(rawUse)
-				if strings.HasPrefix(use, "./") {
-					fail(requested[i], &CompositeLocalPathError{
-						Parent:    parentKey,
-						LocalPath: use,
-					})
+				classified := uses.Classify(use, uses.Step)
+				if classified.Kind == uses.Local {
+					warning := LocalActionWarning(requested[i].FullName()+"@"+requested[i].Ref, use)
+					if !slices.Contains(g.LocalActions, warning) {
+						g.LocalActions = append(g.LocalActions, warning)
+					}
+					g.nodes[g.node(requested[i])].localActions = append(g.nodes[g.node(requested[i])].localActions, warning)
 					continue
 				}
 				var request resolutionRequest
@@ -409,14 +398,13 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 						fetchRef: deps[i].SHA,
 					}
 				} else {
-					c := uses.Classify(use, uses.Step)
-					if c.Kind == uses.Invalid {
+					if classified.Kind == uses.Invalid {
 						fail(requested[i], &MalformedNestedRefError{Parent: parentKey, Ref: use})
 					}
-					if c.Kind != uses.Action {
+					if classified.Kind != uses.Action {
 						continue
 					}
-					request = resolutionRequest{ref: c.Action}
+					request = resolutionRequest{ref: classified.Action}
 				}
 				actionRef := request.ref
 				if actionRef.Owner == "" {

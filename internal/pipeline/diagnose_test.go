@@ -25,7 +25,9 @@ func TestDiagnoseOneParsed_LocalAction_NotOnboarded(t *testing.T) {
 
 	assert.Len(t, wr.Findings, 1)
 	assert.Equal(t, checks.LocalAction, wr.Findings[0].Category)
-	assert.Equal(t, checks.SeverityWarning, wr.Findings[0].Severity)
+	assert.Equal(t, checks.SeverityInfo, wr.Findings[0].Severity)
+	assert.Contains(t, wr.Findings[0].Detail, "never followed or locked")
+	assert.True(t, wr.IsValid())
 }
 
 func TestDiagnoseOneParsed_LocalAction_AlreadyOnboarded(t *testing.T) {
@@ -44,8 +46,10 @@ func TestDiagnoseOneParsed_LocalAction_AlreadyOnboarded(t *testing.T) {
 
 	assert.Len(t, wr.Findings, 1)
 	assert.Equal(t, checks.LocalAction, wr.Findings[0].Category)
-	assert.Equal(t, checks.SeverityError, wr.Findings[0].Severity)
-	assert.Contains(t, wr.Findings[0].Remediation, "remove")
+	assert.Equal(t, checks.SeverityInfo, wr.Findings[0].Severity)
+	assert.Contains(t, wr.Findings[0].Detail, "uses: dependencies are not covered")
+	assert.Empty(t, wr.Findings[0].Remediation)
+	assert.True(t, wr.IsValid())
 }
 
 func TestDiagnoseOneParsed_SelfRepositoryOnly(t *testing.T) {

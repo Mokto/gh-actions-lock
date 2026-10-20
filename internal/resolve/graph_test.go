@@ -268,7 +268,6 @@ func TestGraphInspectScopesFailuresAndEdges(t *testing.T) {
 		want     string
 	}{
 		{name: "parse failure", manifest: "runs: [", want: "reading manifest"},
-		{name: "local path", manifest: "runs:\n  using: composite\n  steps:\n    - uses: ./local\n", want: "local path"},
 		{name: "invalid self ref", manifest: "runs:\n  using: composite\n  steps:\n    - uses: $/sub@v1\n", want: "forbidden @ref"},
 		{name: "malformed nested ref", manifest: "runs:\n  using: composite\n  steps:\n    - uses: o/action@v1:action.yml\n", want: "action.yml"},
 		{name: "cycle", manifest: "runs:\n  using: composite\n  steps:\n    - uses: o/root@v1\n", want: "reaches itself"},
@@ -331,7 +330,7 @@ func TestGraphManifestsPreserveSiblingPaths(t *testing.T) {
 		},
 		ghapi.ForActionRef("o", "actions", "b", "v1"): {
 			dep:       dep.Dependency{NWO: "o/actions", Path: "b", Ref: "v1", SHA: sha},
-			actionYML: "runs:\n  using: composite\n  steps:\n    - uses: o/leaf@v1\n",
+			actionYML: "runs:\n  using: composite\n  steps:\n    - uses: o/leaf@v1\n    - uses: ./opaque\n",
 		},
 		ghapi.ForActionRef("o", "leaf", "", "v1"): {
 			dep: dep.Dependency{NWO: "o/leaf", Ref: "v1", SHA: sha}, actionYML: "runs:\n  using: node20\n",
@@ -350,8 +349,10 @@ func TestGraphManifestsPreserveSiblingPaths(t *testing.T) {
 		assert.Equal(t, sha, manifest.Entry.Dep.SHA)
 		if manifest.Ref.Path == "a" {
 			assert.Empty(t, manifest.Parents)
+			assert.Empty(t, manifest.LocalActions)
 		} else {
 			assert.Equal(t, dep.ParentMap{dep.RefKeyOf("o/leaf@v1"): {"o/actions@v1"}}, manifest.Parents)
+			assert.Equal(t, []string{LocalActionWarning("o/actions/b@v1", "./opaque")}, manifest.LocalActions)
 		}
 	}
 	assert.Equal(t, []string{"a", "b"}, paths)

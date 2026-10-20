@@ -7,7 +7,7 @@ package main
 //
 //   --verify-local Offline static coverage check. Every action ref must have
 //                  a lockfile entry. No network, no auth, no writes — ideal for
-//                  pre-commit. Same-repo `./…` refs are reported, not migrated.
+//                  pre-commit. Workspace `./…` refs are reported, not followed.
 
 import (
 	"errors"
@@ -84,14 +84,14 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 		// A damaged recorded graph shows its own --relock remediation; a
 		// plain run would block on it.
 		if opts.jsonFields == "" && !format.HasIncompleteLockfile(report) {
-			console.TermDetail("Run without --verify-local to resolve and pin missing actions and migrate `./…` refs to `$/…`.")
+			console.TermDetail("Run without --verify-local to resolve and pin missing actions.")
 		}
 		return errSilent
 	}
 
 	total := len(paths)
 	if opts.jsonFields == "" {
-		console.TermSuccess("All %d %s have complete lockfile coverage.",
+		console.TermSuccess("All %d %s have valid lockfile coverage for inspected actions.",
 			total, ui.Pluralize(total, "workflow", "workflows"))
 	}
 	return nil

@@ -24,7 +24,7 @@ func TestRemoteCompositeRejectsMalformedRemoteRef(t *testing.T) {
 	r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
 		ghapi.ForActionRef("owner", "composite", "", "v1"): {
 			dep:       dep.Dependency{NWO: "owner/composite", Ref: "v1", SHA: strings.Repeat("a", 40)},
-			actionYML: "runs:\n  using: composite\n  steps:\n    - uses: " + rejected + "\n",
+			actionYML: "runs:\n  using: composite\n  steps:\n    - uses: ./opaque\n    - uses: " + rejected + "\n    - uses: ./also-opaque\n",
 		},
 	})
 
@@ -34,6 +34,67 @@ func TestRemoteCompositeRejectsMalformedRemoteRef(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), rejected)
+}
+
+func TestResolveGraphKeepsOpaquePathsSeparateFromDependencies(t *testing.T) {
+	const parentSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const remoteSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for _, locked := range []bool{false, true} {
+		name := "live refs"
+		if locked {
+			name = "locked commits"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := &Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}
+			entries := []resolvedEntry{
+				{
+					dep: dep.Dependency{NWO: "owner/parent", Path: "root", Ref: "Main", SHA: parentSHA},
+					actionYML: "runs:\n  using: composite\n  steps:\n" +
+						"    - uses: ./opaque\n    - uses: $/sibling\n    - uses: other/remote@v2\n",
+				},
+				{
+					dep:       dep.Dependency{NWO: "owner/parent", Path: "sibling", Ref: "Main", SHA: parentSHA},
+					actionYML: "runs:\n  using: composite\n  steps:\n    - uses: ./nested-opaque\n",
+				},
+				{
+					dep:       dep.Dependency{NWO: "other/remote", Ref: "v2", SHA: remoteSHA},
+					actionYML: "runs:\n  using: node20\n",
+				},
+			}
+			var recorded []dep.Dependency
+			for _, entry := range entries {
+				owner, repo := entry.dep.OwnerRepo()
+				ref := entry.dep.Ref
+				cache := &r.cache
+				if locked {
+					ref = entry.dep.SHA
+					cache = &r.lockedContentCache
+				}
+				cache.Put(ghapi.ForActionRef(owner, repo, entry.dep.Path, ref), entry)
+				recorded = append(recorded, entry.dep)
+			}
+			refs := []parserlock.ActionRef{{Owner: "owner", Repo: "parent", Path: "root", Ref: "Main"}}
+			var graph *Graph
+			var err error
+			if locked {
+				graph, err = r.ResolveLockedGraph(context.Background(), refs, recorded)
+			} else {
+				graph, err = r.ResolveGraph(context.Background(), refs)
+			}
+			require.NoError(t, err)
+			assert.Equal(t, []string{
+				LocalActionWarning("owner/parent/root@Main", "./opaque"),
+				LocalActionWarning("owner/parent/sibling@Main", "./nested-opaque"),
+			}, graph.LocalActions)
+			deps, parents, err := graph.Flatten()
+			require.NoError(t, err)
+			require.Len(t, deps, 2)
+			assert.Equal(t, "owner/parent@Main", deps[0].Key())
+			assert.Equal(t, "other/remote@v2", deps[1].Key())
+			assert.Equal(t, []string{"owner/parent@Main"}, parents[dep.RefKeyOf("other/remote@v2")])
+			assert.Len(t, graph.nodes, 3, "workspace paths must never become graph nodes")
+		})
+	}
 }
 
 func TestResolveLockedRecursiveCachesContentWithoutLosingLogicalRefs(t *testing.T) {
