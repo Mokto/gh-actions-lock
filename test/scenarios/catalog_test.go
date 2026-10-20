@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/testfixture"
@@ -134,19 +135,75 @@ func TestScenarioMatrix(t *testing.T) {
 	}
 }
 
-// TestCatalogSHAsAreNamedPins keeps every real-looking commit in the catalog
-// tied to a testfixture.Pin, which the fixture guard checks against the live
-// API. Synthetic SHAs ("aaaa…") only ever meet the stub server.
+// TestCatalogSHAsAreNamedPins keeps every real-looking catalog commit tied
+// to a testfixture.Pin, which the fixture guard checks against the live API.
+// A commit must match a pin exactly: by repository where the catalog names
+// one (`owner/repo@sha`), and by repository and ref in expected JSON
+// (`nwo`/`ref`/`sha`). Synthetic SHAs ("aaaa…") only ever meet the stub.
 func TestCatalogSHAsAreNamedPins(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(thisFile), "catalog.yml"))
 	require.NoError(t, err)
 
 	for _, sha := range regexp.MustCompile(`\b[0-9a-f]{40}\b`).FindAllString(string(data), -1) {
-		if testfixture.IsSynthetic(sha) {
-			continue
+		if !testfixture.IsSynthetic(sha) {
+			assert.NotEmpty(t, pinsMatching("", "", sha), "catalog SHA %s is not a testfixture pin", sha)
 		}
-		_, ok := testfixture.BySHA(sha)
-		assert.True(t, ok, "catalog SHA %s is not a testfixture pin", sha)
 	}
+	for _, m := range regexp.MustCompile(`([\w.-]+/[\w.-]+)@([0-9a-f]{40})\b`).FindAllStringSubmatch(string(data), -1) {
+		if !testfixture.IsSynthetic(m[2]) {
+			assert.NotEmpty(t, pinsMatching(m[1], "", m[2]), "%s is not a pin of %s", m[2], m[1])
+		}
+	}
+
+	cat, err := Load()
+	require.NoError(t, err)
+	for _, sc := range cat.Scenarios {
+		walkTriples(sc.Expect.GoldenJSON, func(nwo, ref, sha string) {
+			if !testfixture.IsSynthetic(sha) {
+				assert.NotEmpty(t, pinsMatching(nwo, ref, sha), "%s: %s@%s=%s is not a testfixture pin", sc.Name, nwo, ref, sha)
+			}
+		})
+	}
+}
+
+// pinsMatching returns pins with sha whose repository (case-insensitive)
+// and ref (exact) match when given.
+func pinsMatching(repo, ref, sha string) []testfixture.Pin {
+	var out []testfixture.Pin
+	for _, p := range testfixture.Pins() {
+		if p.SHA == sha && (repo == "" || strings.EqualFold(p.Repo, repo)) && (ref == "" || p.Ref == ref) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// walkTriples calls fn for every object in v carrying nwo, ref and sha.
+func walkTriples(v any, fn func(nwo, ref, sha string)) {
+	switch v := v.(type) {
+	case map[string]any:
+		nwo, _ := v["nwo"].(string)
+		ref, _ := v["ref"].(string)
+		sha, _ := v["sha"].(string)
+		if nwo != "" && sha != "" {
+			fn(nwo, ref, sha)
+		}
+		for _, child := range v {
+			walkTriples(child, fn)
+		}
+	case []any:
+		for _, child := range v {
+			walkTriples(child, fn)
+		}
+	}
+}
+
+func TestPinsMatchingIsExact(t *testing.T) {
+	sha := testfixture.CheckoutV4.SHA
+	assert.NotEmpty(t, pinsMatching("Actions/Checkout", "v4", sha), "owner/repo fold case")
+	assert.Empty(t, pinsMatching("actions/checkout", "v4.2.2", sha), "a ref must match exactly")
+	assert.Empty(t, pinsMatching("actions/checkout", "V4", sha), "refs are case-sensitive")
+	assert.Empty(t, pinsMatching("actions/setup-go", "", sha), "a commit belongs to one repository")
+	assert.Empty(t, pinsMatching("actions/checkout", "", sha[:39]+"0"), "a SHA must match exactly")
 }
