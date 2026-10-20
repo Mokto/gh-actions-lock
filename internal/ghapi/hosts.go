@@ -7,10 +7,10 @@ import (
 	"regexp"
 )
 
-var proximaHost = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.ghe\.com$`)
+var tenantHostPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.ghe\.com$`)
 
-// IsProxima reports whether hostname is a canonical tenant hostname.
-func IsProxima(hostname string) bool { return proximaHost.MatchString(hostname) }
+// IsTenantHost reports whether hostname is a canonical tenant hostname.
+func IsTenantHost(hostname string) bool { return tenantHostPattern.MatchString(hostname) }
 
 // PinHost binds a repository to its recorded host before any resolution starts.
 // A repository cannot span hosts within a run: caches and ref selection are
@@ -62,7 +62,7 @@ func (c *Client) ForRepo(ctx context.Context, owner, repo string) (*Client, erro
 			selected = c.public
 		}
 		if selected == c.public {
-			// ponytail: anonymous dotcom rate limit; use host-bound credentials
+			// Anonymous GitHub.com rate limit: use host-bound credentials
 			// if public fallback volume exceeds that limit.
 			meta, err := c.public.repoMetadata(ctx, owner, repo)
 			if err != nil {

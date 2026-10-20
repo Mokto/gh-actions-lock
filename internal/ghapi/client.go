@@ -95,10 +95,10 @@ func New(hostname string, opts ...ClientOption) (*Client, error) {
 		hostname = "github.com"
 	}
 	local, err := newClient(hostname, opts...)
-	if err != nil || !IsProxima(hostname) {
+	if err != nil || !IsTenantHost(hostname) {
 		return local, err
 	}
-	// GH_TOKEN applies to both dotcom and Proxima in go-gh. Public fallback
+	// GH_TOKEN applies to both GitHub.com and tenant hosts in go-gh. Public fallback
 	// must never reuse it across those trust domains.
 	publicOpts := append([]ClientOption(nil), opts...)
 	publicOpts = append(publicOpts, func(c *clientConfig) { c.anonymous = true })

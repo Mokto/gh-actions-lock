@@ -1398,7 +1398,7 @@ module ActionsPin
 
       def push_last_run(arg)
         unless @last_run
-          puts "  \e[33mno run to push\e[0m — run a repo first (e.g. \e[36mgithub/launch\e[0m)"
+          puts "  \e[33mno run to push\e[0m — run a repo first (e.g. \e[36mocto-org/octo-repo\e[0m)"
           return
         end
 
