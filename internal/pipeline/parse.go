@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"errors"
-	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -136,7 +135,7 @@ func collectResolvable(parsed []checks.ParsedWorkflow, excludeKeys map[string]bo
 	var refs []parserlock.ActionRef
 	for _, pw := range parsed {
 		for _, ref := range pw.Refs {
-			nwoRef := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref
+			nwoRef := dep.FoldedKey(ref.Owner+"/"+ref.Repo, ref.Ref)
 			if excludeKeys[nwoRef] {
 				continue
 			}

@@ -83,7 +83,7 @@ func (g *Graph) conflictingCommits() error {
 	commits := make(map[string]string, len(g.order))
 	for _, key := range g.order {
 		d := g.nodes[key].dep
-		fk := flatKey(d.NWO, d.Ref)
+		fk := dep.FoldedKey(d.NWO, d.Ref)
 		if prev, ok := commits[fk]; ok && !strings.EqualFold(prev, d.SHA) {
 			return fmt.Errorf("%s resolved to both %s and %s in one run; retry", d.Key(), prev, d.SHA)
 		}
@@ -171,7 +171,7 @@ func (g *Graph) FlattenRenamed(renames map[string]string) ([]dep.Dependency, dep
 	for _, key := range g.roots {
 		n := g.nodes[key]
 		it := item{key: key}
-		if newRef, ok := renames[flatKey(n.dep.NWO, n.dep.Ref)]; ok && n.resolved {
+		if newRef, ok := renames[dep.FoldedKey(n.dep.NWO, n.dep.Ref)]; ok && n.resolved {
 			it.ref = newRef
 			renamed[key] = true
 		}
@@ -231,7 +231,7 @@ func (g *Graph) FlattenRenamed(renames map[string]string) ([]dep.Dependency, dep
 	rep := make(map[string]int)
 	for _, it := range emitted {
 		d := depOf(it)
-		fk := flatKey(d.NWO, d.Ref)
+		fk := dep.FoldedKey(d.NWO, d.Ref)
 		i, ok := rep[fk]
 		if !ok {
 			rep[fk] = len(deps)
@@ -248,7 +248,7 @@ func (g *Graph) FlattenRenamed(renames map[string]string) ([]dep.Dependency, dep
 		n := g.nodes[it.key]
 		if n.resolved {
 			d := depOf(it)
-			return deps[rep[flatKey(d.NWO, d.Ref)]].Key()
+			return deps[rep[dep.FoldedKey(d.NWO, d.Ref)]].Key()
 		}
 		ref := n.ref.Ref
 		if it.ref != "" {
@@ -262,22 +262,11 @@ func (g *Graph) FlattenRenamed(renames map[string]string) ([]dep.Dependency, dep
 		for _, c := range children(it) {
 			ck := name(c)
 			// Sub-actions of one owner/repo@ref share its lockfile entry.
-			if foldNWO(ck) == foldNWO(pk) || slices.Contains(parents[ck], pk) {
+			if dep.FoldKey(ck) == dep.FoldKey(pk) || slices.Contains(parents[ck], pk) {
 				continue
 			}
 			parents[ck] = append(parents[ck], pk)
 		}
 	}
 	return deps, parents
-}
-
-func flatKey(nwo, ref string) string {
-	return strings.ToLower(nwo) + "@" + ref
-}
-
-// foldNWO folds the owner/repo of an owner/repo@ref key. Refs can contain
-// "@"; owner/repo can't.
-func foldNWO(key string) string {
-	nwo, ref, _ := strings.Cut(key, "@")
-	return flatKey(nwo, ref)
 }

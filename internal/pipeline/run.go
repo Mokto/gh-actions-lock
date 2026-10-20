@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
@@ -85,7 +84,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			}
 		}
 		for _, rr := range recorded {
-			recordedKeys[strings.ToLower(rr.Owner+"/"+rr.Repo)+"@"+rr.Ref] = true
+			recordedKeys[dep.FoldedKey(rr.Owner+"/"+rr.Repo, rr.Ref)] = true
 		}
 	}
 	if r != nil && len(seedDeps) > 0 {

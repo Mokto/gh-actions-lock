@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
@@ -303,7 +304,7 @@ func pinsFromRecord(record *pin.Record, report *checks.Report) []Pin {
 	index := map[string]int{}
 	checked := map[string]bool{}
 	for _, e := range record.Entries {
-		key := strings.ToLower(e.Hostname+"/"+e.NWO) + "@" + e.Ref
+		key := dep.FoldedKey(e.Hostname+"/"+e.NWO, e.Ref)
 		for _, w := range e.Workflows {
 			if !blocked[w] {
 				checked[key] = true

@@ -54,13 +54,13 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 		for _, child := range slices.Sorted(maps.Keys(parents)) {
 			pp := parents[child]
 			for _, parent := range pp {
-				action, ok := file.Dependencies[foldKey(parent)]
+				action, ok := file.Dependencies[dep.FoldKey(parent)]
 				if !ok {
 					continue
 				}
 				found := false
 				for _, use := range action.Uses {
-					if foldKey(use) == foldKey(child) {
+					if dep.FoldKey(use) == dep.FoldKey(child) {
 						found = true
 						break
 					}

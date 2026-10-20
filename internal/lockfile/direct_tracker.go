@@ -50,7 +50,7 @@ func directKey(nwo, ref string) string {
 	if parserlock.IsFullSha(ref) {
 		ref = strings.ToLower(ref)
 	}
-	return strings.ToLower(nwo) + "@" + ref
+	return dep.FoldedKey(nwo, ref)
 }
 
 // IsDirect reports whether the dep at index i is a workflow-direct use.

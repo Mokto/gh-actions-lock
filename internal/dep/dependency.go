@@ -54,6 +54,21 @@ func (d Dependency) FullName() string {
 	return d.NWO
 }
 
+// FoldedKey is the identity of owner/repo@ref, compared the way the Actions
+// backend and lockfile keys compare it: owner/repo case-insensitive, ref
+// exact (git refs are case-sensitive, and may contain "@"). Build every
+// identity key with it.
+func FoldedKey(nwo, ref string) string {
+	return strings.ToLower(nwo) + "@" + ref
+}
+
+// FoldKey is FoldedKey for an owner/repo@ref string. Refs can contain "@";
+// owner/repo can't.
+func FoldKey(key string) string {
+	nwo, ref, _ := strings.Cut(key, "@")
+	return FoldedKey(nwo, ref)
+}
+
 // Key returns the dependency key for deduplication: NWO@Ref.
 func (d Dependency) Key() string {
 	return d.NWO + "@" + d.Ref

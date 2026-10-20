@@ -112,7 +112,7 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 				entry.Resolution != Pinned && entry.Resolution != Verified {
 				continue
 			}
-			key := strings.ToLower(entry.NWO) + "@" + entry.Ref
+			key := dep.FoldedKey(entry.NWO, entry.Ref)
 			target := entry.Hostname + "/" + entry.SHA
 			if previous, ok := targets[key]; ok && !strings.EqualFold(previous, target) {
 				planErr = fmt.Errorf("conflicting planned target %s resolves to both %s and %s", key, previous, target)
@@ -226,7 +226,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	preservedDeps := make(map[int]bool)
 	declared := make([]string, len(deps))
 	for i, d := range deps {
-		declared[i] = graphKey(d.NWO, d.Ref)
+		declared[i] = dep.FoldedKey(d.NWO, d.Ref)
 	}
 
 	narrowDirectDeps(ctx, opts, deps, rewriteTracker, rewrites, preservedDeps)
@@ -244,7 +244,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// still needs it.
 	renames := make(map[string]string)
 	for i, d := range deps {
-		if graphKey(d.NWO, d.Ref) != declared[i] {
+		if dep.FoldedKey(d.NWO, d.Ref) != declared[i] {
 			renames[declared[i]] = d.Ref
 		}
 	}
@@ -258,17 +258,17 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// branch); the graph adds the old refs composites still name, and edges.
 	planned := make(map[string]dep.Dependency, len(deps))
 	for _, d := range deps {
-		planned[graphKey(d.NWO, d.Ref)] = d
+		planned[dep.FoldedKey(d.NWO, d.Ref)] = d
 	}
 	deps, parentMap = graph.FlattenRenamed(renames)
 	for i, d := range deps {
-		if p, ok := planned[graphKey(d.NWO, d.Ref)]; ok {
+		if p, ok := planned[dep.FoldedKey(d.NWO, d.Ref)]; ok {
 			deps[i] = p
 		}
 	}
 	rootRefs := make([]parserlock.ActionRef, len(unrecordedRefs))
 	for i, ref := range unrecordedRefs {
-		if newRef, ok := renames[graphKey(ref.NWO(), ref.Ref)]; ok {
+		if newRef, ok := renames[dep.FoldedKey(ref.NWO(), ref.Ref)]; ok {
 			ref.Ref = newRef
 		}
 		rootRefs[i] = ref
@@ -289,7 +289,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 		// Remove failed deps so they don't flow into pinning/commit.
 		filtered := deps[:0]
 		for _, d := range deps {
-			if !skipKeys[graphKey(d.NWO, d.Ref)] {
+			if !skipKeys[dep.FoldedKey(d.NWO, d.Ref)] {
 				filtered = append(filtered, d)
 			}
 		}
@@ -336,11 +336,6 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	return planResult{entries: entries, wplans: wplans}, nil
 }
 
-// graphKey matches Graph's entry key: owner/repo folded, ref exact.
-func graphKey(nwo, ref string) string {
-	return strings.ToLower(nwo) + "@" + ref
-}
-
 // transferRewrites moves each redirected root's `uses:` in this workflow
 // to the canonical repository.
 func transferRewrites(deps []dep.Dependency, rootTracker lockfile.DirectTracker, sources []parserlock.ActionRef, rewrites map[string]string) map[string]string {
@@ -382,7 +377,7 @@ func rejectPartialSelfActionRewrites(opts PlanOptions, selfActionRefs []parserlo
 		if ref == nil {
 			continue
 		}
-		key := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref
+		key := dep.FoldedKey(ref.Owner+"/"+ref.Repo, ref.Ref)
 		if selfKeys[key] {
 			return fmt.Errorf("cannot rewrite %s in a shared local action during a partial workflow scan; scan all workflows", key)
 		}
@@ -595,7 +590,7 @@ func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.A
 		shaSeen[checks.PruneKey(inv.Dep.NWO, inv.Dep.Ref, inv.Dep.SHA)] = true
 	}
 	for _, ref := range refs {
-		key := strings.ToLower(ref.Owner+"/"+ref.Repo) + "@" + ref.Ref
+		key := dep.FoldedKey(ref.Owner+"/"+ref.Repo, ref.Ref)
 		if !byKey[key] {
 			unrecorded = append(unrecorded, ref)
 		}
@@ -666,7 +661,7 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 		if !e.Direct {
 			continue
 		}
-		if !rewriteRefKeys[strings.ToLower(e.NWO)+"@"+e.Ref] {
+		if !rewriteRefKeys[dep.FoldedKey(e.NWO, e.Ref)] {
 			continue
 		}
 		if parserlock.IsFullSha(e.Ref) {
@@ -766,7 +761,7 @@ func staleRoots(report *checks.Report, opts PlanOptions) map[string]map[string]b
 		stale := make(map[string]bool)
 		for _, f := range wr.Findings {
 			if f.Category == checks.Stale && f.Dependency != nil {
-				stale[strings.ToLower(f.Dependency.NWO)+"@"+f.Dependency.Ref] = true
+				stale[dep.FoldedKey(f.Dependency.NWO, f.Dependency.Ref)] = true
 			}
 		}
 		staleByWorkflow[workflowfile.KeyFromPath(wr.Path)] = stale
@@ -778,7 +773,7 @@ func hasConflictingLockTarget(opts PlanOptions, nwo, ref, sha string) bool {
 	if opts.Store == nil {
 		return false
 	}
-	key := strings.ToLower(nwo) + "@" + ref
+	key := dep.FoldedKey(nwo, ref)
 	if opts.retainedLockTargets != nil && !opts.retainedLockTargets[key] {
 		return false
 	}
@@ -793,7 +788,7 @@ func hasConflictingLockTarget(opts PlanOptions, nwo, ref, sha string) bool {
 func actionRefKeys(refs []parserlock.ActionRef) map[string]bool {
 	keys := make(map[string]bool, len(refs))
 	for _, ref := range refs {
-		keys[strings.ToLower(ref.Owner+"/"+ref.Repo)+"@"+ref.Ref] = true
+		keys[dep.FoldedKey(ref.Owner+"/"+ref.Repo, ref.Ref)] = true
 	}
 	return keys
 }
