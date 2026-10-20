@@ -473,6 +473,13 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		return fmt.Errorf("planning pins: %w", planErr)
 	}
 
+	// Parity excused or accepted some findings on the strength of this
+	// write; any it doesn't bear out block it.
+	if err := pin.Audit(ctx, record, store, report, &pin.CommitOptions{SkipNewWorkflowEntries: noOnboardFlag(cmd)}); err != nil {
+		console.StopProgress()
+		return fmt.Errorf("checking the planned write: %w", err)
+	}
+
 	// All or nothing: a run with errors it cannot fix writes nothing.
 	if runHasBlockingErrors(report, record, opts.acceptMoved) {
 		console.StopProgress()

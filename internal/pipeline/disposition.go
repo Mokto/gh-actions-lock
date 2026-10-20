@@ -85,9 +85,11 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) (parityVerd
 	if c == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
 		f.Remediation = unreachableRemediation(s.heldBy, f.Dependency.NWO)
 	}
-	// The kept warning itself makes planning re-resolve the entry
-	// (checks.PruneEffect), which heldBy says repairs it.
-	if m.acceptMoved && c == checks.UnreachablePin && !f.RefMissing && s.heldBy == "" {
+	// pin.Audit holds an accepted or excused finding to the write the run
+	// plans, so a mutable entry is deferred to it whoever holds it. A
+	// composite's full-SHA entry stays blocking: its repair re-keys the
+	// workflow's use and leaves the composite's entry as recorded.
+	if m.acceptMoved && c == checks.UnreachablePin && !f.RefMissing && (!fullSHA || s.heldBy == "") {
 		blocking := *f
 		f.Severity = checks.SeverityWarning
 		f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
@@ -96,7 +98,7 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) (parityVerd
 		}
 		return verdictAccept, blocking
 	}
-	excused := m.relock && s.away
+	excused := m.relock && (s.away || !fullSHA)
 	// A history check fails closed: the commit is otherwise unproven.
 	if s.inconclusive && s.head != "" {
 		f.Severity = checks.SeverityError

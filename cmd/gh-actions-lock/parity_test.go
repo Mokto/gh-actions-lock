@@ -2406,6 +2406,209 @@ jobs:
 	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 }
 
+// stubGraph answers parity and resolution for a set of repositories:
+// heads maps an owner/repo to the commit its tags now point at (absent: the
+// queried commit), manifests maps it to its action.yml.
+func stubGraph(t *testing.T, reg *httpmock.Registry, heads, commits map[string]string, manifests map[string]string) {
+	t.Helper()
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			head := v
+			if h, ok := heads[nwo]; ok {
+				head = h
+			}
+			data["a"+i] = map[string]any{"nameWithOwner": nwo, "databaseId": 1, "commit": map[string]any{"oid": v},
+				"tag": map[string]any{"oid": head}, "tagRef": map[string]any{"oid": head}}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			if i, ok := strings.CutPrefix(k, "owner"); ok {
+				nwo := v.(string) + "/" + body.Variables["name"+i].(string)
+				manifest, ok := manifests[nwo]
+				if !ok {
+					manifest = nodeActionYAML
+				}
+				data["a"+i] = testRepoResponse(nwo, commits[nwo], manifest)
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+}
+
+// TestParity_AcceptMovedRepairsChildWithNewDirectUse: a composite's child
+// left its tag's history, and a workflow now uses the child directly too.
+// --accept-moved resolves that direct use and writes the child's own key
+// afresh, so the repair goes through, whether the direct use is in the
+// composite's workflow or another one.
+func TestParity_AcceptMovedRepairsChildWithNewDirectUse(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		cross, blocked, narrow bool
+	}{
+		{name: "same workflow"},
+		{name: "same workflow, narrowing", narrow: true},
+		{name: "another workflow", cross: true},
+		// The repairing workflow can't be written, so neither can the repair.
+		{name: "another workflow that is blocked", cross: true, blocked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testChildWithNewDirectUse(t, tc.cross, tc.blocked, tc.narrow) })
+	}
+}
+
+func testChildWithNewDirectUse(t *testing.T, cross, blocked, narrow bool) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	reg := &httpmock.Registry{}
+	stubGraph(t, reg,
+		map[string]string{"actions/checkout": parityTestMoved},
+		map[string]string{"octo/root": rootSHA, "actions/checkout": parityTestMoved},
+		map[string]string{"octo/root": "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4.2.1\n"})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+	useDefaultTransport(t, reg)
+	steps := "      - uses: octo/root@v1\n"
+	if !cross {
+		steps += "      - uses: actions/checkout@v4.2.1\n"
+	}
+	path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+steps)
+	paths := []string{path}
+	if cross {
+		other := filepath.Join(".github", "workflows", "other.yml")
+		otherSteps := "      - uses: actions/checkout@v4.2.1\n"
+		if blocked {
+			otherSteps += "      - uses: actions/cache@v9-missing\n"
+		}
+		require.NoError(t, os.WriteFile(other, []byte("name: other\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+otherSteps), 0o600))
+		paths = append(paths, filepath.ToSlash(other))
+	}
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@v4.2.1'\n" +
+		"  'actions/checkout@v4.2.1':\n    ref: 'v4.2.1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	args := []string{"--accept-moved", "--no-interactive"}
+	if !narrow {
+		args = append(args, "--no-narrow")
+	}
+	_, stderr, err := runCommandWithHTTP(t, reg, append(args, paths...)...)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	if blocked {
+		require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
+		assert.Equal(t, lock, string(after), "nothing is written")
+		return
+	}
+	require.NoError(t, err, "%s\n%s", stderr, after)
+	assert.Contains(t, string(after), "commit: 'sha1-"+parityTestMoved+"'")
+	assert.NotContains(t, string(after), parityTestSHA)
+	_, stderr, err = runCommandWithHTTP(t, reg, append([]string{"--verify"}, paths...)...)
+	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
+}
+
+// TestParity_AcceptMovedKeepsRedirectedSharedPinBlocking: the workflow and
+// a composite share octo/old@v4, whose recorded commit left v4's history,
+// and octo/old now redirects to octo/new. --accept-moved re-resolves the
+// workflow's use under the new name, so the composite's octo/old entry
+// would stay at the rejected commit: nothing may be written.
+func TestParity_AcceptMovedKeepsRedirectedSharedPinBlocking(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			head := v
+			if nwo != "octo/root" {
+				head, nwo = parityTestMoved, "octo/new"
+			}
+			data["a"+i] = map[string]any{"nameWithOwner": nwo, "databaseId": 1, "commit": map[string]any{"oid": v},
+				"tag": map[string]any{"oid": head}, "tagRef": map[string]any{"oid": head}}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			if i, ok := strings.CutPrefix(k, "owner"); ok {
+				nwo := v.(string) + "/" + body.Variables["name"+i].(string)
+				if nwo == "octo/root" {
+					data["a"+i] = testRepoResponse(nwo, rootSHA, "name: r\nruns:\n  using: composite\n  steps:\n    - uses: octo/old@v4\n")
+				} else {
+					data["a"+i] = testRepoResponse("octo/new", parityTestMoved, nodeActionYAML)
+				}
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	for _, nwo := range []string{"octo/old", "octo/new"} {
+		reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`/compare/`),
+			httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+		reg.RegisterReusable(httpmock.REST("GET", `^/repos/`+nwo+`$`),
+			httpmock.JSONResponse(map[string]any{"full_name": "octo/new", "id": 1, "owner": map[string]any{"id": 1}}))
+	}
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/root@v1
+      - uses: octo/old@v4
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'octo/old@v4'\n" +
+		"  'octo/old@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/old@v4'\n    - 'octo/root@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+	wfBefore, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
+	assert.Contains(t, stderr, "octo/old")
+	assert.Equal(t, lock, string(after), "nothing is written")
+	wfAfter, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, string(wfBefore), string(wfAfter))
+}
+
 // reposDown fails every request about the given owner/repos except the
 // parity query, which reports the pins themselves.
 type reposDown struct {
