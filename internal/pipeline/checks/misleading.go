@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/resolve"
 )
 
@@ -50,14 +51,16 @@ func checkMisleadingSha(ctx context.Context, pw ParsedWorkflow, r CheckResolver)
 // When the observed SHA is itself unreachable from any branch of the
 // upstream repo (tag-moved-to-fork-network), an additional
 // lockfile-tampering claim is stronger.
-func checkRefMovedAndForgery(ctx context.Context, pw ParsedWorkflow, depIndex map[string]lockedPin, r CheckResolver) []Finding {
+func checkRefMovedAndForgery(ctx context.Context, pw ParsedWorkflow, depIndex map[string]lockedPin, refs lockfile.RefIndex, r CheckResolver) []Finding {
 	var out []Finding
 
 	// Build a set of index keys already covered by direct refs so we don't
 	// double-check them when iterating transitive deps below.
 	directKeys := make(map[string]bool, len(pw.Refs))
 	for _, ref := range pw.Refs {
-		directKeys[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)] = true
+		if key := storedKey(refs, ref); key != "" {
+			directKeys[key] = true
+		}
 	}
 
 	// Check direct refs from the workflow file.
@@ -65,7 +68,7 @@ func checkRefMovedAndForgery(ctx context.Context, pw ParsedWorkflow, depIndex ma
 		if parserlock.IsFullSha(ref.Ref) {
 			continue
 		}
-		pin, ok := depIndex[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)]
+		pin, ok := depIndex[storedKey(refs, ref)]
 		if !ok {
 			continue
 		}

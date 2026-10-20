@@ -10,17 +10,17 @@ import (
 	"github.com/github/gh-actions-lock/internal/workflowfile"
 )
 
-func checkRecordedClosure(pw ParsedWorkflow, file parserlock.File) []Finding {
+func checkRecordedClosure(pw ParsedWorkflow, file parserlock.File, refs lockfile.RefIndex) []Finding {
 	direct := make(map[string]bool, len(pw.Refs))
 	for _, ref := range pw.Refs {
-		direct[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)] = true
+		direct[storedKey(refs, ref)] = true
 	}
 	for _, d := range pw.RecordedDeps(pw.Refs) {
-		owner, repo := d.OwnerRepo()
-		direct[parserlock.IndexKey(owner, repo, d.Ref)] = true
+		direct[refs.Lookup(d.NWO, d.Ref).Exact] = true
 	}
+	delete(direct, "")
 	_, missing := lockfile.InspectClosure(file, workflowfile.KeyFromPath(pw.Path), func(pin parserlock.Pin, _ parserlock.Action) bool {
-		return direct[pin.IndexKey()]
+		return direct[refs.Lookup(pin.NWO, pin.Ref).Exact]
 	})
 	var out []Finding
 	for _, m := range missing {
@@ -71,7 +71,7 @@ func checkUntracked(pw ParsedWorkflow, tracked bool) []Finding {
 // unlocked SHA was never history-checked (it may be a fork commit served
 // under the upstream name), so it is NotPinned even if a sibling ref of
 // the same repo is locked.
-func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]lockedPin) []Finding {
+func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]lockedPin, refs lockfile.RefIndex) []Finding {
 	if len(pw.Refs) == 0 {
 		return nil
 	}
@@ -83,7 +83,7 @@ func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]
 	}
 	var out []Finding
 	for _, ref := range pw.Refs {
-		if _, ok := depIndex[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)]; ok {
+		if _, ok := depIndex[storedKey(refs, ref)]; ok {
 			continue
 		}
 		if parserlock.IsFullSha(ref.Ref) {
@@ -137,7 +137,7 @@ func checkSHARecordedRef(pw ParsedWorkflow, wfEntry []string, deps map[string]pa
 // commit SHA — both bare-SHA uses with no lock entry and bare-SHA uses
 // whose lock entry just mirrors the same SHA. The anti-pattern (no
 // human-readable ref) is the same in both cases.
-func checkShaAsRef(pw ParsedWorkflow, depIndex map[string]lockedPin) []Finding {
+func checkShaAsRef(pw ParsedWorkflow, depIndex map[string]lockedPin, refs lockfile.RefIndex) []Finding {
 	var out []Finding
 	for _, ref := range pw.Refs {
 		if !parserlock.IsFullSha(ref.Ref) {
@@ -147,7 +147,7 @@ func checkShaAsRef(pw ParsedWorkflow, depIndex map[string]lockedPin) []Finding {
 		f.Detail = "pinned to a bare SHA without a symbolic ref — weakens supply-chain traceability"
 		f.Remediation = fmt.Sprintf("pin to a tag instead: https://github.com/%s/releases", nwoLower(ref.Owner, ref.Repo))
 		lockedSha := ref.Ref
-		if locked, ok := depIndex[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)]; ok {
+		if locked, ok := depIndex[storedKey(refs, ref)]; ok {
 			lockedSha = locked.SHA()
 		}
 		f.Dependency = synthDep(ref, lockedSha)
@@ -205,7 +205,7 @@ func checkRefChanged(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 // is still valid — surface keys both ways so we don't false-flag.
 // Stale is an error: a frozen check requires the lockfile to match the
 // workflows exactly, and a fix run prunes the entry.
-func checkStale(pw ParsedWorkflow, depPins []lockedPin) []Finding {
+func checkStale(pw ParsedWorkflow, depPins []lockedPin, refs lockfile.RefIndex) []Finding {
 	if len(depPins) == 0 {
 		return nil
 	}

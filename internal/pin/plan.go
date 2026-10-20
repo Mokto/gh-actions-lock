@@ -55,6 +55,10 @@ type PlanOptions struct {
 	// pruning, while retaining pins needed by unscanned or skipped workflows.
 	retainedLockTargets map[string]bool
 
+	// refIndex reaches the lockfile's stored keys from planned refs; nil
+	// until Plan builds it, and built on demand otherwise.
+	refIndex *lockfile.RefIndex
+
 	// OnProgress is called at each phase boundary with a human-readable
 	// label (e.g. "Resolving actions/checkout"). Nil means no progress.
 	OnProgress func(phase string)
@@ -83,6 +87,10 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 	// permanently veto narrowing every direct use of the same NWO.
 	if opts.prevImpreciseNWO == nil && opts.Store != nil {
 		opts.prevImpreciseNWO = impreciseDirectNWOs(opts.Store)
+	}
+	if opts.Store != nil {
+		idx := lockfile.NewRefIndex(opts.Store.File())
+		opts.refIndex = &idx
 	}
 	opts.retainedLockTargets = retainedLockTargets(report, opts)
 	results := make([]planResult, len(report.Workflows))
@@ -748,7 +756,7 @@ func retainedLockTargets(report *checks.Report, opts PlanOptions) map[string]boo
 			return !staleByWorkflow[wfKey][p.String()]
 		}
 		for _, locked := range opts.Store.Closure(wfKey, live) {
-			retained[locked.Pin.String()] = true
+			retained[locked.Key] = true
 		}
 	}
 	return retained
@@ -781,8 +789,13 @@ func hasConflictingLockTarget(opts PlanOptions, nwo, ref, sha string) bool {
 	if opts.Store == nil {
 		return false
 	}
-	key := dep.FoldedKey(nwo, ref)
-	if opts.retainedLockTargets != nil && !opts.retainedLockTargets[key] {
+	idx := opts.refIndex
+	if idx == nil {
+		built := lockfile.NewRefIndex(opts.Store.File())
+		idx = &built
+	}
+	key := idx.Lookup(nwo, ref).Exact
+	if key == "" || opts.retainedLockTargets != nil && !opts.retainedLockTargets[key] {
 		return false
 	}
 	action, ok := opts.Store.File().Dependencies[key]
