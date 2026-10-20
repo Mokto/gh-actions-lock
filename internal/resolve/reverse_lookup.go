@@ -3,6 +3,7 @@ package resolve
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -39,59 +40,71 @@ func (r *Resolver) DiscoverContaining(ctx context.Context, owner, repo, sha, hin
 // then all-branches scan — runs only when phase 1 finds nothing. An orphan
 // error is returned only if both phases fail to place the commit.
 func (r *Resolver) DiscoverContainingDefault(ctx context.Context, owner, repo, sha, hintRef, defaultBranch string) (tag, branch string, err error) {
-	// The Actions backend resolver looks a recorded ref up as a tag first,
-	// so a branch whose name is also a tag can't be recorded. Check the
-	// branch the search picks by exact tag name, and search again without it.
+	c := refCandidates{r: r, owner: owner, repo: repo}
+	branch, err = c.containingBranch(ctx, sha, hintRef, defaultBranch)
+	if err != nil {
+		return "", "", err
+	}
+	// No branch found — proceed without one. The commit may exist only
+	// on refs/tags (lightweight repos, GitHub Releases, etc.).
+	tags, err := c.tagsAt(ctx, sha, branch == "")
+	if err != nil {
+		return "", "", err
+	}
+	return pickPreferredTag(tags, hintRef), branch, nil
+}
+
+// refCandidates answers "which tag or branch could the lockfile record for
+// this commit": a name the Actions backend accepts that, looked up the way
+// the backend looks it up (tag first, then branch), reaches the commit.
+// Every reverse-lookup candidate goes through it.
+type refCandidates struct {
+	r           *Resolver
+	owner, repo string
+}
+
+// tagsAt returns the recordable tags pointing at sha. The listing's first
+// page is cached and shared; when exhaustive is set and it has none of
+// them, every later page is read, since the commit may have no other ref.
+func (c refCandidates) tagsAt(ctx context.Context, sha string, exhaustive bool) ([]string, error) {
+	first, err := c.r.ListTagsForRepo(ctx, c.owner, c.repo)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, t := range first {
+		if strings.EqualFold(t.SHA, sha) {
+			names = append(names, t.Name)
+		}
+	}
+	if exhaustive && len(names) == 0 && len(first) >= 100 {
+		if names, err = c.r.gh.TagsAtCommit(ctx, c.owner, c.repo, sha); err != nil {
+			return nil, err
+		}
+	}
+	return slices.DeleteFunc(names, func(n string) bool { return !ghapi.AcceptedRefName(n) }), nil
+}
+
+// containingBranch returns the first recordable branch containing sha in
+// the phased search order. A branch whose name is also a tag resolves to
+// the tag, so it is checked by exact tag name and the search continues
+// without it.
+func (c refCandidates) containingBranch(ctx context.Context, sha, hintRef, defaultBranch string) (string, error) {
 	shadowed := map[string]bool{}
 	for {
-		branch, err = r.searchContainingBranch(ctx, owner, repo, sha, hintRef, defaultBranch, shadowed)
+		branch, err := c.r.searchContainingBranch(ctx, c.owner, c.repo, sha, hintRef, defaultBranch, shadowed)
 		if err != nil || branch == "" {
-			break
+			return branch, err
 		}
-		isTag, terr := r.gh.TagExists(ctx, owner, repo, branch)
-		if terr != nil {
-			return "", "", terr
+		isTag, err := c.r.gh.TagExists(ctx, c.owner, c.repo, branch)
+		if err != nil {
+			return "", err
 		}
 		if !isTag {
-			break
+			return branch, nil
 		}
 		shadowed[branch] = true
 	}
-	if err != nil {
-		return "", "", err
-	}
-
-	// No branch found — proceed without one. The commit may exist only
-	// on refs/tags (lightweight repos, GitHub Releases, etc.).
-
-	// Discover tags pointing at sha.
-	allTags, err := r.ListTagsForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", "", err
-	}
-	var tagNames []string
-	for _, t := range allTags {
-		if strings.EqualFold(t.SHA, sha) && ghapi.AcceptedRefName(t.Name) {
-			tagNames = append(tagNames, t.Name)
-		}
-	}
-	// The listing above is one page. With no containing branch, a tag on a
-	// later page is the commit's only ref, so read them all before calling
-	// it off-history.
-	if branch == "" && len(tagNames) == 0 && len(allTags) >= 100 {
-		later, err := r.gh.TagsAtCommit(ctx, owner, repo, sha)
-		if err != nil {
-			return "", "", err
-		}
-		for _, name := range later {
-			if ghapi.AcceptedRefName(name) {
-				tagNames = append(tagNames, name)
-			}
-		}
-	}
-	tag = pickPreferredTag(tagNames, hintRef)
-
-	return tag, branch, nil
 }
 
 // searchContainingBranch runs the phased branch search, skipping branches
