@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -292,7 +291,7 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 	}
 	s := PinState{NameWithOwner: meta.FullName, OwnerID: meta.OwnerID, RepoID: meta.RepoID}
 	if p.Head != "" {
-		if s.HeadOID, err = c.restRef(ctx, p); err != nil {
+		if s.HeadOID, err = c.ResolveRefName(ctx, p.Owner, p.Repo, p.Head); err != nil {
 			return PinState{Err: err}
 		}
 		if strings.EqualFold(s.HeadOID, p.SHA) {
@@ -307,107 +306,4 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 		return PinState{Err: err}
 	}
 	return s
-}
-
-// restRef returns the commit p's ref points at, "" when it is neither a tag
-// nor a branch.
-func (c *Client) restRef(ctx context.Context, p PinCheck) (string, error) {
-	for _, ref := range p.refs() {
-		sha, found, err := c.restRefCommit(ctx, p.Owner, p.Repo, ref)
-		if err != nil || found {
-			return sha, err
-		}
-	}
-	return "", nil
-}
-
-// refs lists the full names p's Head is looked up as, in order: a tag, then
-// a branch. A refs/ name is prefixed too, so it never resolves, and a name
-// the Actions backend doesn't accept is never looked up.
-// This is the order the Actions backend resolver looks up a lock entry ref.
-func (p PinCheck) refs() []string {
-	if !AcceptedRefName(p.Head) {
-		return nil
-	}
-	return []string{"refs/tags/" + p.Head, "refs/heads/" + p.Head}
-}
-
-// TagExists reports whether owner/repo has a tag named exactly name.
-func (c *Client) TagExists(ctx context.Context, owner, repo, name string) (bool, error) {
-	c, err := c.ForRepo(ctx, owner, repo)
-	if err != nil {
-		return false, err
-	}
-	var raw json.RawMessage
-	path := fmt.Sprintf("repos/%s/%s/git/ref/tags/%s", url.PathEscape(owner), url.PathEscape(repo), escapeBranchPath(name))
-	found, err := c.restGet(ctx, owner, path, &raw)
-	if err != nil || !found {
-		return false, err
-	}
-	var ref struct {
-		Ref string `json:"ref"`
-	}
-	// A name that only prefixes other tags gets an array back.
-	return json.Unmarshal(raw, &ref) == nil && ref.Ref == "refs/tags/"+name, nil
-}
-
-// restRefCommit returns the commit the exact ref qualified peels to.
-// commits/{ref} alone would also evaluate a name that is no ref, so the ref
-// must first exist by that name.
-func (c *Client) restRefCommit(ctx context.Context, owner, repo, qualified string) (string, bool, error) {
-	var raw json.RawMessage
-	path := fmt.Sprintf("repos/%s/%s/git/ref/%s", url.PathEscape(owner), url.PathEscape(repo), escapeBranchPath(strings.TrimPrefix(qualified, "refs/")))
-	found, err := c.restGet(ctx, owner, path, &raw)
-	if err != nil || !found {
-		return "", false, err
-	}
-	var ref struct {
-		Ref    string `json:"ref"`
-		Object struct {
-			SHA  string `json:"sha"`
-			Type string `json:"type"`
-		} `json:"object"`
-	}
-	// A name that only prefixes other refs gets an array back.
-	if json.Unmarshal(raw, &ref) != nil || ref.Ref != qualified || ref.Object.SHA == "" {
-		return "", false, nil
-	}
-	if ref.Object.Type == "commit" {
-		return ref.Object.SHA, true, nil
-	}
-	// An annotated tag: the ref exists, and a ref is resolved before any
-	// other reading of the name, so commits/{ref} peels this one.
-	return c.restCommit(ctx, owner, repo, qualified)
-}
-
-func (c *Client) restCommit(ctx context.Context, owner, repo, ref string) (string, bool, error) {
-	var commit struct {
-		SHA string `json:"sha"`
-	}
-	path := fmt.Sprintf("repos/%s/%s/commits/%s", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(ref))
-	found, err := c.restGet(ctx, owner, path, &commit)
-	if err != nil || !found {
-		return "", false, err
-	}
-	return commit.SHA, true, nil
-}
-
-// restGet reports found=false for a 404 or 422.
-func (c *Client) restGet(ctx context.Context, owner, path string, dest any) (bool, error) {
-	var err error
-	if c.restOnly {
-		err = c.anonGet(ctx, path, dest)
-	} else {
-		err = c.rest.DoWithContext(ctx, http.MethodGet, path, nil, dest)
-		if err != nil && IsSAMLEnforcement(err) && c.SSOFallbackEligible(ctx, owner) {
-			err = c.anonGet(ctx, path, dest)
-		}
-	}
-	if code, _ := StatusCode(err); code == http.StatusNotFound || code == http.StatusUnprocessableEntity {
-		return false, nil
-	}
-	if err != nil {
-		return false, c.ssoErr(owner, err)
-	}
-	return true, nil
 }
