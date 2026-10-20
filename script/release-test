@@ -5,6 +5,14 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -r "$tmp"' EXIT
 
+# Rebase exec can bind Git to the caller even after changing directories.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+unset GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+mkdir "$tmp/home"
+export HOME="$tmp/home" GIT_CONFIG_GLOBAL="$tmp/home/.gitconfig"
+export GIT_CONFIG_NOSYSTEM=1
+
 git init --quiet --bare "$tmp/origin.git"
 git clone --quiet "$tmp/origin.git" "$tmp/repo"
 cd "$tmp/repo"

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+fixture="${1:-$root/script/release-test}"
+tmp="$(mktemp -d)"
+trap 'rm -r "$tmp"' EXIT
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+unset GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+mkdir "$tmp/home" "$tmp/bin"
+export HOME="$tmp/home" GIT_CONFIG_GLOBAL="$tmp/home/.gitconfig"
+export GIT_CONFIG_NOSYSTEM=1
+
+git config --global user.name "Caller identity"
+git config --global user.email caller@example.com
+git init --quiet -b main "$tmp/caller"
+git -C "$tmp/caller" config user.name "Repository identity"
+git -C "$tmp/caller" config user.email repository@example.com
+printf 'caller content\n' > "$tmp/caller/tracked"
+git -C "$tmp/caller" add tracked
+git -C "$tmp/caller" commit --quiet -m caller
+cp "$tmp/caller/.git/config" "$tmp/config.before"
+cp "$GIT_CONFIG_GLOBAL" "$tmp/global.before"
+cp "$tmp/caller/.git/index" "$tmp/index.before"
+cp "$tmp/caller/tracked" "$tmp/tracked.before"
+git -C "$tmp/caller" for-each-ref > "$tmp/refs.before"
+
+export REAL_GIT="$(command -v git)"
+export GIT_ENV_TRACE="$tmp/git-env"
+cat > "$tmp/bin/git" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\t%s\t%s\t%s\t%s\n' "$HOME" "${GIT_CONFIG_GLOBAL-}" \
+  "${GIT_DIR-}" "${GIT_WORK_TREE-}" "${GIT_COMMON_DIR-}" >> "$GIT_ENV_TRACE"
+exec "$REAL_GIT" "$@"
+SH
+chmod +x "$tmp/bin/git"
+
+for binding in git-dir all-paths; do
+  bindings=("GIT_DIR=$tmp/caller/.git")
+  if test "$binding" = all-paths; then
+    bindings+=("GIT_WORK_TREE=$tmp/caller" "GIT_COMMON_DIR=$tmp/caller/.git")
+  fi
+  status=0
+  env PATH="$tmp/bin:$PATH" "${bindings[@]}" "$fixture" > "$tmp/output" 2>&1 || status=$?
+  if ! cmp -s "$tmp/config.before" "$tmp/caller/.git/config" ||
+     ! cmp -s "$tmp/global.before" "$GIT_CONFIG_GLOBAL" ||
+     ! cmp -s "$tmp/index.before" "$tmp/caller/.git/index" ||
+     ! cmp -s "$tmp/tracked.before" "$tmp/caller/tracked"; then
+    echo "release fixture changed caller files or configuration ($binding)" >&2
+    exit 1
+  fi
+  git -C "$tmp/caller" for-each-ref > "$tmp/refs.after"
+  cmp "$tmp/refs.before" "$tmp/refs.after"
+  if test "$status" -ne 0; then
+    cat "$tmp/output" >&2
+    exit "$status"
+  fi
+done
+if grep -F "$tmp/home" "$GIT_ENV_TRACE"; then
+  echo "release fixture inherited caller HOME or global configuration" >&2
+  exit 1
+fi
+awk -F '\t' '
+  NF != 5 || $1 == "" || $2 != $1 "/.gitconfig" || $3 != "" || $4 != "" || $5 != "" { exit 1 }
+  END { if (NR == 0) exit 1 }
+' "$GIT_ENV_TRACE"
+echo "release fixture isolation: ok"

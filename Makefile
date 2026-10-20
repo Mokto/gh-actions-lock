@@ -17,6 +17,7 @@ test: test-release
 
 test-release:
 	script/release-test
+	bash script/release-isolation-test
 
 vet:
 	go vet ./...
