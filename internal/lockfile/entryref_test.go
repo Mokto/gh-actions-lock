@@ -63,7 +63,7 @@ func TestLoadState_InvalidEntryRefIsCorrupt(t *testing.T) {
 		key  string
 		ref  string
 	}{
-		{"full-SHA key records the SHA", entryRefSHA, entryRefSHA},
+		{"full-SHA key records another SHA", entryRefSHA, "cccccccccccccccccccccccccccccccccccccccc"},
 		{"qualified tag", entryRefSHA, "refs/tags/v6.1.0"},
 		{"qualified pull request ref", entryRefSHA, "refs/pull/1/head"},
 		{"tag key records a branch", "v4", "main"},
@@ -91,6 +91,57 @@ func TestLoadState_ValidEntryRefLoads(t *testing.T) {
 		_, err := LoadState(dir, fakeMetadataResolver{})
 		require.NoError(t, err, "%s@%s", tt.key, tt.ref)
 	}
+}
+
+// TestLoadState_OwnSHARefIsUnrecorded: a workflow's full-SHA pin recorded
+// with that SHA as its ref loads, but as unrecorded, so a run re-resolves it
+// and records its tag or branch instead of failing the whole lockfile.
+func TestLoadState_OwnSHARefIsUnrecorded(t *testing.T) {
+	dir := writeEntryRefLock(t, entryRefSHA, entryRefSHA)
+	s, err := LoadState(dir, fakeMetadataResolver{})
+	require.NoError(t, err)
+
+	key := "actions/checkout@" + entryRefSHA
+	assert.Equal(t, entryRefSHA, s.File().Dependencies[key].Ref, "the entry is kept as written")
+	deps, err := s.Get(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Empty(t, s.AllDeps(), "never seeds the resolver")
+	pin, _ := parserlock.ParsePin(key)
+	assert.True(t, RecordsOwnSHA(pin, entryRefSHA))
+}
+
+// TestLoadState_TransitiveOwnSHARefIsCorrupt: only a workflow's own pin is
+// re-resolved, so an entry no workflow lists directly stays a load error.
+func TestLoadState_TransitiveOwnSHARefIsCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	parent, child := "actions/checkout@v4", "actions/cache@"+entryRefSHA
+	body := strings.Join([]string{
+		"version: '" + parserlock.Version + "'",
+		"dependencies:",
+		"  '" + parent + "':",
+		"    ref: 'v4'",
+		"    commit: 'sha1-" + entryRefSHA + "'",
+		"    owner_id: 1",
+		"    repo_id: 1",
+		"    uses:",
+		"      - '" + child + "'",
+		"  '" + child + "':",
+		"    ref: '" + entryRefSHA + "'",
+		"    commit: 'sha1-" + entryRefSHA + "'",
+		"    owner_id: 1",
+		"    repo_id: 2",
+		"workflows:",
+		"  '.github/workflows/ci.yml':",
+		"    - '" + parent + "'",
+		"",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(body), 0o600))
+
+	_, err := LoadState(dir, fakeMetadataResolver{})
+	require.ErrorIs(t, err, ErrCorruptLockfile)
+	assert.Contains(t, err.Error(), child+" records ref")
 }
 
 func writeEntryRefLock(t *testing.T, key, ref string) string {

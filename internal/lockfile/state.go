@@ -150,6 +150,14 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 	}
 	// Normalize on-disk entries to the canonical (lowercased) pin form so any
 	// legacy mixed-case keys are rewritten on the next Save.
+	direct := map[string]bool{}
+	for _, deps := range file.Workflows {
+		for _, raw := range deps {
+			if pin, ok := parserlock.ParsePin(raw); ok {
+				direct[pin.String()] = true
+			}
+		}
+	}
 	normalizedDependencies := make(map[string]parserlock.Action, len(file.Dependencies))
 	for pinKey, action := range file.Dependencies {
 		pin, ok := parserlock.ParsePin(pinKey)
@@ -157,7 +165,7 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 			normalizedDependencies[pinKey] = action
 			continue
 		}
-		if !ValidEntryRef(pin, action.Ref) {
+		if !ValidEntryRef(pin, action.Ref) && !(RecordsOwnSHA(pin, action.Ref) && direct[pin.String()]) {
 			where := parserlock.Path
 			if line := entryLine(contents, pin); line > 0 {
 				where = fmt.Sprintf("%s: line %d", where, line)
@@ -349,6 +357,8 @@ func (s *State) PruneWorkflows(keep map[string]bool, refs ...parserlock.ActionRe
 
 // Get returns the dependencies recorded for workflowKey (e.g.
 // ".github/workflows/ci.yml"). Returns nil when the workflow has no entry.
+// An entry that records its own SHA as its ref is left out, so the run
+// treats the pin as unrecorded and re-resolves it.
 func (s *State) Get(workflowKey string) ([]dep.Dependency, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -362,8 +372,12 @@ func (s *State) Get(workflowKey string) ([]dep.Dependency, error) {
 		if !ok {
 			return nil, fmt.Errorf("invalid pin %q in %s for workflow %q", raw, parserlock.Path, workflowKey)
 		}
+		action, found := s.file.Dependencies[raw]
+		if found && RecordsOwnSHA(pin, action.Ref) {
+			continue
+		}
 		d := pinToDep(pin)
-		if action, found := s.file.Dependencies[raw]; found {
+		if found {
 			d.Hostname = s.hostOrHome(action.Hostname)
 			d.Tag, d.Branch = parserlock.SplitRef(action.Ref)
 			if idx := strings.Index(action.Commit, "-"); idx >= 0 {
@@ -445,13 +459,14 @@ func (s *State) RecordedRepoID(owner, repo string) int64 {
 // populated with Tag and Branch inferred from the action's ref field.
 // Order is undefined. Intended for callers that need the union of recorded
 // pins across all workflows (e.g. seeding resolver caches on startup).
+// Like Get, it leaves out an entry that records its own SHA as its ref.
 func (s *State) AllDeps() []dep.Dependency {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]dep.Dependency, 0, len(s.file.Dependencies))
 	for raw, action := range s.file.Dependencies {
 		pin, ok := parserlock.ParsePin(raw)
-		if !ok {
+		if !ok || RecordsOwnSHA(pin, action.Ref) {
 			continue
 		}
 		d := pinToDep(pin)

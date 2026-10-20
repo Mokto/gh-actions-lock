@@ -1270,7 +1270,6 @@ func TestParity_InvalidEntryRefIsParseError(t *testing.T) {
 		key  string
 		ref  string
 	}{
-		{"full-SHA key records the SHA", parityTestSHA, parityTestSHA},
 		{"full-SHA key records a qualified branch", parityTestSHA, "refs/heads/main"},
 		{"full-SHA key records revision syntax", parityTestSHA, "main~1"},
 		{"full-SHA key records a describe name", parityTestSHA, "v6.1.0-1-g373d742f768e"},
@@ -1306,6 +1305,51 @@ jobs:
 				assert.Equal(t, lock, readTempLockfilePins(t))
 			})
 		}
+	}
+}
+
+// TestSHARecordedRef_ReadOnlyBlocks: a workflow's full-SHA pin whose entry
+// records that SHA as its ref is rejected by the Actions backend. Read-only
+// modes report it as an error finding (exit 1), not a load error, and write
+// nothing.
+func TestSHARecordedRef_ReadOnlyBlocks(t *testing.T) {
+	for mode, args := range map[string][]string{
+		"verify":       {"--verify"},
+		"no-fix":       {"--no-fix"},
+		"verify-local": {"--verify-local"},
+	} {
+		t.Run(mode, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			if mode != "verify-local" {
+				reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+					"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+				}))
+			}
+			path := writeFullSHAWorkflow(t, parityTestSHA)
+			lockBefore := readTempLockfilePins(t)
+			wfBefore, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			stdout, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, append(args, "--no-interactive", "--json=valid,findings", path)...)
+			require.ErrorIs(t, err, errSilent, stderr)
+			var p parityPayload
+			require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout+stderr)
+			assert.False(t, p.Valid)
+			var blocking []format.Finding
+			for _, f := range p.Findings {
+				if f.Severity == "error" {
+					blocking = append(blocking, f)
+				}
+			}
+			require.Len(t, blocking, 1, "findings: %+v", p.Findings)
+			assert.Equal(t, "not-pinned", blocking[0].Category)
+			assert.Contains(t, blocking[0].Detail, "actions/checkout@"+parityTestSHA+" records ref "+parserlock.ShortSHA(parityTestSHA)+", a commit SHA")
+			assert.Equal(t, "run `gh actions-lock` to record the tag or branch this commit came from", blocking[0].Remediation)
+			wfAfter, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, string(wfBefore), string(wfAfter))
+			assert.Equal(t, lockBefore, readTempLockfilePins(t))
+		})
 	}
 }
 

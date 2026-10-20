@@ -158,12 +158,33 @@ func TestRunChecks(t *testing.T) {
 			},
 		},
 		{
-			name: "sha-as-ref: workflow ref is a bare SHA",
+			// checkNewLockfile records each key's own ref, here the SHA.
+			name: "not-pinned: bare SHA whose entry records the SHA as its ref",
 			lockfile: map[string][]string{
 				wfPath: {checkPinKey("actions", "checkout", shaCheckoutV4, shaCheckoutV4)},
 			},
 			workflowRefs:   []parserlock.ActionRef{checkRef("actions", "checkout", shaCheckoutV4)},
-			wantCategories: []Category{ShaAsRef},
+			noResolver:     true,
+			wantCategories: []Category{NotPinned, ShaAsRef},
+			extra: func(t *testing.T, got []Finding) {
+				for _, f := range got {
+					if f.Category != NotPinned {
+						continue
+					}
+					if f.Severity != SeverityError || !f.IsRemediableNotPinned() {
+						t.Fatalf("expected a remediable error, got %#v", f)
+					}
+					if f.Dependency == nil || f.Dependency.SHA != shaCheckoutV4 {
+						t.Fatalf("expected the locked dependency, got %#v", f.Dependency)
+					}
+					if !strings.Contains(f.Detail, "actions/checkout@"+shaCheckoutV4+" records ref "+shaCheckoutV4[:12]+", a commit SHA") {
+						t.Fatalf("detail does not name the entry: %q", f.Detail)
+					}
+					if f.Remediation != "run `gh actions-lock` to record the tag or branch this commit came from" {
+						t.Fatalf("remediation: %q", f.Remediation)
+					}
+				}
+			},
 		},
 		{
 			name:           "not-pinned: unlocked bare SHA blocks",
