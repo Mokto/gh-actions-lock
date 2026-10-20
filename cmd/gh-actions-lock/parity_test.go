@@ -4983,3 +4983,50 @@ func TestParity_FullSHARootClosureCheckedInAnyCase(t *testing.T) {
 		})
 	}
 }
+
+// TestSHARecordedRef_RenameKeepsFullSHAUse: an own-SHA entry whose
+// repository was renamed, keeping its repo ID, is still the workflow's own
+// full-SHA pin. The fix run moves `uses:` to the canonical name but keeps
+// the full SHA, re-records the entry with the tag at the commit, and the
+// result verifies.
+func TestSHARecordedRef_RenameKeepsFullSHAUse(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), transferParity(1))
+	reg.RegisterReusable(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("typesafegithub/github-actions-typing", parityTestSHA, nodeActionYAML)},
+	}))
+	reg.RegisterReusable(httpmock.GraphQLForRepo("typesafegithub", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("typesafegithub/github-actions-typing", parityTestSHA, nodeActionYAML)},
+	}))
+	for _, owner := range []string{"krzema12", "typesafegithub"} {
+		reg.RegisterReusable(httpmock.REST("GET", `^/repos/`+owner+`/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
+			"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42}, "default_branch": "main",
+		}))
+		reg.RegisterReusable(httpmock.REST("GET", `^/repos/`+owner+`/github-actions-typing/tags`),
+			httpmock.JSONResponse(httpmock.TagListResponse("v2.2.2", parityTestSHA)))
+		reg.RegisterReusable(httpmock.REST("GET", `^/repos/`+owner+`/github-actions-typing/releases`), httpmock.JSONResponse([]map[string]any{}))
+		reg.RegisterReusable(httpmock.REST("GET", `^/repos/`+owner+`/github-actions-typing/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", parityTestSHA)))
+		reg.RegisterReusable(httpmock.REST("GET", `^/repos/`+owner+`/github-actions-typing/git/ref/tags/v2\.2\.2$`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2.2.2", parityTestSHA)))
+		httpmock.NoTagsNamed(reg, owner, "github-actions-typing")
+	}
+	isolateRunLogs(t)
+	path := writeTempWorkflow(t, strings.Replace(transferWorkflow, "@v2.2.2", "@"+parityTestSHA, 1))
+	key := "krzema12/github-actions-typing@" + parityTestSHA
+	lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - '" + key + "'\n" +
+		"dependencies:\n    '" + key + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 42\n        repo_id: 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive", path)
+	require.NoError(t, err, stderr)
+	wf, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(wf), "uses: typesafegithub/github-actions-typing@"+parityTestSHA, "the full SHA is kept under the canonical name")
+	after := readTempLockfilePins(t)
+	assert.Contains(t, after, "'typesafegithub/github-actions-typing@"+parityTestSHA+"':")
+	assert.Contains(t, after, "ref: 'v2.2.2'")
+	assert.NotContains(t, after, "krzema12")
+
+	_, stderr, err = runCommandWithHTTP(t, parityFallback{reg}, "--verify", "--no-interactive", path)
+	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
+}

@@ -479,8 +479,16 @@ func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, directTracker l
 		return out
 	}
 	for i, d := range deps {
+		if !directTracker.IsDirect(i) || !parserlock.IsFullSha(d.Ref) {
+			continue
+		}
+		// A redirected root is recorded under the name the workflow used.
 		owner, repo := d.OwnerRepo()
-		if directTracker.IsDirect(i) && parserlock.IsFullSha(d.Ref) && opts.Store.RecordsOwnSHA(owner, repo, d.Ref) {
+		recorded := opts.Store.RecordsOwnSHA(owner, repo, d.Ref)
+		for _, orig := range d.OriginalRefs {
+			recorded = recorded || opts.Store.RecordsOwnSHA(orig.Owner, orig.Repo, d.Ref)
+		}
+		if recorded {
 			preservedDeps[i] = true
 			out[d.Key()] = true
 		}
