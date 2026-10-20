@@ -679,13 +679,42 @@ func TestRenderAcceptedOverrides_NamesReRecordedRef(t *testing.T) {
 		},
 	}}}
 	for name, pinned := range map[string][]pin.Entry{
-		"uses: rewritten to the tag": {{NWO: "actions/checkout", Ref: "v4.2.2", SHA: sha}},
+		"uses: rewritten to the tag": {{NWO: "actions/checkout", Ref: "v4.2.2", AutoFixedRef: sha, SHA: sha}},
 		"uses: kept as the SHA":      {{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v4.2.2"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
 			renderAcceptedOverrides(ui.NewPlain(&buf), report, pinned)
 			assert.Contains(t, buf.String(), "actions/checkout: recorded ref v4-gone no longer contains 11bd71901bbe; re-recorded as v4.2.2 (--accept-moved)")
+		})
+	}
+}
+
+// TestRenderAcceptedOverrides_AttributesTheFindingsPin: another workflow
+// pinning the same commit under a different ref is not the re-recorded pin.
+func TestRenderAcceptedOverrides_AttributesTheFindingsPin(t *testing.T) {
+	const sha = "a7bc67e1a1d9ae52bb4f3b3a2ef3c1fe62b9d3a4"
+	report := &checks.Report{Workflows: []checks.WorkflowReport{
+		{Path: ".github/workflows/a.yml"},
+		{Path: ".github/workflows/b.yml", Findings: []checks.Finding{
+			{Category: checks.UnreachablePin, Severity: checks.SeverityWarning, RecordedRef: "gone",
+				Dependency: &dep.Dependency{NWO: "o/child", Ref: sha, SHA: sha}},
+		}},
+	}}
+	for name, b := range map[string]pin.Entry{
+		"uses: rewritten to the tag": {NWO: "o/child", Ref: "z-032", AutoFixedRef: sha, SHA: sha,
+			Workflows: []string{".github/workflows/b.yml"}},
+		"uses: kept as the SHA": {NWO: "o/child", Ref: sha, SHA: sha, OnBranch: "z-032",
+			Workflows: []string{".github/workflows/b.yml"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pinned := []pin.Entry{
+				{NWO: "o/child", Ref: "z-129", SHA: sha, Workflows: []string{".github/workflows/a.yml"}},
+				b,
+			}
+			var buf bytes.Buffer
+			renderAcceptedOverrides(ui.NewPlain(&buf), report, pinned)
+			assert.Equal(t, "o/child: recorded ref gone no longer contains a7bc67e1a1d9; re-recorded as z-032 (--accept-moved)\n", buf.String())
 		})
 	}
 }

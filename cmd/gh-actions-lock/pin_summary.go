@@ -247,8 +247,11 @@ func renderAcceptedOverrides(console *ui.UI, report *checks.Report, pinned []pin
 					break
 				}
 				// Same commit, new recorded ref: a full-SHA pin whose
-				// recorded tag or branch stopped vouching for it.
-				if f.RecordedRef != "" && strings.EqualFold(e.NWO, d.NWO) && strings.EqualFold(e.SHA, d.SHA) {
+				// recorded tag or branch stopped vouching for it. Only the
+				// entry for the finding's own key, kept or rewritten from it,
+				// is that pin; another pin of the commit is not.
+				if f.RecordedRef != "" && strings.EqualFold(e.NWO, d.NWO) && strings.EqualFold(e.SHA, d.SHA) &&
+					(e.Ref == d.Ref || e.AutoFixedRef == d.Ref) {
 					if ref := recordedEntryRef(e); ref != "" && ref != f.RecordedRef {
 						seen[d.Key()] = true
 						console.TermWarn("%s: recorded ref %s no longer contains %s; re-recorded as %s (--accept-moved)", e.NWO, f.RecordedRef, parserlock.ShortSHA(e.SHA), ref)
