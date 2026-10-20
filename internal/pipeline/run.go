@@ -27,6 +27,10 @@ type RunOptions struct {
 	// Verify also checks that each pin on a mutable ref is still in that
 	// ref's history and that locked manifests match the recorded graph.
 	Verify bool
+	// CollapseSpellings is --relock of every workflow: it rebuilds each
+	// graph, so a full SHA recorded under several spellings is rewritten
+	// under one rather than refused.
+	CollapseSpellings bool
 
 	// Resolver UX hooks — set these for interactive spinner mode.
 	OnResolveProgress func(done, total int)
@@ -143,7 +147,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			}
 		}
 	}
-	if !opts.Verify && opts.Store != nil {
+	if !opts.Verify && !opts.CollapseSpellings && opts.Store != nil {
 		refuseAmbiguousSpellings(parsed, opts.Store, report)
 	}
 	endDiag()

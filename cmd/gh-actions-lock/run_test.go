@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1012,6 +1014,36 @@ func TestRun_VerifyLocalFollowsFullSHASpellings(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRun_RelockCollapsesSHASpellings: --relock of every workflow rebuilds
+// the graph, so a full SHA recorded under several spellings, and named in
+// another by a manifest, is recorded once under one canonical spelling, and
+// the result verifies.
+func TestRun_RelockCollapsesSHASpellings(t *testing.T) {
+	const child = "abcdef0123456789abcdef0123456789abcdef01"
+	upper := strings.ToUpper(child)
+	path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/child@AbCdEf0123456789abcdef0123456789abcdef01\n")
+	shaSpellingLock(t, path, child, upper)
+	transport := &graphTransport{childSHA: child, childOnMain: true, parentUsesChildAt: upper}
+
+	_, stderr, err := runCommandWithHTTP(t, transport, "--relock", "--no-narrow")
+	require.NoError(t, err, stderr)
+	lock := readTempLockfilePins(t)
+	file, err := parserlock.Parse([]byte(lock))
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"acme/child@" + child, "acme/leaf@v3", "acme/parent@v1.0.0"}, slices.Collect(maps.Keys(file.Dependencies)))
+	assert.Equal(t, []string{"acme/child@" + child}, file.Dependencies["acme/parent@v1.0.0"].Uses)
+	assert.ElementsMatch(t, []string{"acme/child@" + child, "acme/parent@v1.0.0"}, file.Workflows[".github/workflows/"+filepath.Base(path)])
+	assert.NotContains(t, lock, upper)
+	assert.NotContains(t, lock, "AbCdEf")
+
+	_, stderr, err = runCommandWithHTTP(t, transport, "--verify")
+	require.NoError(t, err, stderr)
+
+	_, stderr, err = runCommandWithHTTP(t, transport, "--relock", "--no-narrow")
+	require.NoError(t, err, stderr)
+	assert.Equal(t, lock, readTempLockfilePins(t), "a second relock converges")
 }
 
 func TestRun_ParitySSOGuidance(t *testing.T) {

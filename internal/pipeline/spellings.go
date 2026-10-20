@@ -16,7 +16,8 @@ import (
 // reaches a full SHA recorded under several spellings. One commit, but each
 // entry records its own ref, edges and host, and no rule picks one, even
 // when the workflow spells one of them exactly. Verification checks every
-// entry instead (see lockfile.InspectClosure).
+// entry instead (see lockfile.InspectClosure), and --relock of every
+// workflow rewrites the class under one spelling (see pin.Plan).
 func refuseAmbiguousSpellings(parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report) {
 	file := store.File()
 	refs := lockfile.NewRefIndex(file)

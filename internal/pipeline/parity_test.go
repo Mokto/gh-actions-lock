@@ -118,6 +118,17 @@ func TestParityFinding(t *testing.T) {
 // TestFreshClosure_EntryRef: a fresh pin is checked against its own ref. A
 // full-SHA key has none yet, whatever tag or branch it carried: planning
 // picks one by reverse lookup.
+// TestFreshClosure_FullSHAInAnyCase: one run records a full SHA under one
+// spelling, so a workflow spelling it in another case still checks the pin
+// it resolved.
+func TestFreshClosure_FullSHAInAnyCase(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	pw := checks.ParsedWorkflow{Path: ".github/workflows/ci.yml", Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: strings.ToUpper(sha)}}}
+	got := freshClosure([]dep.Dependency{{NWO: "actions/checkout", Ref: sha, SHA: sha}}, nil)(pw, nil)
+	require.Len(t, got, 1)
+	assert.Equal(t, sha, got[0].lp.Pin.Ref)
+}
+
 func TestFreshClosure_EntryRef(t *testing.T) {
 	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
 	tests := []struct {

@@ -312,9 +312,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		Relock:        relock,
 		// Accepting a moved pin relies on planning to re-record it, which a
 		// read-only run never does.
-		AcceptMoved: opts.acceptMoved && !opts.noFix,
-		Verify:      opts.verify,
-		Profile:     prof,
+		AcceptMoved:       opts.acceptMoved && !opts.noFix,
+		Verify:            opts.verify,
+		CollapseSpellings: opts.relock && fullScan && !opts.noFix,
+		Profile:           prof,
 	}
 	// Defer spinner start until actual network work begins. The fast path
 	// (everything trusted from the lockfile) returns before resolve fires,

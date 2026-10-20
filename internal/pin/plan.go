@@ -275,9 +275,12 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	}
 	// Planning's decisions go to the graph, which merges identities; editing
 	// its output by key instead loses what it merged.
-	decisions := resolve.Decisions{Roots: renames, Meta: make(map[resolve.EntryKey]resolve.RefMeta, len(deps))}
+	decisions := resolve.Decisions{Roots: renames, Meta: make(map[resolve.EntryKey]resolve.RefMeta, len(deps)), Spell: map[resolve.EntryKey]string{}}
 	for i, d := range deps {
 		decisions.Meta[discovered[i].Key] = resolve.RefMeta{Tag: d.Tag, Branch: d.Branch}
+		if parserlock.IsFullSha(d.Ref) {
+			decisions.Spell[discovered[i].Key] = shaSpelling(opts.refIndex, d.NWO, d.Ref)
+		}
 	}
 	planned, parentMap, err := graph.FlattenPlanned(decisions)
 	if err != nil {
@@ -360,6 +363,21 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	entries = append(entries, informationalEntries(wr, opts)...)
 
 	return planResult{entries: entries, wplans: wplans}, nil
+}
+
+// shaSpelling is the spelling to record full SHA ref under: the lockfile's,
+// when it records the commit under one spelling, so writing never adds a
+// second; else lowercase, so every workflow's graph picks the same one.
+// Several recorded spellings reach planning only under --relock of every
+// workflow, which rewrites them all.
+func shaSpelling(refs *lockfile.RefIndex, nwo, ref string) string {
+	if refs != nil {
+		if c := refs.Lookup(nwo, ref).Candidates; len(c) == 1 {
+			_, recorded, _ := strings.Cut(c[0], "@")
+			return recorded
+		}
+	}
+	return strings.ToLower(ref)
 }
 
 // entryDeps lists the graph entries' dependencies, in order.

@@ -166,8 +166,9 @@ func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap, error) {
 	return deps, parents, err
 }
 
-// EntryKey identifies one lockfile entry the graph produced: owner/repo
-// folded, ref as the referrer declared it. Only the graph makes them, in
+// EntryKey identifies one lockfile entry the graph produced: reference
+// identity (dep.RefKey), so every spelling of one full SHA is one entry.
+// Only the graph makes them, in
 // FlattenPlanned's result; callers compare them and hand them back in
 // Decisions, and can't build one from a spelling of their own.
 type EntryKey struct {
@@ -183,10 +184,9 @@ type Entry struct {
 	Root bool
 }
 
-// entryKeyOf is the graph's entry identity (E1g). It compares spellings
-// within one graph only; see the construction notes on FlattenPlanned.
+// entryKeyOf is the graph's entry identity.
 func entryKeyOf(nwo, ref string) EntryKey {
-	return EntryKey{key: strings.ToLower(nwo) + "@" + ref}
+	return EntryKey{key: dep.RefKey(nwo, ref)}
 }
 
 // sameEntry reports whether two owner/repo@ref names this graph produced
@@ -206,6 +206,10 @@ type Decisions struct {
 	Roots map[EntryKey]string
 	// Meta is the tag and branch reverse lookup found for an entry's commit.
 	Meta map[EntryKey]RefMeta
+	// Spell maps a full-SHA entry to the spelling to record it under. Its
+	// referrers may spell the commit in different cases; without a choice
+	// the entry takes the first spelling resolved.
+	Spell map[EntryKey]string
 }
 
 // RefMeta is a commit's tag and branch, as dep.Dependency records them.
@@ -219,7 +223,8 @@ type RefMeta struct {
 // root takes a new ref or a redirect's canonical repository. A manifest's
 // edge keeps the repository and ref it declares, so an action both uses
 // becomes two entries rather than one renamed entry. `$/…` sub-actions follow
-// their parent. roots holds the Dependency.Key of each workflow root's
+// their parent. A full SHA spelled in several cases is one ref, so it is
+// one entry, under the spelling d.Spell gives it. roots holds the Dependency.Key of each workflow root's
 // entry: an entry kept for a manifest's name is not one.
 //
 // Two identities that land on one entry must be the same commit on the
@@ -300,6 +305,9 @@ func (g *Graph) FlattenPlanned(d Decisions) (entries []Entry, parents dep.Parent
 		fk := entryKeyOf(e.NWO, e.Ref)
 		i, ok := rep[fk]
 		if !ok {
+			if ref, ok := d.Spell[fk]; ok {
+				e.Ref = ref
+			}
 			rep[fk] = len(deps)
 			deps = append(deps, e)
 			continue

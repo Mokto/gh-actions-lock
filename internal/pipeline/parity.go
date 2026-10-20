@@ -59,8 +59,8 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				o.lp.Action.RepoID = store.RecordedRepoID(o.ref.Owner, o.ref.Repo)
 			}
 		}
-		// Pin.String folds owner/repo only: refs are case-sensitive, as
-		// the runner keys them.
+		// Reference identity: owner/repo and a full SHA fold, other refs
+		// are case-sensitive, as the Actions backend keys them.
 		// A recorded and a fresh owner of one pin can have different targets
 		// (the recorded ref, and what this run will write), so the target is
 		// part of the key. The lockfile parser has already rejected an entry
@@ -72,7 +72,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		if lockfile.RecordsOwnSHA(o.lp.Pin, head) {
 			head = ""
 		}
-		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + head
+		key := dep.RefKey(o.lp.Pin.Owner+"/"+o.lp.Pin.Repo, o.lp.Pin.Ref) + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + head
 		i, seen := pinIdx[key]
 		if !seen {
 			i = len(pins)
@@ -295,7 +295,8 @@ func heldBy(lp lockfile.LockedPin, composites []lockfile.LockedPin) string {
 
 // freshClosure returns a function yielding the closure of a workflow's
 // unrecorded refs from this run's single resolve, so no further requests
-// are made per workflow.
+// are made per workflow. A workflow's refs reach what the run resolved by
+// reference identity: the run records each full SHA under one spelling.
 func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(checks.ParsedWorkflow, map[string]bool) []parityOwner {
 	children := map[string][]dep.Dependency{}
 	byKey := map[string][]dep.Dependency{}
@@ -308,9 +309,9 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 			keys = append(keys, ref.NWO()+"@"+ref.Ref)
 		}
 		for _, k := range keys {
-			byKey[dep.FoldKey(k)] = append(byKey[dep.FoldKey(k)], d)
+			byKey[dep.RefKeyOf(k)] = append(byKey[dep.RefKeyOf(k)], d)
 			for _, p := range parents[k] {
-				children[dep.FoldKey(p)] = append(children[dep.FoldKey(p)], d)
+				children[dep.RefKeyOf(p)] = append(children[dep.RefKeyOf(p)], d)
 			}
 		}
 	}
@@ -319,7 +320,7 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 		seen := map[string]bool{}
 		var walk func(d dep.Dependency, ref parserlock.ActionRef, parent string)
 		walk = func(d dep.Dependency, ref parserlock.ActionRef, parent string) {
-			id := dep.FoldKey(d.Key()) + "/" + d.Path
+			id := dep.RefKeyOf(d.Key()) + "/" + d.Path
 			if seen[id] {
 				return
 			}
@@ -331,13 +332,13 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 				Parent: parent,
 			}}
 			out = append(out, o)
-			for _, c := range children[dep.FoldKey(d.Key())] {
+			for _, c := range children[dep.RefKeyOf(d.Key())] {
 				co, cr := c.OwnerRepo()
 				walk(c, parserlock.ActionRef{Owner: co, Repo: cr, Path: c.Path, Ref: c.Ref}, d.Key())
 			}
 		}
 		for _, ref := range pw.Refs {
-			key := dep.FoldKey(ref.Owner + "/" + ref.Repo + "@" + ref.Ref)
+			key := dep.RefKey(ref.Owner+"/"+ref.Repo, ref.Ref)
 			if recordedKeys[key] {
 				continue
 			}
