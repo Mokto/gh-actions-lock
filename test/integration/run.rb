@@ -342,7 +342,8 @@ end
 
 # ── Fixture data ────────────────────────────────────────────────────────
 
-CHECKOUT_SHA      = "de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+# Real actions/checkout v4.2.2 commit; recorded v4 and main refs contain it.
+CHECKOUT_SHA      = "11bd71901bbe5b1630ceea73d27597364c9af683"
 # Real actions/checkout v4.2.0 commit; exact tags are peeled on every run.
 CHECKOUT_V420_SHA = "d632683dd7b4114ad314bca15554477dd762a938"
 SETUP_GO_SHA      = "4a3601121dd01d1626a1e23e37211e3254c1c06c"
