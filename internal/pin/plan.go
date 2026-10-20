@@ -717,6 +717,26 @@ func retainedLockTargets(report *checks.Report, opts PlanOptions) map[string]boo
 	if opts.Store == nil {
 		return nil
 	}
+	staleByWorkflow := staleRoots(report, opts)
+
+	// A stale direct pin can still be required by another workflow or by a
+	// surviving composite. Only ignore targets absent from every closure.
+	retained := make(map[string]bool)
+	for _, wfKey := range opts.Store.WorkflowKeys() {
+		live := func(p parserlock.Pin, _ parserlock.Action) bool {
+			return !staleByWorkflow[wfKey][p.String()]
+		}
+		for _, locked := range opts.Store.Closure(wfKey, live) {
+			retained[locked.Pin.String()] = true
+		}
+	}
+	return retained
+}
+
+// staleRoots returns, per workflow key, the pin keys of the lock roots this
+// run prunes (stale findings, see lockfile.UsedRoot), for workflows planning
+// may write.
+func staleRoots(report *checks.Report, opts PlanOptions) map[string]map[string]bool {
 	staleByWorkflow := make(map[string]map[string]bool)
 	for _, wr := range report.Workflows {
 		if wr.SkipCommit || wr.BlockingResolverError || wr.CountByCategory(checks.InvalidSelfRepositoryRef) > 0 {
@@ -733,19 +753,7 @@ func retainedLockTargets(report *checks.Report, opts PlanOptions) map[string]boo
 		}
 		staleByWorkflow[workflowfile.KeyFromPath(wr.Path)] = stale
 	}
-
-	// A stale direct pin can still be required by another workflow or by a
-	// surviving composite. Only ignore targets absent from every closure.
-	retained := make(map[string]bool)
-	for _, wfKey := range opts.Store.WorkflowKeys() {
-		live := func(p parserlock.Pin, _ parserlock.Action) bool {
-			return !staleByWorkflow[wfKey][p.String()]
-		}
-		for _, locked := range opts.Store.Closure(wfKey, live) {
-			retained[locked.Pin.String()] = true
-		}
-	}
-	return retained
+	return staleByWorkflow
 }
 
 func hasConflictingLockTarget(opts PlanOptions, nwo, ref, sha string) bool {

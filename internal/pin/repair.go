@@ -28,10 +28,14 @@ func planEntryRepairs(ctx context.Context, rec *Record, report *checks.Report, o
 	if opts.Store == nil || opts.Resolver == nil {
 		return nil
 	}
-	all := func(parserlock.Pin, parserlock.Action) bool { return true }
+	// Follow only the roots this run keeps: a stale root's subtree is
+	// dropped, and a stale root a kept entry uses is reached as its child.
+	stale := staleRoots(report, opts)
 	workflows := map[string][]string{}
 	for _, wr := range report.Workflows {
-		for _, lp := range opts.Store.Closure(workflowfile.KeyFromPath(wr.Path), all) {
+		wfKey := workflowfile.KeyFromPath(wr.Path)
+		live := func(p parserlock.Pin, _ parserlock.Action) bool { return !stale[wfKey][p.String()] }
+		for _, lp := range opts.Store.Closure(wfKey, live) {
 			if lp.Parent == "" || !lockfile.RecordsOwnSHA(lp.Pin, lp.Action.Ref) {
 				continue
 			}

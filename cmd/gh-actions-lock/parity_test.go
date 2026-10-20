@@ -1726,6 +1726,101 @@ jobs:
 	}
 }
 
+// TestSHARecordedRef_StaleRootRepairs: entry repair follows only the roots
+// a fix run keeps. An own-SHA child of a stale root is dropped with it, even
+// when no tag or branch contains its commit, and a stale own-SHA root that a
+// kept entry still uses is repaired as that entry's child.
+func TestSHARecordedRef_StaleRootRepairs(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	entry := func(key, ref string, uses ...string) string {
+		out := "    '" + key + "':\n        ref: '" + ref + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+		if len(uses) > 0 {
+			out += "        uses:\n"
+			for _, u := range uses {
+				out += "            - '" + u + "'\n"
+			}
+		}
+		return out
+	}
+	cache := "actions/cache@" + parityTestSHA
+	tests := []struct {
+		name    string
+		roots   []string
+		deps    string
+		compare string
+		want    string
+	}{
+		{
+			name:    "child of a stale root",
+			roots:   []string{"actions/checkout@v6.1.0", "actions/setup-go@v1"},
+			deps:    entry(cache, parityTestSHA) + entry("actions/checkout@v6.1.0", "v6.1.0") + entry("actions/setup-go@v1", "v1", cache),
+			compare: "diverged",
+		},
+		{
+			name:    "stale root a kept entry uses",
+			roots:   []string{"actions/cache@" + parityTestSHA, "actions/checkout@v6.1.0"},
+			deps:    entry(cache, parityTestSHA) + entry("actions/checkout@v6.1.0", "v6.1.0", cache),
+			compare: "behind",
+			want:    "v4.2.0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := parityTestSHA
+			if tt.compare == "diverged" {
+				base = "cccccccccccccccccccccccccccccccccccccccc"
+			}
+			reg := &httpmock.Registry{}
+			for _, repo := range []string{"checkout", "cache", "setup-go"} {
+				for range 4 {
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
+						httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/git/ref/heads/main`),
+						httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+					tags := []string{}
+					if tt.want != "" {
+						tags = []string{tt.want, parityTestSHA}
+					}
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/tags`), httpmock.JSONResponse(httpmock.TagListResponse(tags...)))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/releases`), httpmock.JSONResponse([]map[string]any{}))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+					reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`/compare/`),
+						httpmock.JSONResponse(map[string]any{"status": tt.compare, "merge_base_commit": map[string]any{"sha": base}}))
+				}
+				httpmock.NoTagsNamed(reg, "actions", repo)
+			}
+			isolateRunLogs(t)
+			writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+`)
+			lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n"
+			for _, r := range tt.roots {
+				lock += "        - '" + r + "'\n"
+			}
+			lock += "dependencies:\n" + tt.deps
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive")
+			require.NoError(t, err, stderr)
+			after := readTempLockfilePins(t)
+			assert.NotContains(t, after, "ref: '"+parityTestSHA+"'")
+			assert.NotContains(t, after, "actions/setup-go")
+			assert.Contains(t, after, "    '.github/workflows/workflow.yml':\n        - 'actions/checkout@v6.1.0'\n")
+			if tt.want == "" {
+				assert.NotContains(t, after, "actions/cache")
+				return
+			}
+			assert.Contains(t, after, "    '"+cache+"':\n        ref: '"+tt.want+"'\n")
+		})
+	}
+}
+
 // TestSHARecordedRef_ScopedFixWarns: a fix run given workflow paths warns
 // about an own-SHA entry of a workflow it didn't select, names the entry and
 // the full-scan repair, never claims every workflow is valid, still writes
