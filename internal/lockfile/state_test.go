@@ -1203,6 +1203,24 @@ func TestPrepareRefreshClearsDetachedRediscoveredEdges(t *testing.T) {
 	assert.Empty(t, store.File().Dependencies[child.Key()].Uses, "a rediscovered entry must not keep its obsolete edges")
 }
 
+// TestPrepareRefreshLeavesNewEntriesToSet: a refreshed public dependency on
+// a tenant host must not get a placeholder entry whose empty hostname Set
+// reads as the tenant.
+func TestPrepareRefreshLeavesNewEntriesToSet(t *testing.T) {
+	const (
+		wf  = ".github/workflows/ci.yml"
+		sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	store, err := LoadState(t.TempDir(), fakeMetadataResolver{})
+	require.NoError(t, err)
+	require.NoError(t, store.SetHostname("tenant.ghe.com"))
+	public := dep.Dependency{Hostname: "github.com", NWO: "actions/checkout", Ref: "v4", SHA: sha}
+
+	require.NoError(t, store.PrepareRefresh([]string{wf}, []dep.Dependency{public}, nil))
+	assert.NotContains(t, store.File().Dependencies, "actions/checkout@v4")
+	require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{public}, nil, map[string]bool{public.Key(): true}))
+}
+
 func TestPrepareRefreshRejectsIncompleteOrConflictingPlans(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
