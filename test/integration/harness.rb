@@ -25,6 +25,43 @@ require "yaml"
 
 module ActionsPin
   module Integration
+    module ChildEnvironment
+      def self.clean(overrides = {})
+        keys = (ENV.keys + overrides.keys).grep(
+          /\AGIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|SHALLOW_FILE|CONFIG(?:_.*)?|AUTHOR_.*|COMMITTER_.*)\z/,
+        )
+        overrides.merge((keys + ["EMAIL"]).to_h { |key| [key, nil] })
+      end
+    end
+
+    module FixtureGit
+      def self.capture(dir, *args)
+        Dir.mktmpdir("actions-lock-git-home-") do |home|
+          config_home = ENV["XDG_CONFIG_HOME"]
+          config_home = File.join(Dir.home, ".config") if config_home.nil? || config_home.empty?
+          gh_config = ENV["GH_CONFIG_DIR"]
+          gh_config = File.join(config_home, "gh") if gh_config.nil? || gh_config.empty?
+          env = ChildEnvironment.clean.merge(
+            "HOME" => home, "GIT_CONFIG_GLOBAL" => File.join(home, ".gitconfig"),
+            "GIT_CONFIG_NOSYSTEM" => "1",
+            "GH_CONFIG_DIR" => gh_config,
+          )
+          Open3.capture3(env, "git", "-c", "user.name=Test", "-c", "user.email=test@test", *args, chdir: dir)
+        end
+      end
+
+      def self.run(dir, *args)
+        stdout, stderr, status = capture(dir, *args)
+        raise "fixture git #{args.join(" ")} failed: #{stderr}" unless status.success?
+        stdout
+      end
+
+      def self.diff(dir)
+        run(dir, "add", "-N", ".")
+        run(dir, "--no-pager", "diff", "--color").strip
+      end
+    end
+
     # Raised to skip a scenario gracefully (e.g. missing token for live tests).
     class SkipScenario < StandardError; end
 
@@ -443,15 +480,12 @@ module ActionsPin
           File.write(full, content)
         end
 
-        Dir.chdir(dir) do
-          system("git init -q .", exception: true)
-          system("git add -A", exception: true)
-          system("git", "-c", "user.email=test@test", "-c", "user.name=Test",
-                 "commit", "-q", "-m", "init", "--allow-empty", exception: true)
-        end
+        FixtureGit.run(dir, "init", "-q", ".")
+        FixtureGit.run(dir, "add", "-A")
+        FixtureGit.run(dir, "commit", "-q", "-m", "init", "--allow-empty")
 
         server = nil
-        env = @env.dup
+        env = ChildEnvironment.clean(@env)
         if @stub_server
           server = @stub_server
           server.start
@@ -483,15 +517,17 @@ module ActionsPin
 
         $stderr.print "\e[2m  cloning #{nwo}…\e[0m "
         $stderr.flush
-        unless system("git", "clone", "--depth=1", "--quiet",
-                      "https://github.com/#{nwo}.git", dir)
+        _, stderr, status = FixtureGit.capture(dir, "-c", "credential.helper=!gh auth git-credential",
+                                         "clone", "--depth=1", "--quiet", "https://github.com/#{nwo}.git", dir)
+        unless status.success?
           $stderr.puts "\e[31mfailed\e[0m"
+          $stderr.print stderr
           FileUtils.rm_rf(dir)
           raise SkipScenario, "clone failed for #{nwo} (repo not found or no access)"
         end
         $stderr.puts "\e[2mdone\e[0m"
 
-        env = @env.dup
+        env = ChildEnvironment.clean(@env)
         @setup_blocks.each { |b| b.call(dir) }
         env["GH_ACTIONS_LOCK_CACHE_DIR"] = File.join(dir, ".cache")
 
@@ -528,7 +564,7 @@ module ActionsPin
           else
             result = ctx.run_captured
           end
-          @last_diff = `cd #{Shellwords.shellescape(ctx.dir)} && git add -N . 2>/dev/null; git --no-pager diff --color 2>/dev/null`.strip
+          @last_diff = FixtureGit.diff(ctx.dir)
           @assertions.each { |a| a.call(result) }
           result
         ensure
@@ -579,7 +615,7 @@ module ActionsPin
 
       def initialize(dir:, env:, cmd:, server:, scenario:, live_repo: nil)
         @dir = dir
-        @env = env
+        @env = ChildEnvironment.clean(env)
         @cmd = cmd
         @server = server
         @scenario = scenario
@@ -589,7 +625,7 @@ module ActionsPin
 
       # Capture stdout/stderr separately (for assertions). No TTY.
       def run_captured
-        stdout, stderr, status = Open3.capture3(@env, *@cmd, chdir: @dir)
+        stdout, stderr, status = Open3.capture3(ChildEnvironment.clean(@env), *@cmd, chdir: @dir)
         Result.new(stdout: stdout, stderr: stderr, status: status, dir: @dir)
       end
 
@@ -602,20 +638,16 @@ module ActionsPin
       # corresponding response is written to the PTY's stdin.
       def run_pty(input_prompts: nil, extra_args: [])
         cmd = @cmd + extra_args
-        flat_env = @env.reject { |_, v| v.nil? }.map { |k, v| "#{k}=#{Shellwords.shellescape(v)}" }
         # Unset CI so the binary's interactive prompt isn't suppressed
         # (GitHub Actions always exports CI=true).
-        flat_env.unshift("CI=")
-        shell_cmd = "cd #{Shellwords.shellescape(@dir)} && " +
-                    flat_env.join(" ") + " " +
-                    cmd.map { |c| Shellwords.shellescape(c) }.join(" ")
+        env = ChildEnvironment.clean(@env).merge("CI" => "")
 
         combined = String.new
         exit_code = nil
         prompts = (input_prompts || []).map { |p| p.dup }
 
         begin
-          PTY.spawn("/bin/bash", "-c", shell_cmd) do |reader, writer, pid|
+          PTY.spawn(env, *cmd, chdir: @dir) do |reader, writer, pid|
             begin
               prev_sync = $stdout.sync
               $stdout.sync = true
@@ -670,7 +702,7 @@ module ActionsPin
       end
 
       def env_exports
-        @env.map do |k, v|
+        ChildEnvironment.clean(@env).map do |k, v|
           v.nil? ? "unset #{k}" : "export #{k}=#{Shellwords.shellescape(v)}"
         end.join("\n")
       end
@@ -1189,7 +1221,7 @@ module ActionsPin
             puts
 
             # Spawn a real subshell with the scenario env
-            sub_env = ctx.env.merge("PS1" => "\e[33m#{s.name}\e[0m \\$ ")
+            sub_env = ChildEnvironment.clean(ctx.env).merge("PS1" => "\e[33m#{s.name}\e[0m \\$ ")
             system(sub_env, ENV.fetch("SHELL", "/bin/bash"), chdir: ctx.dir)
             puts "\nBack in integration shell. Scenario dir still live at #{ctx.dir}"
 
@@ -1207,7 +1239,7 @@ module ActionsPin
               elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
               puts
 
-              diff_text = `cd #{Shellwords.shellescape(active_ctx.dir)} && git add -N . 2>/dev/null; git --no-pager diff --color 2>/dev/null`.strip
+              diff_text = FixtureGit.diff(active_ctx.dir)
               if diff_text.empty?
                 puts "\e[1;35m── DIFF #{"─" * (w - 8)}\e[0m"
                 puts "  \e[32m✓ no changes from previous run\e[0m"
@@ -1218,7 +1250,8 @@ module ActionsPin
               end
 
               # Checkpoint so the next rerun diff is also a delta
-              system("cd #{Shellwords.shellescape(active_ctx.dir)} && git add -A && git commit -q --allow-empty -m rerun-state >/dev/null 2>&1")
+              FixtureGit.run(active_ctx.dir, "add", "-A")
+              FixtureGit.run(active_ctx.dir, "commit", "-q", "--allow-empty", "-m", "rerun-state")
 
               if @profile_dir
                 pdir = File.join(@profile_dir, active_ctx.scenario.name.to_s)
@@ -1381,7 +1414,7 @@ module ActionsPin
         return unless File.exist?(lockfile_path)
 
         # Collect changed workflow files (the binary rewrites uses: lines)
-        changed = `cd #{Shellwords.shellescape(ctx.dir)} && git diff --name-only 2>/dev/null`.strip.split("\n")
+        changed = FixtureGit.run(ctx.dir, "diff", "--name-only").strip.split("\n")
         workflows = {}
         changed.each do |f|
           next unless f.start_with?(".github/workflows/") && f.end_with?(".yml", ".yaml")
@@ -1409,15 +1442,16 @@ module ActionsPin
         branch = "#{branch}-#{ts}"
 
         Dir.mktmpdir("actions-lock-push-") do |dir|
+          env = ChildEnvironment.clean
           puts "  \e[2mcloning #{nwo}…\e[0m"
-          unless system("git", "clone", "--depth=1", "--quiet",
+          unless system(env, "git", "clone", "--depth=1", "--quiet",
                         "https://github.com/#{nwo}.git", dir)
             puts "  \e[31mclone failed\e[0m"
             return
           end
 
           # Create branch
-          unless system("git", "checkout", "-b", branch, chdir: dir,
+          unless system(env, "git", "checkout", "-b", branch, chdir: dir,
                         out: File::NULL, err: File::NULL)
             puts "  \e[31mfailed to create branch\e[0m"
             return
@@ -1434,10 +1468,10 @@ module ActionsPin
           end
 
           # Commit
-          system("git", "add", "-A", chdir: dir, out: File::NULL, err: File::NULL)
+          system(env, "git", "add", "-A", chdir: dir, out: File::NULL, err: File::NULL)
           nfiles = @last_run[:workflows].size + 1
           msg = "Pin actions with lockfile\n\nGenerated by `gh actions-lock` against #{nwo}."
-          unless system("git", "commit", "-q", "-m", msg, chdir: dir,
+          unless system(env, "git", "commit", "-q", "-m", msg, chdir: dir,
                         out: File::NULL, err: File::NULL)
             puts "  \e[33mno changes to commit\e[0m"
             return
@@ -1446,7 +1480,7 @@ module ActionsPin
           # Push
           print "  \e[2mpushing #{branch}…\e[0m "
           $stdout.flush
-          unless system("git", "push", "--quiet", "origin", branch, chdir: dir,
+          unless system(env, "git", "push", "--quiet", "origin", branch, chdir: dir,
                         out: File::NULL, err: [:child, :out])
             puts "\e[31mfailed\e[0m"
             return
@@ -1528,7 +1562,7 @@ module ActionsPin
 
       def show_diff(dir, width, scenario_name: nil)
         return unless dir && Dir.exist?(dir)
-        diff = `cd #{Shellwords.shellescape(dir)} && git add -N . 2>/dev/null; git --no-pager diff --color 2>/dev/null`.strip
+        diff = FixtureGit.diff(dir)
         return if diff.empty?
         lines = diff.lines
         puts
@@ -1727,7 +1761,7 @@ module ActionsPin
           puts
 
           # Capture full diff before teardown
-          diff_text = `cd #{Shellwords.shellescape(ctx.dir)} && git add -N . 2>/dev/null; git --no-pager diff --color 2>/dev/null`.strip
+          diff_text = FixtureGit.diff(ctx.dir)
           cache_diff(s.name.to_s, diff_text)
 
           # Cache lockfile + changed workflows for `push` command
@@ -1763,7 +1797,8 @@ module ActionsPin
           puts
           if keep_alive
             # Checkpoint working tree so rerun diff shows only the delta
-            system("cd #{Shellwords.shellescape(ctx.dir)} && git add -A && git commit -q --allow-empty -m pin-state >/dev/null 2>&1")
+            FixtureGit.run(ctx.dir, "add", "-A")
+            FixtureGit.run(ctx.dir, "commit", "-q", "--allow-empty", "-m", "pin-state")
             return ctx
           end
         ensure

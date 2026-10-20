@@ -853,7 +853,8 @@ CUSTOM_ASSERTIONS = {
   self_repository_shared_dependency: ->(s) {
     s.assert_custom do |r|
       binary = File.expand_path("../../gh-actions-lock", __dir__)
-      stdout, stderr, status = Open3.capture3(binary, "--verify-local", chdir: r.dir)
+      stdout, stderr, status = Open3.capture3(ActionsPin::Integration::ChildEnvironment.clean,
+                                             binary, "--verify-local", chdir: r.dir)
       unless status.success?
         s.failures << "second-pass --verify-local failed (lockfile did not converge):\n#{stdout}#{stderr}"
       end

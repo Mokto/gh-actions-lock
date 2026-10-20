@@ -7,7 +7,7 @@ EXT_DIR := $(XDG_DATA_HOME)/gh/extensions/$(EXT_NAME)
 
 RUBY := $(shell command -v /opt/homebrew/opt/ruby/bin/ruby 2>/dev/null || echo ruby)
 
-.PHONY: build test test-release vet fmt fmt-check test-integration test-shell test-live test-smoke test-stub test-real install reinstall uninstall
+.PHONY: build test test-release vet fmt fmt-check test-harness test-integration test-shell test-live test-smoke test-stub test-real install reinstall uninstall
 
 build:
 	go build -o $(BIN) ./cmd/gh-actions-lock
@@ -34,7 +34,10 @@ fmt-check:
 		exit 1; \
 	fi
 
-test-integration: build
+test-harness:
+	$(RUBY) test/integration/harness_test.rb
+
+test-integration: test-harness build
 	$(RUBY) test/integration/run.rb
 
 test-shell: build
@@ -46,7 +49,7 @@ test-live: build
 test-smoke: build
 	$(RUBY) test/integration/run.rb --smoke
 
-test-stub: build
+test-stub: test-harness build
 	$(RUBY) test/integration/run.rb --stub
 
 test-real: build

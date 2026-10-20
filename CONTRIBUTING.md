@@ -17,6 +17,11 @@ These are one time installations required to be able to test your changes locall
 1. Install Go [through download](https://go.dev/doc/install) | [through Homebrew](https://formulae.brew.sh/formula/go). The required version is pinned in [`go.mod`](go.mod).
 1. Some integration tests use Ruby; install it [through download](https://www.ruby-lang.org/en/documentation/installation/) | [through Homebrew](https://formulae.brew.sh/formula/ruby) if you plan to run them.
 
+`make test-harness` checks fixture-process isolation without credentials or network
+access and runs before `make test-stub` and `make test-integration`. Fixture Git
+commands use temporary configuration; CLI children keep the caller's authentication
+context and explicit scenario token overrides.
+
 ## Submitting a pull request
 
 1. [Fork][fork] and clone the repository.
