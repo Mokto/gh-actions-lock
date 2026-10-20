@@ -665,3 +665,26 @@ func TestRenderAcceptedOverrides_NamesEachOverride(t *testing.T) {
 	assert.Contains(t, out, "Re-pinned actions/setup-node@v4.4.0: 8f152de45cc3 → 49933ea5288c (accepted)")
 	assert.NotContains(t, out, "octo/kept", "an unchanged pin is not an override")
 }
+
+// TestRenderAcceptedOverrides_NamesReRecordedRef: a full-SHA pin keeps its
+// commit, but --accept-moved records a new tag or branch for it.
+func TestRenderAcceptedOverrides_NamesReRecordedRef(t *testing.T) {
+	const sha = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	report := &checks.Report{Workflows: []checks.WorkflowReport{{
+		Path: ".github/workflows/ci.yml",
+		Findings: []checks.Finding{
+			{Category: checks.UnreachablePin, Severity: checks.SeverityWarning, RecordedRef: "v4-gone",
+				Dependency: &dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha}},
+		},
+	}}}
+	for name, pinned := range map[string][]pin.Entry{
+		"uses: rewritten to the tag": {{NWO: "actions/checkout", Ref: "v4.2.2", SHA: sha}},
+		"uses: kept as the SHA":      {{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v4.2.2"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			renderAcceptedOverrides(ui.NewPlain(&buf), report, pinned)
+			assert.Contains(t, buf.String(), "actions/checkout: recorded ref v4-gone no longer contains 11bd71901bbe; re-recorded as v4.2.2 (--accept-moved)")
+		})
+	}
+}

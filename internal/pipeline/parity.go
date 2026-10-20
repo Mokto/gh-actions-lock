@@ -144,6 +144,11 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	for i, st := range states {
 		for _, o := range owners[i] {
 			f, ok := parityFinding(o.pw, o.ref, o.lp, pins[i], st)
+			if o.fresh {
+				f.FreshRef = true
+			} else {
+				f.RecordedRef = o.lp.Action.Ref
+			}
 			if !ok && verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, pins[i], st), true
 			}

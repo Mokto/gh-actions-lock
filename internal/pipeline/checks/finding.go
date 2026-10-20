@@ -56,6 +56,11 @@ type Finding struct {
 	// moved ahead of its locked commit. Unlike a sticky mutable ref, the
 	// terminal shows it; the JSON category is unchanged.
 	TagMoved bool
+	// RecordedRef is the lock entry ref a parity finding on a recorded pin
+	// checked; empty for a ref this run resolved. FreshRef marks the
+	// latter, which the lockfile never recorded.
+	RecordedRef string
+	FreshRef    bool
 	// TrackedAction marks a not-pinned bare SHA whose owner/repo the
 	// workflow already locks at another ref. It is a ref change on a
 	// tracked action, not onboarding, so --no-onboard lets it through to

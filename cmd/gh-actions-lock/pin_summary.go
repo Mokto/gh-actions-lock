@@ -244,9 +244,29 @@ func renderAcceptedOverrides(console *ui.UI, report *checks.Report, pinned []pin
 					console.TermWarn("Re-pinned %s@%s: %s → %s (accepted)", e.NWO, e.Ref, parserlock.ShortSHA(d.SHA), parserlock.ShortSHA(e.SHA))
 					break
 				}
+				// Same commit, new recorded ref: a full-SHA pin whose
+				// recorded tag or branch stopped vouching for it.
+				if f.RecordedRef != "" && strings.EqualFold(e.NWO, d.NWO) && strings.EqualFold(e.SHA, d.SHA) {
+					if ref := recordedEntryRef(e); ref != "" && ref != f.RecordedRef {
+						seen[d.Key()] = true
+						console.TermWarn("%s: recorded ref %s no longer contains %s; re-recorded as %s (--accept-moved)", e.NWO, f.RecordedRef, parserlock.ShortSHA(e.SHA), ref)
+						break
+					}
+				}
 			}
 		}
 	}
+}
+
+// recordedEntryRef is the ref the lockfile records for e: see State.Set.
+func recordedEntryRef(e pin.Entry) string {
+	if !parserlock.IsFullSha(e.Ref) {
+		return e.Ref
+	}
+	if e.Tag != "" {
+		return e.Tag
+	}
+	return e.OnBranch
 }
 
 // renderPinnedEntries prints the "Pinned N actions across M workflows" block,

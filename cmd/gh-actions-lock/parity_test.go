@@ -1429,27 +1429,30 @@ jobs:
 
 func testRefusedRefName(t *testing.T, ref string) {
 	reg := &httpmock.Registry{}
-	reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
-		var body struct {
-			Variables map[string]any `json:"variables"`
-		}
-		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
-		assert.NotContains(t, body.Variables, "tag0", "revision syntax must not reach a lookup expression")
-		assert.NotContains(t, body.Variables, "head0", "revision syntax must not reach a lookup expression")
-		return httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{"a0": map[string]any{
-				"nameWithOwner": "actions/checkout",
-				"databaseId":    1,
-				"commit":        map[string]any{"oid": parityTestSHA},
-			}},
-		})(req)
-	})
-	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
-	}))
-	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
-		"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
-	}))
+	// One run for --json, one for the terminal.
+	for range 2 {
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+			var body struct {
+				Variables map[string]any `json:"variables"`
+			}
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			assert.NotContains(t, body.Variables, "tag0", "revision syntax must not reach a lookup expression")
+			assert.NotContains(t, body.Variables, "head0", "revision syntax must not reach a lookup expression")
+			return httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": map[string]any{
+					"nameWithOwner": "actions/checkout",
+					"databaseId":    1,
+					"commit":        map[string]any{"oid": parityTestSHA},
+				}},
+			})(req)
+		})
+		reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+			"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+		}))
+		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+			"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
+		}))
+	}
 	path := writeTempWorkflow(t, `
 name: ci
 on: push
@@ -1471,6 +1474,11 @@ jobs:
 	require.Len(t, unreachable, 1, "%+v", p.Findings)
 	assert.Contains(t, unreachable[0], "ref "+ref+" is not a tag or branch of actions/checkout")
 	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent)
+	assert.Contains(t, stderr, "Not a tag or branch actions/checkout@"+ref, "the lockfile never recorded it")
+	assert.NotContains(t, stderr, "Ref no longer exists")
 }
 
 // TestParity_RelockKeepsFreshPinFailures: --relock ignores recorded pins'
