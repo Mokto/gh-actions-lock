@@ -126,10 +126,40 @@ type gitRefBody struct {
 	} `json:"object"`
 }
 
+type gitRefResult struct {
+	ref   gitRefBody
+	found bool
+}
+
 // gitRef reads git/ref/<qualified without refs/>. found is false unless a
 // ref exists by exactly that name: git/ref answers a name that only prefixes
-// other refs with an array.
+// other refs with an array. Answers are cached for the invocation and
+// concurrent lookups of one ref are coalesced; errors are not cached.
 func (c *Client) gitRef(ctx context.Context, owner, repo, qualified string) (gitRefBody, bool, error) {
+	key := ForNWOName(owner, repo, qualified)
+	if r, ok := c.gitRefCache.Get(key); ok {
+		return r.ref, r.found, nil
+	}
+	v, err, _ := c.gitRefSF.Do(key.String(), func() (any, error) {
+		if r, ok := c.gitRefCache.Get(key); ok {
+			return r, nil
+		}
+		ref, found, err := c.fetchGitRef(ctx, owner, repo, qualified)
+		if err != nil {
+			return nil, err
+		}
+		r := gitRefResult{ref: ref, found: found}
+		c.gitRefCache.Put(key, r)
+		return r, nil
+	})
+	if err != nil {
+		return gitRefBody{}, false, err
+	}
+	r := v.(gitRefResult)
+	return r.ref, r.found, nil
+}
+
+func (c *Client) fetchGitRef(ctx context.Context, owner, repo, qualified string) (gitRefBody, bool, error) {
 	var raw json.RawMessage
 	path := fmt.Sprintf("repos/%s/%s/git/ref/%s", url.PathEscape(owner), url.PathEscape(repo), escapeBranchPath(strings.TrimPrefix(qualified, "refs/")))
 	found, err := c.restGet(ctx, owner, path, &raw)
