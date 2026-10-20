@@ -59,8 +59,8 @@ func TestParseActionFileResponse(t *testing.T) {
 	aliases := map[string]int{"a0": 0, "a1": 1}
 
 	data := map[string]json.RawMessage{
-		"a0": json.RawMessage(`{"nameWithOwner":"actions/checkout","object":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","file":{"object":{"text":"name: Checkout\nruns:\n  using: node20\n"}}}}`),
-		"a1": json.RawMessage(`{"nameWithOwner":"actions/cache","object":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","fileYaml":{"object":{"text":"name: Cache Save\nruns:\n  using: composite\n  steps:\n    - uses: actions/upload-artifact@v4\n"}}}}`),
+		"a0": json.RawMessage(`{"nameWithOwner":"actions/checkout", "objectRef": {}, "branchRef": {},"object":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","file":{"object":{"text":"name: Checkout\nruns:\n  using: node20\n"}}}}`),
+		"a1": json.RawMessage(`{"nameWithOwner":"actions/cache", "objectRef": {}, "branchRef": {},"object":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","fileYaml":{"object":{"text":"name: Cache Save\nruns:\n  using: composite\n  steps:\n    - uses: actions/upload-artifact@v4\n"}}}}`),
 	}
 
 	results := parseActionFileResponse(data, refs, aliases, nil, "")
@@ -165,7 +165,7 @@ func TestParseActionFileResponse_AnnotatedTagPeeled(t *testing.T) {
 	}
 	aliases := map[string]int{"a0": 0}
 	data := map[string]json.RawMessage{
-		"a0": json.RawMessage(`{"nameWithOwner":"nodeselector/actions-test-fixtures","object":{"oid":"ea53476fdc172d8552df5af9658a45a367e4f41d","file":{"object":{"text":"name: Fixture\nruns:\n  using: node20\n"}}}}`),
+		"a0": json.RawMessage(`{"nameWithOwner":"nodeselector/actions-test-fixtures", "objectRef": {}, "branchRef": {},"object":{"oid":"ea53476fdc172d8552df5af9658a45a367e4f41d","file":{"object":{"text":"name: Fixture\nruns:\n  using: node20\n"}}}}`),
 	}
 
 	results := parseActionFileResponse(data, refs, aliases, nil, "")
@@ -192,7 +192,7 @@ func TestParseActionFileResponse_Errors(t *testing.T) {
 	aliases := map[string]int{"a0": 0, "a1": 1, "a2": 2}
 	data := map[string]json.RawMessage{
 		"a0": json.RawMessage(`null`),
-		"a1": json.RawMessage(`{"nameWithOwner":"actions/setup-go","object":{"oid":""}}`),
+		"a1": json.RawMessage(`{"nameWithOwner":"actions/setup-go", "objectRef": {}, "branchRef": {},"object":{"oid":""}}`),
 	}
 
 	results := parseActionFileResponse(data, refs, aliases, nil, "")
@@ -369,6 +369,7 @@ func (s *splitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	data := map[string]any{
 		"a0": map[string]any{
 			"nameWithOwner": owner + "/" + name,
+			"objectRef":     map[string]any{},
 			"object": map[string]any{
 				"oid":  oid,
 				"file": map[string]any{"object": map[string]any{"text": "name: x\nruns:\n  using: node20\n"}},
@@ -489,4 +490,59 @@ func TestParseActionFileResponse_NoPathSamlSurfacesSSO(t *testing.T) {
 	if !strings.Contains(msg, "SSO authorization required") || !strings.Contains(msg, "secureorg") {
 		t.Fatalf("expected actionable SSO message for secureorg, got %v", msg)
 	}
+}
+
+// An expression also evaluates a name that is no ref: a `git describe` name
+// resolves to any object with that abbreviated ID, including a fork commit.
+// Only a name that exists as exactly that tag or branch resolves.
+func TestParseActionFileResponse_RequiresExactRef(t *testing.T) {
+	const oid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tests := []struct {
+		name      string
+		objectRef bool
+		branchRef bool
+		want      string
+	}{
+		{name: "tag exists", objectRef: true, want: oid},
+		{name: "branch exists", branchRef: true, want: oid},
+		{name: "neither exists"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := map[string]any{
+				"nameWithOwner": "o/r",
+				"object":        map[string]any{"oid": oid},
+				"branch":        map[string]any{"oid": oid},
+			}
+			if tt.objectRef {
+				repo["objectRef"] = map[string]any{"name": "v1-1-gaaaaaaa"}
+			}
+			if tt.branchRef {
+				repo["branchRef"] = map[string]any{"name": "v1-1-gaaaaaaa"}
+			}
+			raw, err := json.Marshal(repo)
+			require.NoError(t, err)
+
+			results := parseActionFileResponse(map[string]json.RawMessage{"a0": raw},
+				[]ActionFileRequest{{Owner: "o", Repo: "r", Ref: testref.Pin("v1-1-gaaaaaaa")}},
+				map[string]int{"a0": 0}, nil, "github.com")
+
+			if tt.want == "" {
+				var missing *RefNotFoundError
+				require.ErrorAs(t, results[0].Err, &missing)
+				return
+			}
+			require.NoError(t, results[0].Err)
+			assert.Equal(t, tt.want, results[0].CommitOID)
+		})
+	}
+}
+
+func TestBuildActionFileQuery_AsksForExactRefs(t *testing.T) {
+	query, vars, _ := buildActionFileQuery([]ActionFileRequest{{Owner: "o", Repo: "r", Ref: testref.Pin("v1")}})
+
+	assert.Contains(t, query, "objectRef: ref(qualifiedName: $objectRef0)")
+	assert.Contains(t, query, "branchRef: ref(qualifiedName: $branchRef0)")
+	assert.Equal(t, "refs/tags/v1", vars["objectRef0"])
+	assert.Equal(t, "refs/heads/v1", vars["branchRef0"])
 }

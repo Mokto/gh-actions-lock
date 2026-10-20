@@ -210,7 +210,7 @@ const nodeActionYAML = "name: Test Action\nruns:\n  using: node20\n"
 
 func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 	return map[string]any{
-		"nameWithOwner": nameWithOwner,
+		"nameWithOwner": nameWithOwner, "objectRef": map[string]any{}, "branchRef": map[string]any{},
 		// commit, tag and head answer the parity query from the same fixture.
 		"commit":  map[string]any{"oid": oid},
 		"tag":     map[string]any{"oid": oid},

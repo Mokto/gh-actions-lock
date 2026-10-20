@@ -47,14 +47,14 @@ func TestVerifyRemote_ReadOnlySnapshot(t *testing.T) {
 	isolateRemoteWrites(t)
 	commitLookups := 0
 	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/repos/octo/api/commits/") {
+		if req.URL.Path == "/repos/octo/api/git/ref/heads/main" {
 			commitLookups++
 			// A second resolution would observe a branch that moved.
 			sha := remoteSHA
 			if commitLookups > 1 {
 				sha = graphLeafSHA
 			}
-			return httpmock.JSONResponse(map[string]any{"sha": sha})(req)
+			return httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/main", sha))(req)
 		}
 		if strings.Contains(req.URL.Path, "/contents/") {
 			require.Equal(t, remoteSHA, req.URL.Query().Get("ref"))
@@ -78,14 +78,18 @@ func TestVerifyRemote_RejectsNonCommitSnapshot(t *testing.T) {
 			rr := newRemoteRepo(nil, &httpmock.Registry{})
 			isolateRemoteWrites(t)
 			rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				if strings.Contains(req.URL.Path, "/commits/") {
-					return httpmock.JSONResponse(map[string]any{"sha": sha})(req)
+				if req.URL.Path == "/repos/octo/api/git/ref/heads/main" {
+					return httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/main", sha))(req)
 				}
 				require.NotContains(t, req.URL.Path, "/contents/")
 				return rr.RoundTrip(req)
 			})
 			stdout, _, err := runCommandWithHTTP(t, rt, "--verify", "octo/api", "--json=valid")
-			require.ErrorContains(t, err, "full commit SHA")
+			require.Error(t, err)
+			if sha != "" {
+				// An empty object SHA reads as no such branch instead.
+				assert.ErrorContains(t, err, "full commit SHA")
+			}
 			assert.Empty(t, stdout)
 		})
 	}
@@ -166,7 +170,7 @@ func TestVerifyRemote_UnknownContentFailsClosed(t *testing.T) {
 		path string
 	}{
 		{name: "metadata", path: "/repos/octo/api"},
-		{name: "snapshot", path: "/repos/octo/api/commits/refs/heads/main"},
+		{name: "snapshot", path: "/repos/octo/api/git/ref/heads/main"},
 		{name: "inventory", path: "/repos/octo/api/contents/.github/workflows"},
 		{name: "workflow", path: "/repos/octo/api/contents/.github/workflows/ci.yml"},
 		{name: "lockfile", path: "/repos/octo/api/contents/.github/workflows/actions.lock"},

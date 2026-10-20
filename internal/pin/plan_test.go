@@ -138,7 +138,7 @@ func TestPlanWorkflow_PartialResolutionFailure(t *testing.T) {
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "good/action",
+					"nameWithOwner": "good/action", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid":  goodSHA,
 						"file": map[string]any{"object": map[string]any{"text": "name: Good\nruns:\n  using: node20\n"}},
@@ -250,7 +250,7 @@ func newTransitivePlanFixture(t *testing.T, compSHA, transSHA string) (*resolve.
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "comp/action",
+					"nameWithOwner": "comp/action", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid": compSHA,
 						"file": map[string]any{"object": map[string]any{
@@ -266,7 +266,7 @@ func newTransitivePlanFixture(t *testing.T, compSHA, transSHA string) (*resolve.
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "trans/dep",
+					"nameWithOwner": "trans/dep", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid":  transSHA,
 						"file": map[string]any{"object": map[string]any{"text": "name: Trans\nruns:\n  using: node20\n"}},
@@ -926,7 +926,7 @@ func TestNoNarrow_BareSHA(t *testing.T) {
 			httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{
 					"a0": map[string]any{
-						"nameWithOwner": "actions/checkout",
+						"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 						"object": map[string]any{
 							"oid":  sha,
 							"file": map[string]any{"object": map[string]any{"text": "name: Checkout\nruns:\n  using: node20\n"}},
@@ -1074,7 +1074,7 @@ func TestPlanWorkflow_CrossRefTransitiveClosure(t *testing.T) {
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "org/fixtures",
+					"nameWithOwner": "org/fixtures", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid": nestedSHA,
 						"file": map[string]any{"object": map[string]any{
@@ -1091,7 +1091,7 @@ func TestPlanWorkflow_CrossRefTransitiveClosure(t *testing.T) {
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "org/fixtures",
+					"nameWithOwner": "org/fixtures", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid": simpleSHA,
 						"file": map[string]any{"object": map[string]any{
@@ -1108,7 +1108,7 @@ func TestPlanWorkflow_CrossRefTransitiveClosure(t *testing.T) {
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "cross/dep",
+					"nameWithOwner": "cross/dep", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid":  crossSHA,
 						"file": map[string]any{"object": map[string]any{"text": "name: Cross\nruns:\n  using: node20\n"}},

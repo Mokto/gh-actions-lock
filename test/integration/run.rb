@@ -572,6 +572,7 @@ def checkout_graphql_ref_move(srv, live_sha)
       [200, { "Content-Type" => "application/json" },
        JSON.generate({ data: { a0: {
          nameWithOwner: "actions/checkout",
+         objectRef: { name: "tag" },
          object: { oid: live_sha, file: { object: { text: "name: Checkout\ndescription: Checkout\n" } } }
        } } })]
     elsif query.include?("compare")
@@ -597,6 +598,7 @@ def checkout_graphql_success(srv, name_with_owner: "actions/checkout")
       [200, { "Content-Type" => "application/json" },
        JSON.generate({ data: { a0: {
          nameWithOwner: "actions/checkout",
+         objectRef: { name: "tag" },
          object: {
            oid: CHECKOUT_SHA,
            file: {

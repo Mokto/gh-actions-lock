@@ -49,6 +49,10 @@ type repoResponse struct {
 	NameWithOwner string        `json:"nameWithOwner"`
 	Object        *actionObject `json:"object"`
 	Branch        *actionObject `json:"branch"`
+	// ObjectRef and BranchRef confirm a name exists as exactly that ref; the
+	// expressions alone would also evaluate a `git describe` name.
+	ObjectRef *struct{} `json:"objectRef"`
+	BranchRef *struct{} `json:"branchRef"`
 }
 
 type actionObject struct {
@@ -249,6 +253,10 @@ func buildActionFileQuery(refs []ActionFileRequest) (string, map[string]any, map
 			vars[branchVar] = name.BranchRef() + "^{commit}"
 			fmt.Fprintf(&decl, ", $%s: String!", branchVar)
 			objects = append(objects, struct{ alias, variable string }{"branch", branchVar})
+			objectRefVar, branchRefVar := fmt.Sprintf("objectRef%d", i), fmt.Sprintf("branchRef%d", i)
+			vars[objectRefVar], vars[branchRefVar] = name.TagRef(), name.BranchRef()
+			fmt.Fprintf(&decl, ", $%s: String!, $%s: String!", objectRefVar, branchRefVar)
+			fmt.Fprintf(&body, " objectRef: ref(qualifiedName: $%s) { name } branchRef: ref(qualifiedName: $%s) { name }", objectRefVar, branchRefVar)
 		}
 		for _, object := range objects {
 			fmt.Fprintf(&body, " %s: object(expression: $%s) { ... on Commit { oid", object.alias, object.variable)
@@ -304,7 +312,7 @@ func parseActionFileResponse(data map[string]json.RawMessage, refs []ActionFileR
 					// Both metadata spellings are queried; either may be absent.
 					// Reusable workflows can have neither.
 					if item.Type == "NOT_FOUND" && len(item.Path) >= 2 &&
-						(item.Path[1] == "object" || item.Path[1] == "branch") &&
+						(item.Path[1] == "object" || item.Path[1] == "branch" || item.Path[1] == "objectRef" || item.Path[1] == "branchRef") &&
 						(len(item.Path) == 2 && ref.Ref.Kind() == parserlock.RefKindName || len(item.Path) == 3 && (item.Path[2] == "file" || item.Path[2] == "fileYaml")) {
 						continue
 					}
@@ -327,6 +335,12 @@ func parseActionFileResponse(data map[string]json.RawMessage, refs []ActionFileR
 			continue
 		}
 		if ref.Ref.Kind() == parserlock.RefKindName {
+			if repo.ObjectRef == nil {
+				repo.Object = nil
+			}
+			if repo.BranchRef == nil {
+				repo.Branch = nil
+			}
 			if repo.Object != nil && repo.Branch != nil && !strings.EqualFold(repo.Object.OID, repo.Branch.OID) {
 				results[idx].Err = &AmbiguousRefError{Owner: ref.Owner, Repo: ref.Repo, Ref: ref.Ref.String()}
 				continue

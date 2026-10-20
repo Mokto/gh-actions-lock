@@ -36,7 +36,7 @@ func TestResolveLockedRecursiveCachesContentWithoutLosingLogicalRefs(t *testing.
 			}
 			return httpmock.JSONResponse(map[string]any{"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "new/action",
+					"nameWithOwner": "new/action", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid": sha, "file": map[string]any{"object": map[string]any{"text": yml}},
 					},
@@ -67,7 +67,7 @@ func TestResolveLockedRecursiveMissingChildDoesNotResolveLiveRef(t *testing.T) {
 	defer reg.Verify(t)
 	reg.Register(httpmock.GraphQL(`file: file\(path`), httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": map[string]any{
-			"nameWithOwner": "o/root",
+			"nameWithOwner": "o/root", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 			"object": map[string]any{
 				"oid":  sha,
 				"file": map[string]any{"object": map[string]any{"text": "runs:\n  using: composite\n  steps:\n    - uses: o/child@Main\n"}},
@@ -94,8 +94,8 @@ func TestResolveRecursiveRejectsMalformedManifest(t *testing.T) {
 			defer reg.Verify(t)
 			reg.Register(httpmock.GraphQL(`file: file\(path`), httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
-					"nameWithOwner": "o/root",
-					"object":        map[string]any{"oid": sha, "file": map[string]any{"object": map[string]any{"text": "runs: ["}}},
+					"nameWithOwner": "o/root", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+					"object": map[string]any{"oid": sha, "file": map[string]any{"object": map[string]any{"text": "runs: ["}}},
 				}},
 			}))
 			r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
@@ -128,7 +128,7 @@ func TestResolveLockedRecursiveMissingManifest(t *testing.T) {
 			defer reg.Verify(t)
 			reg.Register(httpmock.GraphQL(`file: file\(path`), httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
-					"nameWithOwner": "o/root", "object": map[string]any{"oid": sha},
+					"nameWithOwner": "o/root", "objectRef": map[string]any{}, "branchRef": map[string]any{}, "object": map[string]any{"oid": sha},
 				}},
 			}))
 			r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))

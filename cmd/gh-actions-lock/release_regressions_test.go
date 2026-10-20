@@ -24,12 +24,12 @@ func (c *collisionTransport) RoundTrip(req *http.Request) (*http.Response, error
 	case httpmock.GraphQL(`commit: object\(oid`)(req):
 		c.parityChecks++
 		return httpmock.JSONResponse(map[string]any{"data": map[string]any{"a0": map[string]any{
-			"nameWithOwner": "actions/checkout",
-			"commit":        map[string]any{"oid": parityTestSHA},
-			"tag":           map[string]any{"oid": parityTestSHA},
-			"head":          map[string]any{"oid": parityTestMoved},
-			"tagRef":        map[string]any{},
-			"headRef":       map[string]any{},
+			"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+			"commit":  map[string]any{"oid": parityTestSHA},
+			"tag":     map[string]any{"oid": parityTestSHA},
+			"head":    map[string]any{"oid": parityTestMoved},
+			"tagRef":  map[string]any{},
+			"headRef": map[string]any{},
 		}}})(req)
 	case httpmock.GraphQL(`file: file\(path`)(req):
 		c.resolutions++

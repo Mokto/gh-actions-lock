@@ -38,15 +38,15 @@ func TestResolveActionRefSelection(t *testing.T) {
 					for namespace, sha := range map[string]string{"tags": tt.tag, "heads": tt.branch} {
 						response := httpmock.StatusResponse(http.StatusNotFound)
 						if sha != "" {
-							response = httpmock.JSONResponse(map[string]any{"sha": sha})
+							response = httpmock.JSONResponse(httpmock.GitRefResponse("refs/"+namespace+"/v1", sha))
 						}
-						reg.Register(httpmock.REST("GET", "^/repos/o/r/commits/refs/"+namespace+"/v1$"), response)
+						reg.Register(httpmock.REST("GET", "^/repos/o/r/git/ref/"+namespace+"/v1$"), response)
 					}
 					c := newTestClient(t, reg)
 					c.anonHTTP = &http.Client{Transport: reg}
 					got, err = c.anonResolveRef(context.Background(), "o", "r", testref.Pin("v1"))
 				} else {
-					repo := map[string]any{"nameWithOwner": "o/r"}
+					repo := map[string]any{"nameWithOwner": "o/r", "objectRef": map[string]any{}, "branchRef": map[string]any{}}
 					for field, sha := range map[string]string{"object": tt.tag, "branch": tt.branch} {
 						if sha != "" {
 							repo[field] = map[string]any{"oid": sha}
@@ -89,7 +89,7 @@ func TestActionQueryPeelsBothNamespacesButNotFullSHAs(t *testing.T) {
 }
 
 func TestMissingTagDoesNotHideBranchOrDenial(t *testing.T) {
-	raw := json.RawMessage(`{"nameWithOwner":"o/r","branch":{"oid":"` + paritySHA + `"}}`)
+	raw := json.RawMessage(`{"nameWithOwner":"o/r", "objectRef": {}, "branchRef": {},"branch":{"oid":"` + paritySHA + `"}}`)
 	for _, kind := range []string{"NOT_FOUND", "FORBIDDEN"} {
 		t.Run(kind, func(t *testing.T) {
 			results := parseActionFileResponse(map[string]json.RawMessage{"a0": raw},

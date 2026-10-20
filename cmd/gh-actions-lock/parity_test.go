@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -74,12 +75,12 @@ jobs:
 func transferParity(repoID int) httpmock.Responder {
 	return httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": map[string]any{
-			"nameWithOwner": "typesafegithub/github-actions-typing",
-			"databaseId":    repoID,
-			"owner":         map[string]any{"databaseId": 42},
-			"commit":        map[string]any{"oid": parityTestSHA},
-			"tag":           map[string]any{"oid": parityTestSHA},
-			"tagRef":        map[string]any{"oid": parityTestSHA},
+			"nameWithOwner": "typesafegithub/github-actions-typing", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+			"databaseId": repoID,
+			"owner":      map[string]any{"databaseId": 42},
+			"commit":     map[string]any{"oid": parityTestSHA},
+			"tag":        map[string]any{"oid": parityTestSHA},
+			"tagRef":     map[string]any{"oid": parityTestSHA},
 		}},
 	})
 }
@@ -232,11 +233,11 @@ func TestParity_RepoIDMismatchSameNameBlocks(t *testing.T) {
 			defer reg.Verify(t)
 			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
-					"nameWithOwner": "actions/checkout",
-					"databaseId":    99,
-					"commit":        map[string]any{"oid": parityTestSHA},
-					"tag":           map[string]any{"oid": parityTestSHA},
-					"tagRef":        map[string]any{"oid": parityTestSHA},
+					"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+					"databaseId": 99,
+					"commit":     map[string]any{"oid": parityTestSHA},
+					"tag":        map[string]any{"oid": parityTestSHA},
+					"tagRef":     map[string]any{"oid": parityTestSHA},
 				}},
 			}))
 			path := writeTempWorkflow(t, `
@@ -326,10 +327,10 @@ func TestParity_MovedExactTagFollowsHistory(t *testing.T) {
 			defer reg.Verify(t)
 			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
-					"nameWithOwner": "actions/checkout",
-					"commit":        map[string]any{"oid": parityTestSHA},
-					"tag":           map[string]any{"oid": parityTestMoved},
-					"tagRef":        map[string]any{"oid": parityTestMoved},
+					"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+					"commit": map[string]any{"oid": parityTestSHA},
+					"tag":    map[string]any{"oid": parityTestMoved},
+					"tagRef": map[string]any{"oid": parityTestMoved},
 				}},
 			}))
 			reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
@@ -407,10 +408,10 @@ jobs:
 		registerNodeManifests(reg)
 		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{"a0": map[string]any{
-				"nameWithOwner": "actions/checkout",
-				"commit":        map[string]any{"oid": parityTestSHA},
-				"tag":           map[string]any{"oid": parityTestMoved},
-				"tagRef":        map[string]any{"oid": parityTestMoved},
+				"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+				"commit": map[string]any{"oid": parityTestSHA},
+				"tag":    map[string]any{"oid": parityTestMoved},
+				"tagRef": map[string]any{"oid": parityTestMoved},
 			}},
 		}))
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
@@ -436,16 +437,16 @@ func TestParity_ExactTagRefreshRequiresAcceptMovedAfterHistoryLoss(t *testing.T)
 				reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 					"data": map[string]any{
 						"a0": map[string]any{
-							"nameWithOwner": "actions/checkout",
-							"commit":        map[string]any{"oid": parityTestSHA},
-							"tag":           map[string]any{"oid": parityTestMoved},
-							"tagRef":        map[string]any{},
+							"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+							"commit": map[string]any{"oid": parityTestSHA},
+							"tag":    map[string]any{"oid": parityTestMoved},
+							"tagRef": map[string]any{},
 						},
 						"a1": map[string]any{
-							"nameWithOwner": "actions/checkout",
-							"commit":        map[string]any{"oid": parityTestMoved},
-							"tag":           map[string]any{"oid": parityTestMoved},
-							"tagRef":        map[string]any{},
+							"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+							"commit": map[string]any{"oid": parityTestMoved},
+							"tag":    map[string]any{"oid": parityTestMoved},
+							"tagRef": map[string]any{},
 						},
 					},
 				}))
@@ -487,10 +488,10 @@ func TestParity_DefaultRunPrintsParityFinding(t *testing.T) {
 	defer reg.Verify(t)
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": map[string]any{
-			"nameWithOwner": "actions/checkout",
-			"commit":        map[string]any{"oid": parityTestSHA},
-			"tag":           map[string]any{"oid": parityTestMoved},
-			"tagRef":        map[string]any{"oid": parityTestMoved},
+			"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+			"commit": map[string]any{"oid": parityTestSHA},
+			"tag":    map[string]any{"oid": parityTestMoved},
+			"tagRef": map[string]any{"oid": parityTestMoved},
 		}},
 	}))
 	reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
@@ -974,9 +975,8 @@ func TestParity_DependabotProxyFirstRunKeepsRenamedName(t *testing.T) {
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
 	}))
-	commit := httpmock.JSONResponse(map[string]any{"sha": parityTestSHA})
-	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/commits/refs/tags/v2\.2\.2$`), commit)
-	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/commits/refs/heads/v2\.2\.2$`), httpmock.StatusResponse(http.StatusNotFound))
+	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/git/ref/tags/v2\.2\.2$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2.2.2", parityTestSHA)))
+	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/git/ref/heads/v2\.2\.2$`), httpmock.StatusResponse(http.StatusNotFound))
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/git/ref/tags/v2\.2\.2$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v2.2.2", parityTestSHA)))
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing/git/ref/heads/v2\.2\.2$`), httpmock.StatusResponse(http.StatusNotFound))
 	reg.Register(httpmock.REST("GET", `^/repos/typesafegithub/github-actions-typing/contents/action\.yml$`), httpmock.StatusResponse(http.StatusNotFound))
@@ -1028,10 +1028,10 @@ func TestParity_VerifyMutableRefHistory(t *testing.T) {
 				} else {
 					reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 						"data": map[string]any{"a0": map[string]any{
-							"nameWithOwner": "actions/checkout",
-							"commit":        map[string]any{"oid": parityTestSHA},
-							"tag":           map[string]any{"oid": live},
-							"tagRef":        map[string]any{"oid": live},
+							"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+							"commit": map[string]any{"oid": parityTestSHA},
+							"tag":    map[string]any{"oid": live},
+							"tagRef": map[string]any{"oid": live},
 						}},
 					}))
 				}
@@ -1103,10 +1103,10 @@ jobs:
 			} else {
 				reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 					"data": map[string]any{"a0": map[string]any{
-						"nameWithOwner": "actions/checkout",
-						"commit":        map[string]any{"oid": parityTestSHA},
-						"tag":           map[string]any{"oid": live},
-						"tagRef":        map[string]any{"oid": live},
+						"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+						"commit": map[string]any{"oid": parityTestSHA},
+						"tag":    map[string]any{"oid": live},
+						"tagRef": map[string]any{"oid": live},
 					}},
 				}))
 			}
@@ -1166,10 +1166,10 @@ func TestParity_VerifyMissingMutableRefBlocks(t *testing.T) {
 				} else {
 					reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 						"data": map[string]any{"a0": map[string]any{
-							"nameWithOwner": "actions/checkout",
-							"commit":        map[string]any{"oid": parityTestSHA},
-							"head":          nil,
-							"headRef":       nil,
+							"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+							"commit":  map[string]any{"oid": parityTestSHA},
+							"head":    nil,
+							"headRef": nil,
 						}},
 					}))
 				}
@@ -1232,10 +1232,10 @@ func TestParity_DefaultAndNoFixCheckMutableHistory(t *testing.T) {
 				reg := &httpmock.Registry{}
 				reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 					"data": map[string]any{"a0": map[string]any{
-						"nameWithOwner": "actions/checkout",
-						"commit":        map[string]any{"oid": parityTestSHA},
-						"tag":           tt.tag,
-						"tagRef":        tt.tag,
+						"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+						"commit": map[string]any{"oid": parityTestSHA},
+						"tag":    tt.tag,
+						"tagRef": tt.tag,
 					}},
 				}))
 				if tt.compare != nil {
@@ -1296,7 +1296,7 @@ func TestParity_VerifyRefCaseSensitive(t *testing.T) {
 							heads = append(heads, ref)
 						}
 					}
-					repo := map[string]any{"nameWithOwner": "actions/checkout", "commit": map[string]any{"oid": parityTestSHA}, "head": map[string]any{"oid": parityTestSHA}, "headRef": map[string]any{}}
+					repo := map[string]any{"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{}, "commit": map[string]any{"oid": parityTestSHA}, "head": map[string]any{"oid": parityTestSHA}, "headRef": map[string]any{}}
 					return httpmock.JSONResponse(map[string]any{"data": map[string]any{"a0": repo, "a1": repo}})(req)
 				})
 			}
@@ -1350,10 +1350,10 @@ func TestParity_CancelDuringAncestryAborts(t *testing.T) {
 			} else {
 				reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 					"data": map[string]any{"a0": map[string]any{
-						"nameWithOwner": "actions/checkout",
-						"commit":        map[string]any{"oid": parityTestSHA},
-						"head":          map[string]any{"oid": live},
-						"headRef":       map[string]any{"oid": live},
+						"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+						"commit":  map[string]any{"oid": parityTestSHA},
+						"head":    map[string]any{"oid": live},
+						"headRef": map[string]any{"oid": live},
 					}},
 				}))
 			}
@@ -1442,19 +1442,19 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 					assert.Equal(t, "refs/tags/"+tt.ref+"^{commit}", body.Variables["tag0"], "the recorded ref is looked up only as a tag or branch")
 					assert.Equal(t, "refs/heads/"+tt.ref+"^{commit}", body.Variables["head0"], "the recorded ref is looked up only as a tag or branch")
 					data := map[string]any{"a0": map[string]any{
-						"nameWithOwner": "actions/checkout",
-						"databaseId":    1,
-						"commit":        map[string]any{"oid": parityTestSHA},
-						"tag":           tt.tag,
-						"tagRef":        tt.tag,
-						"head":          tt.head,
-						"headRef":       tt.head,
+						"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+						"databaseId": 1,
+						"commit":     map[string]any{"oid": parityTestSHA},
+						"tag":        tt.tag,
+						"tagRef":     tt.tag,
+						"head":       tt.head,
+						"headRef":    tt.head,
 					}}
 					if _, fresh := body.Variables["owner1"]; fresh {
 						data["a1"] = map[string]any{
-							"nameWithOwner": "actions/checkout",
-							"databaseId":    1,
-							"commit":        map[string]any{"oid": parityTestSHA},
+							"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+							"databaseId": 1,
+							"commit":     map[string]any{"oid": parityTestSHA},
 						}
 					}
 					return httpmock.JSONResponse(map[string]any{"data": data})(req)
@@ -1558,9 +1558,9 @@ func TestParity_NonBranchRefRefused(t *testing.T) {
 						assert.Equal(t, "refs/heads/"+ref+"^{commit}", body.Variables["head0"])
 						return httpmock.JSONResponse(map[string]any{
 							"data": map[string]any{"a0": map[string]any{
-								"nameWithOwner": "actions/checkout",
-								"databaseId":    1,
-								"commit":        map[string]any{"oid": parityTestSHA},
+								"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+								"databaseId": 1,
+								"commit":     map[string]any{"oid": parityTestSHA},
 							}},
 						})(req)
 					})
@@ -1647,10 +1647,13 @@ func TestParity_RevisionSyntaxRefRefused(t *testing.T) {
 			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 				"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
 			}))
-			// Resolution still evaluates the name; parity must refuse it.
-			for range 3 {
-				reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
-			}
+			// Resolution finds a real tag of that exact name; parity must
+			// still refuse it without another lookup.
+			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/tags/`+regexp.QuoteMeta(ref)+`$`),
+				httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/"+ref, parityTestSHA)))
+			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/git/ref/heads/`+regexp.QuoteMeta(ref)+`$`),
+				httpmock.StatusResponse(http.StatusNotFound))
+			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+parityTestSHA+`$`), httpmock.JSONResponse(map[string]any{"sha": parityTestSHA}))
 			reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/contents/action\.yml$`), func(req *http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(nodeActionYAML)), Request: req}, nil
 			})
@@ -1690,9 +1693,9 @@ func testRefusedRefName(t *testing.T, ref string) {
 			assert.NotContains(t, body.Variables, "head0", "revision syntax must not reach a lookup expression")
 			return httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
-					"nameWithOwner": "actions/checkout",
-					"databaseId":    1,
-					"commit":        map[string]any{"oid": parityTestSHA},
+					"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+					"databaseId": 1,
+					"commit":     map[string]any{"oid": parityTestSHA},
 				}},
 			})(req)
 		})
@@ -1739,11 +1742,11 @@ func TestParity_RelockKeepsFreshPinFailures(t *testing.T) {
 	// The parity stub goes first: the resolve stub matches any query for the repo.
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": map[string]any{
-			"nameWithOwner": "actions/checkout",
-			"databaseId":    1,
-			"commit":        map[string]any{"oid": parityTestSHA},
-			"tag":           map[string]any{"oid": parityTestMoved},
-			"tagRef":        map[string]any{"oid": parityTestMoved},
+			"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+			"databaseId": 1,
+			"commit":     map[string]any{"oid": parityTestSHA},
+			"tag":        map[string]any{"oid": parityTestMoved},
+			"tagRef":     map[string]any{"oid": parityTestMoved},
 		}},
 	}))
 	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
@@ -1803,10 +1806,10 @@ func testAcceptMovedGoneRef(t *testing.T, status string) {
 			for k := range body.Variables {
 				if i, ok := strings.CutPrefix(k, "oid"); ok {
 					data["a"+i] = map[string]any{
-						"nameWithOwner": "actions/checkout",
-						"databaseId":    1,
-						"owner":         map[string]any{"databaseId": 1},
-						"commit":        map[string]any{"oid": parityTestSHA},
+						"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+						"databaseId": 1,
+						"owner":      map[string]any{"databaseId": 1},
+						"commit":     map[string]any{"oid": parityTestSHA},
 					}
 				}
 			}
@@ -1863,11 +1866,11 @@ func TestParity_FullSHAKeyTitleMatchesCause(t *testing.T) {
 			reg := &httpmock.Registry{}
 			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
-					"nameWithOwner": "actions/checkout",
-					"databaseId":    1,
-					"commit":        map[string]any{"oid": parityTestSHA},
-					"head":          tt.head,
-					"headRef":       tt.head,
+					"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
+					"databaseId": 1,
+					"commit":     map[string]any{"oid": parityTestSHA},
+					"head":       tt.head,
+					"headRef":    tt.head,
 				}},
 			}))
 			if tt.compare {

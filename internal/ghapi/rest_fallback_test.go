@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/testref"
 )
 
@@ -70,6 +71,9 @@ func TestResolveActionFiles_SSOFallbackForActionsOrg(t *testing.T) {
 		switch {
 		case r.URL.Path == "/orgs/actions":
 			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/git/ref/tags/"):
+			_, name, _ := strings.Cut(r.URL.Path, "/git/ref/")
+			json.NewEncoder(w).Encode(httpmock.GitRefResponse("refs/"+name, "abc123def456abc123def456abc123def456abc1"))
 		case strings.Contains(r.URL.Path, "/commits/"):
 			json.NewEncoder(w).Encode(map[string]string{"sha": "abc123def456abc123def456abc123def456abc1"})
 		case strings.Contains(r.URL.Path, "/contents/"):
@@ -180,6 +184,9 @@ func TestResolveActionFiles_RESTOnlyUsesPrivateRepo(t *testing.T) {
 			t.Errorf("fallback request method = %s, want GET", r.Method)
 		}
 		switch {
+		case strings.Contains(r.URL.Path, "/git/ref/tags/"):
+			_, name, _ := strings.Cut(r.URL.Path, "/git/ref/")
+			json.NewEncoder(w).Encode(httpmock.GitRefResponse("refs/"+name, "abc123def456abc123def456abc123def456abc1"))
 		case strings.Contains(r.URL.Path, "/commits/"):
 			json.NewEncoder(w).Encode(map[string]string{"sha": "abc123def456abc123def456abc123def456abc1"})
 		case strings.Contains(r.URL.Path, "/contents/"):

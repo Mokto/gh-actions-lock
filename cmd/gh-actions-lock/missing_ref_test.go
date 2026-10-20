@@ -105,19 +105,19 @@ jobs:
 func registerMissingRef(reg *httpmock.Registry, ref string, proxy bool) {
 	if !proxy {
 		reg.Register(httpmock.GraphQL(`repository\(owner:`), httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{"a0": map[string]any{"nameWithOwner": "actions/checkout", "object": nil}},
+			"data": map[string]any{"a0": map[string]any{"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{}, "object": nil}},
 		}))
 		return
 	}
 	reg.Register(httpmock.REST("GET", `^/repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "actions/checkout", "id": 1, "owner": map[string]any{"id": 1},
 	}))
-	refs := []string{ref}
+	paths := []string{"commits/" + ref}
 	if len(ref) != 40 {
-		refs = []string{"refs/tags/" + ref, "refs/heads/" + ref}
+		paths = []string{"git/ref/tags/" + ref, "git/ref/heads/" + ref}
 	}
-	for _, name := range refs {
-		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/commits/`+regexp.QuoteMeta(name)+`$`),
-			httpmock.StatusResponse(http.StatusUnprocessableEntity))
+	for _, path := range paths {
+		reg.Register(httpmock.REST("GET", `^/repos/actions/checkout/`+regexp.QuoteMeta(path)+`$`),
+			httpmock.StatusResponse(http.StatusNotFound))
 	}
 }

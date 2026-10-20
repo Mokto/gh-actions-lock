@@ -26,12 +26,12 @@ func TestCheckPins_GraphQLParsesEachState(t *testing.T) {
 	var gotVars map[string]any
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.GraphQLQuery(`{
 		"data": {
-			"a0": {"nameWithOwner": "actions/checkout", "databaseId": 2, "owner": {"databaseId": 1},
+			"a0": {"nameWithOwner": "actions/checkout", "objectRef": {}, "branchRef": {}, "databaseId": 2, "owner": {"databaseId": 1},
 			       "commit": {"oid": "`+paritySHA+`"}, "tag": {"oid": "`+paritySHA+`"}, "tagRef": {}},
-			"a1": {"nameWithOwner": "typesafegithub/github-actions-typing", "databaseId": 3, "owner": {"databaseId": 4},
+			"a1": {"nameWithOwner": "typesafegithub/github-actions-typing", "objectRef": {}, "branchRef": {}, "databaseId": 3, "owner": {"databaseId": 4},
 			       "commit": {"oid": "`+paritySHA+`"}},
-			"a2": {"nameWithOwner": "octo/gone", "databaseId": 5, "owner": {"databaseId": 6}, "commit": null},
-			"a3": {"nameWithOwner": "octo/retag", "databaseId": 7, "owner": {"databaseId": 8},
+			"a2": {"nameWithOwner": "octo/gone", "objectRef": {}, "branchRef": {}, "databaseId": 5, "owner": {"databaseId": 6}, "commit": null},
+			"a3": {"nameWithOwner": "octo/retag", "objectRef": {}, "branchRef": {}, "databaseId": 7, "owner": {"databaseId": 8},
 			       "commit": {"oid": "`+paritySHA+`"}, "tag": {"oid": "`+parityMoved+`"}, "tagRef": {}},
 			"a4": null
 		},
@@ -73,7 +73,7 @@ func TestCheckPins_GraphQLBatchesFifty(t *testing.T) {
 	ok := func(req *http.Request) (*http.Response, error) {
 		data := map[string]any{}
 		for i := range pinCheckBatchSize {
-			data[fmt.Sprintf("a%d", i)] = map[string]any{"nameWithOwner": "o/r", "commit": map[string]any{"oid": paritySHA}}
+			data[fmt.Sprintf("a%d", i)] = map[string]any{"nameWithOwner": "o/r", "objectRef": map[string]any{}, "branchRef": map[string]any{}, "commit": map[string]any{"oid": paritySHA}}
 		}
 		return httpmock.JSONResponse(map[string]any{"data": data})(req)
 	}
@@ -98,7 +98,7 @@ func TestCheckPins_GraphQLSplitsOnBatchFailure(t *testing.T) {
 	reg.Register(httpmock.GraphQL(`a1:`), httpmock.StatusResponse(http.StatusBadGateway))
 	for range 2 {
 		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{"a0": map[string]any{"nameWithOwner": "o/r", "commit": map[string]any{"oid": paritySHA}}},
+			"data": map[string]any{"a0": map[string]any{"nameWithOwner": "o/r", "objectRef": map[string]any{}, "branchRef": map[string]any{}, "commit": map[string]any{"oid": paritySHA}}},
 		}))
 	}
 
@@ -178,9 +178,9 @@ func TestCheckPins_RefLookup(t *testing.T) {
 		var gotQuery string
 		var gotVars map[string]any
 		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.GraphQLQuery(`{"data": {
-			"a0": {"nameWithOwner": "o/r", "commit": {"oid": "`+paritySHA+`"},
+			"a0": {"nameWithOwner": "o/r", "objectRef": {}, "branchRef": {}, "commit": {"oid": "`+paritySHA+`"},
 				"tag": {"oid": "`+paritySHA+`"}, "tagRef": {}, "head": {"oid": "`+parityMoved+`"}, "headRef": {}},
-			"a1": {"nameWithOwner": "o/r", "commit": {"oid": "`+paritySHA+`"},
+			"a1": {"nameWithOwner": "o/r", "objectRef": {}, "branchRef": {}, "commit": {"oid": "`+paritySHA+`"},
 				"tag": null, "head": {"oid": "`+parityMoved+`"}, "headRef": {}}}}`,
 			func(q string, v map[string]any) { gotQuery, gotVars = q, v }))
 
@@ -235,7 +235,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 		var gotQuery string
 		var gotVars map[string]any
 		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.GraphQLQuery(`{"data": {
-			"a0": {"nameWithOwner": "o/r", "commit": {"oid": "`+paritySHA+`"},
+			"a0": {"nameWithOwner": "o/r", "objectRef": {}, "branchRef": {}, "commit": {"oid": "`+paritySHA+`"},
 				"tag": {"oid": "`+paritySHA+`"}, "head": {"oid": "`+paritySHA+`"}, "tagRef": null, "headRef": null}}}`,
 			func(q string, v map[string]any) { gotQuery, gotVars = q, v }))
 
@@ -253,7 +253,7 @@ func TestCheckPins_ExactRefName(t *testing.T) {
 		defer reg.Verify(t)
 		var gotVars map[string]any
 		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.GraphQLQuery(`{"data": {
-			"a0": {"nameWithOwner": "o/r", "commit": {"oid": "`+paritySHA+`"}}}}`,
+			"a0": {"nameWithOwner": "o/r", "objectRef": {}, "branchRef": {}, "commit": {"oid": "`+paritySHA+`"}}}}`,
 			func(_ string, v map[string]any) { gotVars = v }))
 
 		states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: testref.Name("v6.1.0-1-g373d742f768e")}})

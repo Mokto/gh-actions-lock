@@ -414,13 +414,13 @@ func TestResolveAllRecursiveSelfRepositoryNestedFetchesParentSHA(t *testing.T) {
 
 	reg.Register(
 		httpmock.GraphQLForRepo("org", "fixtures"),
-		httpmock.GraphQLQuery(`{"data":{"a0":{"nameWithOwner":"org/fixtures","object":{"oid":"`+parentSHA+`","file":{"object":{"text":"runs:\n  using: composite\n  steps:\n    - uses: $/child\n"}}}}}}`, func(_ string, variables map[string]any) {
+		httpmock.GraphQLQuery(`{"data":{"a0":{"nameWithOwner":"org/fixtures", "objectRef": {}, "branchRef": {},"object":{"oid":"`+parentSHA+`","file":{"object":{"text":"runs:\n  using: composite\n  steps:\n    - uses: $/child\n"}}}}}}`, func(_ string, variables map[string]any) {
 			assert.Equal(t, "refs/tags/main^{commit}", variables["expr0"])
 		}),
 	)
 	reg.Register(
 		httpmock.GraphQLForRepo("org", "fixtures"),
-		httpmock.GraphQLQuery(`{"data":{"a0":{"nameWithOwner":"org/fixtures","object":{"oid":"`+parentSHA+`","file":{"object":{"text":"runs:\n  using: node20\n"}}}}}}`, func(_ string, variables map[string]any) {
+		httpmock.GraphQLQuery(`{"data":{"a0":{"nameWithOwner":"org/fixtures", "objectRef": {}, "branchRef": {},"object":{"oid":"`+parentSHA+`","file":{"object":{"text":"runs:\n  using: node20\n"}}}}}}`, func(_ string, variables map[string]any) {
 			assert.Equal(t, parentSHA+"^{commit}", variables["expr0"])
 		}),
 	)
@@ -836,7 +836,7 @@ func TestResolveAllRecursiveWithHTTPTransport(t *testing.T) {
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "owner/composite",
+					"nameWithOwner": "owner/composite", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 						"file": map[string]any{
@@ -854,7 +854,7 @@ func TestResolveAllRecursiveWithHTTPTransport(t *testing.T) {
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "actions/checkout",
+					"nameWithOwner": "actions/checkout", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 						"file": map[string]any{
@@ -901,7 +901,7 @@ func TestResolveAllRecursivePartialFailure(t *testing.T) {
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "good/action",
+					"nameWithOwner": "good/action", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid":  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 						"file": map[string]any{"object": map[string]any{"text": "name: Good\nruns:\n  using: node20\n"}},
@@ -1287,7 +1287,7 @@ func TestResolveAllRecursivePartialFailureBFSContinues(t *testing.T) {
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "my/composite",
+					"nameWithOwner": "my/composite", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 						"file": map[string]any{"object": map[string]any{
@@ -1306,7 +1306,7 @@ func TestResolveAllRecursivePartialFailureBFSContinues(t *testing.T) {
 		httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{
 				"a0": map[string]any{
-					"nameWithOwner": "other/action",
+					"nameWithOwner": "other/action", "objectRef": map[string]any{}, "branchRef": map[string]any{},
 					"object": map[string]any{
 						"oid":  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 						"file": map[string]any{"object": map[string]any{"text": "name: OtherAction\nruns:\n  using: node20\n"}},

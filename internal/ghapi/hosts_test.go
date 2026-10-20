@@ -100,7 +100,7 @@ func TestTenantHostMissingRefDoesNotFallBack(t *testing.T) {
 	defer reg.Verify(t)
 	reg.Register(hostRequest("api.tenant.ghe.com", `repos/o/r$`), httpmock.JSONResponse(map[string]any{"id": 2, "owner": map[string]any{"id": 1}}))
 	reg.Register(httpmock.GraphQLForRepo("o", "r"), httpmock.JSONResponse(map[string]any{
-		"data": map[string]any{"a0": map[string]any{"nameWithOwner": "o/r", "object": nil}},
+		"data": map[string]any{"a0": map[string]any{"nameWithOwner": "o/r", "objectRef": map[string]any{}, "branchRef": map[string]any{}, "object": nil}},
 	}))
 	c, err := New("tenant.ghe.com", WithClientTransport(reg))
 	require.NoError(t, err)
@@ -139,9 +139,9 @@ func TestTenantHostContentErrorsAreNotLeafActions(t *testing.T) {
 			defer reg.Verify(t)
 			reg.Register(hostRequest("api.github.com", `repos/o/r$`),
 				httpmock.JSONResponse(map[string]any{"visibility": "public", "id": 2, "owner": map[string]any{"id": 1}}))
-			reg.Register(hostRequest("api.github.com", `repos/o/r/commits/refs/tags/v1$`),
-				httpmock.JSONResponse(map[string]any{"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}))
-			reg.Register(hostRequest("api.github.com", `repos/o/r/commits/refs/heads/v1$`), httpmock.StatusResponse(404))
+			reg.Register(hostRequest("api.github.com", `repos/o/r/git/ref/tags/v1$`),
+				httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")))
+			reg.Register(hostRequest("api.github.com", `repos/o/r/git/ref/heads/v1$`), httpmock.StatusResponse(404))
 			reg.Register(hostRequest("api.github.com", `repos/o/r/contents/action.yml$`), httpmock.StatusResponse(status))
 			c, err := New("tenant.ghe.com", WithClientTransport(reg))
 			require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestTenantHostPartialGraphQLErrorDoesNotSucceed(t *testing.T) {
 	reg.Register(hostRequest("api.tenant.ghe.com", `repos/o/r$`), httpmock.JSONResponse(map[string]any{"id": 2, "owner": map[string]any{"id": 1}}))
 	reg.Register(httpmock.GraphQLForRepo("o", "r"), httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": map[string]any{
-			"nameWithOwner": "o/r", "object": map[string]any{"oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "file": nil},
+			"nameWithOwner": "o/r", "objectRef": map[string]any{}, "branchRef": map[string]any{}, "object": map[string]any{"oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "file": nil},
 		}},
 		"errors": []any{map[string]any{"type": "FORBIDDEN", "message": "content access denied", "path": []string{"a0", "object", "file"}}},
 	}))

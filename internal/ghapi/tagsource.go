@@ -99,10 +99,10 @@ func (c *Client) RepoMetadata(ctx context.Context, owner, repo string) (RepoMeta
 	}, nil
 }
 
-// ResolvePinRef returns the commit ref names. A name is looked up only as
-// refs/tags/<name> then refs/heads/<name>; when both exist at different
-// commits it returns *AmbiguousRefError, and when neither exists
-// *RefNotFoundError.
+// ResolvePinRef returns the commit ref names. A name is looked up only as an
+// existing refs/tags/<name>, then refs/heads/<name>, of exactly that name;
+// when both exist at different commits it returns *AmbiguousRefError, and
+// when neither exists *RefNotFoundError.
 func (c *Client) ResolvePinRef(ctx context.Context, owner, repo string, ref parserlock.PinRef) (string, error) {
 	c, err := c.ForRepo(ctx, owner, repo)
 	if err != nil {
@@ -125,7 +125,7 @@ func (c *Client) ResolvePinRef(ctx context.Context, owner, repo string, ref pars
 	}
 	var target string
 	for _, qualified := range []string{name.TagRef(), name.BranchRef()} {
-		sha, found, err := c.commitSHA(ctx, owner, repo, qualified)
+		sha, found, err := c.restRefCommit(ctx, owner, repo, qualified)
 		if err != nil {
 			return "", err
 		}
@@ -150,7 +150,7 @@ func (c *Client) ResolveBranch(ctx context.Context, owner, repo string, name par
 	if err != nil {
 		return "", err
 	}
-	sha, found, err := c.commitSHA(ctx, owner, repo, name.BranchRef())
+	sha, found, err := c.restRefCommit(ctx, owner, repo, name.BranchRef())
 	if err != nil {
 		return "", err
 	}
@@ -161,8 +161,8 @@ func (c *Client) ResolveBranch(ctx context.Context, owner, repo string, name par
 	return sha, nil
 }
 
-// commitSHA reads repos/commits for an exact commit or a fully qualified ref
-// name. found is false on 404 or 422.
+// commitSHA reads repos/commits for an exact commit. found is false on 404
+// or 422.
 func (c *Client) commitSHA(ctx context.Context, owner, repo, rev string) (sha string, found bool, err error) {
 	path := fmt.Sprintf("repos/%s/%s/commits/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(rev))

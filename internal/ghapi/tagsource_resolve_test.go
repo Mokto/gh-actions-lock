@@ -19,6 +19,12 @@ func TestResolvePinRef(t *testing.T) {
 		branchSHA = "2222222222222222222222222222222222222222"
 	)
 	sha := func(s string) httpmock.Responder { return httpmock.JSONResponse(map[string]any{"sha": s}) }
+	tagAt := func(s string) httpmock.Responder {
+		return httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v1", s))
+	}
+	branchAt := func(name, s string) httpmock.Responder {
+		return httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/"+name, s))
+	}
 	missing := httpmock.StatusResponse(http.StatusNotFound)
 	tests := []struct {
 		name      string
@@ -30,10 +36,12 @@ func TestResolvePinRef(t *testing.T) {
 		ambiguous bool
 		notFound  bool
 	}{
-		{name: "tag", ref: "v1", tag: sha(tagSHA), branch: missing, want: tagSHA},
-		{name: "branch", ref: "release/1", tag: missing, branch: sha(branchSHA), want: branchSHA},
-		{name: "tag and branch agree", ref: "v1", tag: sha(tagSHA), branch: sha(tagSHA), want: tagSHA},
-		{name: "tag and branch disagree", ref: "v1", tag: sha(tagSHA), branch: sha(branchSHA), ambiguous: true},
+		{name: "tag", ref: "v1", tag: tagAt(tagSHA), branch: missing, want: tagSHA},
+		{name: "branch", ref: "release/1", tag: missing, branch: branchAt("release/1", branchSHA), want: branchSHA},
+		{name: "tag and branch agree", ref: "v1", tag: tagAt(tagSHA), branch: branchAt("v1", tagSHA), want: tagSHA},
+		{name: "tag and branch disagree", ref: "v1", tag: tagAt(tagSHA), branch: branchAt("v1", branchSHA), ambiguous: true},
+		// commits/{ref} would evaluate this as an abbreviated object ID.
+		{name: "describe name that is no ref", ref: "v6.1.0-1-g1111111", tag: missing, branch: missing, notFound: true},
 		{name: "commit", ref: tagSHA, commit: sha(tagSHA), want: tagSHA},
 		{name: "missing commit", ref: tagSHA, commit: missing, notFound: true},
 	}
@@ -44,8 +52,8 @@ func TestResolvePinRef(t *testing.T) {
 			if tt.commit != nil {
 				reg.Register(httpmock.REST("GET", "^/repos/o/r/commits/"+regexp.QuoteMeta(tt.ref)+"$"), tt.commit)
 			} else {
-				reg.Register(httpmock.REST("GET", "^/repos/o/r/commits/refs/tags/"+regexp.QuoteMeta(tt.ref)+"$"), tt.tag)
-				reg.Register(httpmock.REST("GET", "^/repos/o/r/commits/refs/heads/"+regexp.QuoteMeta(tt.ref)+"$"), tt.branch)
+				reg.Register(httpmock.REST("GET", "^/repos/o/r/git/ref/tags/"+regexp.QuoteMeta(tt.ref)+"$"), tt.tag)
+				reg.Register(httpmock.REST("GET", "^/repos/o/r/git/ref/heads/"+regexp.QuoteMeta(tt.ref)+"$"), tt.branch)
 			}
 
 			got, err := newTestClient(t, reg).ResolvePinRef(context.Background(), "o", "r", testref.Pin(tt.ref))
@@ -65,7 +73,7 @@ func TestResolvePinRef(t *testing.T) {
 				if tt.commit != nil {
 					break
 				}
-				assert.NotEqual(t, "/repos/o/r/commits/"+tt.ref, req.URL.Path, "a name must never reach rev-parse unqualified")
+				assert.NotContains(t, req.URL.Path, "/commits/", "a name must be looked up only as an exact ref")
 			}
 		})
 	}
@@ -74,7 +82,7 @@ func TestResolvePinRef(t *testing.T) {
 func TestResolveBranch(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
-	reg.Register(httpmock.REST("GET", "^/repos/o/r/commits/refs/heads/main$"), httpmock.StatusResponse(http.StatusNotFound))
+	reg.Register(httpmock.REST("GET", "^/repos/o/r/git/ref/heads/main$"), httpmock.StatusResponse(http.StatusNotFound))
 
 	_, err := newTestClient(t, reg).ResolveBranch(context.Background(), "o", "r", testref.Name("main"))
 

@@ -346,12 +346,23 @@ func (p PinCheck) refs() []string {
 }
 
 // restRefCommit returns the commit the exact ref qualified peels to.
-// commits/{ref} alone would also evaluate a name that is no ref, so the ref
-// must first exist by that name.
 func (c *Client) restRefCommit(ctx context.Context, owner, repo, qualified string) (string, bool, error) {
+	return exactRefCommit(ctx, owner, repo, qualified, func(ctx context.Context, path string, dest any) (bool, error) {
+		return c.restGet(ctx, owner, path, dest)
+	})
+}
+
+// refGetter reads a REST path into dest; found is false for a 404 or 422.
+type refGetter func(ctx context.Context, path string, dest any) (found bool, err error)
+
+// exactRefCommit returns the commit the ref named exactly qualified peels
+// to. commits/{ref} alone would also evaluate a name that is no ref (a
+// `git describe` name names any object by abbreviated ID), so the ref must
+// first exist by that name.
+func exactRefCommit(ctx context.Context, owner, repo, qualified string, get refGetter) (string, bool, error) {
 	var raw json.RawMessage
 	path := fmt.Sprintf("repos/%s/%s/git/ref/%s", url.PathEscape(owner), url.PathEscape(repo), escapeBranchPath(strings.TrimPrefix(qualified, "refs/")))
-	found, err := c.restGet(ctx, owner, path, &raw)
+	found, err := get(ctx, path, &raw)
 	if err != nil || !found {
 		return "", false, err
 	}
@@ -371,7 +382,14 @@ func (c *Client) restRefCommit(ctx context.Context, owner, repo, qualified strin
 	}
 	// An annotated tag: the ref exists, and a ref is resolved before any
 	// other reading of the name, so commits/{ref} peels this one.
-	return c.restCommit(ctx, owner, repo, qualified)
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	path = fmt.Sprintf("repos/%s/%s/commits/%s", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(qualified))
+	if found, err = get(ctx, path, &commit); err != nil || !found {
+		return "", false, err
+	}
+	return commit.SHA, true, nil
 }
 
 func (c *Client) restCommit(ctx context.Context, owner, repo, ref string) (string, bool, error) {

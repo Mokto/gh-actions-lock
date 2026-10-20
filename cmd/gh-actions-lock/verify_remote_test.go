@@ -93,6 +93,11 @@ func (rr *remoteRepo) RoundTrip(req *http.Request) (*http.Response, error) {
 		return httpmock.JSONResponse(map[string]any{"full_name": full, "default_branch": "main", "visibility": "public"})(req)
 	case strings.HasPrefix(p, "/repos/octo/api/commits/"):
 		return httpmock.JSONResponse(map[string]any{"sha": remoteSHA})(req)
+	case strings.HasPrefix(p, "/repos/octo/api/git/ref/heads/"):
+		// Every name is a branch at the snapshot commit; no tags exist.
+		return httpmock.JSONResponse(httpmock.GitRefResponse("refs/"+strings.TrimPrefix(p, "/repos/octo/api/git/ref/"), remoteSHA))(req)
+	case strings.HasPrefix(p, "/repos/octo/api/git/ref/tags/"):
+		return httpmock.StatusResponse(http.StatusNotFound)(req)
 	case strings.HasPrefix(p, "/repos/octo/api/contents/"):
 		return rr.respond(req)
 	}
@@ -163,9 +168,11 @@ func TestVerifyRemote_ExplicitRefSkipsDefaultBranchLookup(t *testing.T) {
 
 	require.NoError(t, err)
 	// Only exact tag and branch names: never rev-parse of the raw text.
-	assert.Contains(t, asked, "/repos/octo/api/commits/refs/tags/release/1")
-	assert.Contains(t, asked, "/repos/octo/api/commits/refs/heads/release/1")
-	assert.NotContains(t, asked, "/repos/octo/api/commits/release/1")
+	assert.Contains(t, asked, "/repos/octo/api/git/ref/tags/release/1")
+	assert.Contains(t, asked, "/repos/octo/api/git/ref/heads/release/1")
+	for _, p := range asked {
+		assert.NotContains(t, p, "/commits/", "a name must be looked up only as an exact ref")
+	}
 }
 
 func TestVerifyRemote_RenamedTarget(t *testing.T) {

@@ -373,21 +373,26 @@ func (c *Client) resolveAnonymous(ctx context.Context, ref ActionFileRequest) Ac
 
 func (c *Client) anonResolveRef(ctx context.Context, owner, repo string, pinRef parserlock.PinRef) (string, error) {
 	ref := pinRef.String()
-	names := []string{ref}
-	if name, ok := pinRef.Name(); ok {
-		names = []string{name.TagRef(), name.BranchRef()}
+	if _, ok := pinRef.Commit(); ok {
+		commitURL := fmt.Sprintf("%s/repos/%s/%s/commits/%s", c.anonBase(),
+			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(ref))
+		return c.anonGetCommitSHA(ctx, commitURL)
+	}
+	name, _ := pinRef.Name()
+	get := func(ctx context.Context, path string, dest any) (bool, error) {
+		err := c.anonGet(ctx, path, dest)
+		if code, _ := StatusCode(err); code == http.StatusNotFound || code == http.StatusUnprocessableEntity {
+			return false, nil
+		}
+		return err == nil, err
 	}
 	var target string
-	for _, name := range names {
-		commitURL := fmt.Sprintf("%s/repos/%s/%s/commits/%s", c.anonBase(),
-			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(name))
-		sha, err := c.anonGetCommitSHA(ctx, commitURL)
-		var missing *RefNotFoundError
+	for _, qualified := range []string{name.TagRef(), name.BranchRef()} {
+		sha, found, err := exactRefCommit(ctx, owner, repo, qualified, get)
 		switch {
-		case errors.As(err, &missing):
-			continue
 		case err != nil:
 			return "", err
+		case !found:
 		case target != "" && !strings.EqualFold(target, sha):
 			return "", &AmbiguousRefError{Owner: owner, Repo: repo, Ref: ref}
 		default:
