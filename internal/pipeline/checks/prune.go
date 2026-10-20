@@ -2,27 +2,48 @@ package checks
 
 import "strings"
 
-// PrunesDependency reports whether planning drops f's dependency from the
-// recorded inventory and re-resolves it, rather than writing the recorded
-// entry back verbatim. Planning re-resolves only what this marks; parity
-// consults it so a finding is excused only for an entry that is rewritten.
+// PruneEffect is what planning does with a recorded entry a finding prunes
+// from the workflow's inventory. Either way the recorded entry itself stays
+// in the lock while another entry's recorded `uses:` lists it: writing a
+// workflow merges, never drops, recorded edges.
+type PruneEffect int
+
+const (
+	// NotPruned: planning writes the entry back verbatim.
+	NotPruned PruneEffect = iota
+	// Reresolved: planning re-resolves the workflow's use under the same
+	// key, overwriting the entry, unless narrowing re-keys a full-SHA use.
+	Reresolved
+	// Dropped: the workflow's use leaves the entry's key, because the
+	// workflow no longer uses it or it re-resolves under a new name.
+	Dropped
+)
+
+// PruneEffectOf reports what planning does with f's dependency.
 //
 // acceptMoved also prunes ref-moved and unreachable-pin deps; relock prunes
 // ref-moved deps only, so a benign branch/version advance can be re-pinned
 // without accepting a possibly-tampered unreachable pin. A same-ID redirect
 // is pruned so it re-resolves under the canonical name.
-func PrunesDependency(f Finding, acceptMoved, relock bool) bool {
+func PruneEffectOf(f Finding, acceptMoved, relock bool) PruneEffect {
 	if f.Dependency == nil {
-		return false
+		return NotPruned
 	}
 	switch {
 	case f.Category == Stale,
-		f.Category == UnreachablePin && acceptMoved,
-		f.Category == RefMoved && (acceptMoved || relock),
 		f.Category == RepoRenamed && f.Severity == SeverityWarning:
-		return true
+		return Dropped
+	case f.Category == UnreachablePin && acceptMoved,
+		f.Category == RefMoved && (acceptMoved || relock):
+		return Reresolved
 	}
-	return false
+	return NotPruned
+}
+
+// PrunesDependency reports whether planning drops f's dependency from the
+// recorded inventory rather than writing the entry back verbatim.
+func PrunesDependency(f Finding, acceptMoved, relock bool) bool {
+	return PruneEffectOf(f, acceptMoved, relock) != NotPruned
 }
 
 // PruneKey is the identity planning prunes a recorded entry by.
