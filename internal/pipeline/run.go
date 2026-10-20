@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
@@ -50,6 +51,9 @@ type RunResult struct {
 	// InspectRetained checks writable refreshes against the actual write
 	// preview. Other modes finish this check during Run.
 	InspectRetained func(context.Context, checks.ReplacementProof) error
+	// SourceReadError preserves filesystem failures separately from invalid
+	// contents so callers can retain their mode-specific failure policy.
+	SourceReadError error
 }
 
 // Run executes the full diagnostic pipeline: parse → resolve unlocked refs →
@@ -62,6 +66,13 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	endParse := prof.Phase("  parse workflows")
 	parsed := ParseAll(opts.WorkflowPaths, opts.Store)
 	endParse()
+	var sourceReadErr error
+	for _, pw := range parsed {
+		var pathErr *fs.PathError
+		if errors.As(pw.LoadErr, &pathErr) {
+			sourceReadErr = errors.Join(sourceReadErr, fmt.Errorf("reading workflow %s: %w", pw.Path, pw.LoadErr))
+		}
+	}
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -185,8 +196,9 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	if opts.Relock && !opts.ReadOnly && opts.Resolver != nil && opts.Store != nil {
 		inspected := map[int]map[string]bool{}
 		return &RunResult{
-			Report: report,
-			Valid:  report.IsValid(),
+			Report:          report,
+			Valid:           report.IsValid(),
+			SourceReadError: sourceReadErr,
 			InspectRetained: func(ctx context.Context, replaced checks.ReplacementProof) error {
 				return checkLockedManifests(ctx, opts, parsed, report, resolvedGraph, replaced, inspected)
 			},
@@ -195,5 +207,5 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	if err := checkLockedManifests(ctx, opts, parsed, report, resolvedGraph, nil, nil); err != nil {
 		return nil, err
 	}
-	return &RunResult{Report: report, Valid: report.IsValid()}, nil
+	return &RunResult{Report: report, Valid: report.IsValid(), SourceReadError: sourceReadErr}, nil
 }
