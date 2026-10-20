@@ -63,6 +63,29 @@ func Seedable(d dep.Dependency) bool {
 	return !(parserlock.IsFullSha(d.Ref) && strings.EqualFold(parserlock.BestRef(d.Tag, d.Branch), d.Ref))
 }
 
+// UsedRoot returns the test for whether a workflow's recorded root is still
+// used by refs, the workflow's current `uses:`: by its key, or by its
+// commit when a use names that full SHA, since rewriting `uses:` to the
+// commit keeps the tag-keyed entry. commit is the entry's algo-hex commit.
+func UsedRoot(refs []parserlock.ActionRef) func(pin parserlock.Pin, commit string) bool {
+	byKey := make(map[string]bool, len(refs))
+	bySHA := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		byKey[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)] = true
+		bySHA[strings.ToLower(ref.Owner+"/"+ref.Repo)+"@"+strings.ToLower(ref.Ref)] = true
+	}
+	return func(pin parserlock.Pin, commit string) bool {
+		if byKey[pin.IndexKey()] {
+			return true
+		}
+		sha := commit
+		if _, hex, ok := strings.Cut(commit, "-"); ok {
+			sha = hex
+		}
+		return sha != "" && bySHA[strings.ToLower(pin.Owner+"/"+pin.Repo)+"@"+strings.ToLower(sha)]
+	}
+}
+
 // entryRefError says what is wrong with an entry's recorded ref. It reads
 // as a predicate of "entry for <pin>".
 func entryRefError(pin parserlock.Pin, ref string) error {

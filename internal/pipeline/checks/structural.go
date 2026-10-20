@@ -170,23 +170,11 @@ func checkStale(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 	if len(depPins) == 0 {
 		return nil
 	}
-	used := make(map[string]bool, len(pw.Refs))
-	usedBySHA := make(map[string]bool, len(pw.Refs))
-	for _, ref := range pw.Refs {
-		used[parserlock.IndexKey(ref.Owner, ref.Repo, ref.Ref)] = true
-		nwo := strings.ToLower(ref.Owner + "/" + ref.Repo)
-		usedBySHA[nwo+"@"+strings.ToLower(ref.Ref)] = true
-	}
+	used := lockfile.UsedRoot(pw.Refs)
 	var out []Finding
 	for _, p := range depPins {
-		if used[p.IndexKey()] {
+		if used(p.Pin, p.Commit) {
 			continue
-		}
-		if p.SHA() != "" {
-			nwo := strings.ToLower(p.NWO)
-			if usedBySHA[nwo+"@"+strings.ToLower(p.SHA())] {
-				continue
-			}
 		}
 		f := Finding{
 			WorkflowPath: pw.Path,
