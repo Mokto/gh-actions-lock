@@ -66,10 +66,13 @@ func ParseAll(paths []string, store *lockfile.State) []checks.ParsedWorkflow {
 			continue
 		}
 
-		pw.Refs = mergeActionRefs(scan.Refs, selfScan.Refs)
 		// Refs inside `$/…` actions are rewritable too: their action file is
 		// rewritten alongside the workflow, so narrowing stays in sync.
-		pw.RewriteRefs = pw.Refs
+		// RewriteRefs keep the spelling the files use; Refs carry each
+		// reference's identity, a full SHA lowercased, for everything that
+		// compares them.
+		pw.RewriteRefs = mergeActionRefs(scan.Refs, selfScan.Refs)
+		pw.Refs = mergeActionRefs(normalizeRefs(pw.RewriteRefs))
 		pw.SelfActionFiles = selfScan.ActionFiles
 		pw.SelfActionRefs = selfScan.Refs
 		pw.LocalPaths = mergeStrings(scan.LocalPaths, selfScan.LocalPaths)
@@ -78,6 +81,16 @@ func ParseAll(paths []string, store *lockfile.State) []checks.ParsedWorkflow {
 		pw.SelfRepositoryResolutionErrs = selfScan.Errors
 		pw.ParseWarnings = append(scan.Warnings, selfScan.Warnings...)
 		out = append(out, pw)
+	}
+	return out
+}
+
+// normalizeRefs lowercases each full-SHA ref: git names a commit by its SHA
+// in any case. Tag and branch names are case-sensitive and kept.
+func normalizeRefs(refs []parserlock.ActionRef) []parserlock.ActionRef {
+	out := make([]parserlock.ActionRef, len(refs))
+	for i, ref := range refs {
+		out[i] = dep.NormalizeRef(ref)
 	}
 	return out
 }

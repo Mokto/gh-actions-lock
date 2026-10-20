@@ -106,6 +106,9 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 			if err != nil {
 				return fmt.Errorf("planning %s: %w", iwr.wr.Path, err)
 			}
+			for k := range pr.wplans {
+				pr.wplans[k].Rewrites = literalRewrites(pr.wplans[k].Rewrites, iwr.wr.RewriteRefs)
+			}
 			results[iwr.idx] = pr
 			return nil
 		},
@@ -363,6 +366,35 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	entries = append(entries, informationalEntries(wr, opts)...)
 
 	return planResult{entries: entries, wplans: wplans}, nil
+}
+
+// literalRewrites keys each `uses:` rewrite by the spelling the files use.
+// Planning compares references by identity, a full SHA lowercased (see
+// pipeline.ParseAll), but a rewrite replaces text, so a full SHA written in
+// another case is rewritten under each spelling the workflow uses.
+func literalRewrites(rewrites map[string]string, literal []parserlock.ActionRef) map[string]string {
+	if len(rewrites) == 0 {
+		return rewrites
+	}
+	out := make(map[string]string, len(rewrites))
+	for oldUses, newUses := range rewrites {
+		name, ref, ok := strings.Cut(oldUses, "@")
+		if !ok || !parserlock.IsFullSha(ref) {
+			out[oldUses] = newUses
+			continue
+		}
+		spelled := false
+		for _, r := range literal {
+			if strings.EqualFold(r.FullName(), name) && strings.EqualFold(r.Ref, ref) {
+				out[r.FullName()+"@"+r.Ref] = newUses
+				spelled = true
+			}
+		}
+		if !spelled {
+			out[oldUses] = newUses
+		}
+	}
+	return out
 }
 
 // shaSpelling is the spelling to record full SHA ref under: the lockfile's,

@@ -545,9 +545,14 @@ func InspectClosure(file parserlock.File, workflowKey string, live func(parserlo
 func (s *State) RecordsOwnSHA(owner, repo, sha string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pin := parserlock.Pin{Owner: owner, Repo: repo, Ref: sha}.Canonical()
-	action, ok := s.file.Dependencies[pin.String()]
-	return ok && RecordsOwnSHA(pin, action.Ref)
+	// The lockfile may spell the commit in another case than the caller:
+	// any recorded spelling of it that records its own SHA counts.
+	for _, key := range NewRefIndex(s.file).Lookup(owner+"/"+repo, sha).Candidates {
+		if pin, ok := parserlock.ParsePin(key); ok && RecordsOwnSHA(pin, s.file.Dependencies[key].Ref) {
+			return true
+		}
+	}
+	return false
 }
 
 // OwnSHAEntry is an entry that records its own SHA as its ref, with the

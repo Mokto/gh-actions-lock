@@ -4886,3 +4886,100 @@ func TestParity_ScopedOnboardChecksSeededCompositeChildren(t *testing.T) {
 		})
 	}
 }
+
+// TestSHARecordedRef_FixKeepsFullSHAUseInAnyCase: an own-SHA entry is the
+// same commit whatever case the workflow or the lockfile spells it in, so a
+// fix run re-records it with the tag at the commit, keeps the workflow's
+// full-SHA `uses:` byte for byte, and the result verifies.
+func TestSHARecordedRef_FixKeepsFullSHAUseInAnyCase(t *testing.T) {
+	upper := strings.ToUpper(parityTestSHA)
+	for _, tt := range []struct{ name, use, key string }{
+		{name: "uppercase use", use: upper, key: parityTestSHA},
+		{name: "uppercase key", use: parityTestSHA, key: upper},
+		{name: "mixed-case use, uppercase key", use: parityTestSHA[:20] + upper[20:], key: upper},
+	} {
+		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}} {
+			t.Run(tt.name+"/"+mode, func(t *testing.T) {
+				reg := &httpmock.Registry{}
+				for range 6 {
+					reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+						"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+					}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
+						httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", parityTestSHA)))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+					reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", parityTestSHA)))
+				}
+				reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/v6\.1\.0$`),
+					httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v6.1.0", parityTestSHA)))
+				httpmock.NoTagsNamed(reg, "actions", "checkout")
+				isolateRunLogs(t)
+				path := writeTempWorkflow(t, "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"+tt.use+"\n")
+				key := "actions/checkout@" + tt.key
+				lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - '" + key + "'\n" +
+					"dependencies:\n    '" + key + "':\n        ref: '" + tt.key + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+				require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+				wfBefore, err := os.ReadFile(path)
+				require.NoError(t, err)
+
+				_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, append(args, "--no-interactive", path)...)
+				require.NoError(t, err, stderr)
+				wfAfter, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, string(wfBefore), string(wfAfter), "`uses:` keeps the full SHA as written")
+				after := readTempLockfilePins(t)
+				assert.Contains(t, after, "ref: 'v6.1.0'")
+				assert.NotContains(t, after, "ref: '"+tt.key+"'")
+
+				_, stderr, err = runCommandWithHTTP(t, parityFallback{reg}, "--verify", "--no-interactive", path)
+				require.NoError(t, err, "the repaired lock verifies: %s", stderr)
+			})
+		}
+	}
+}
+
+// TestParity_FullSHARootClosureCheckedInAnyCase: a workflow using a
+// composite by its full SHA in another case than the recorded root still
+// selects that root's recorded closure, so a child whose commit left its
+// tag's history blocks; a healthy child verifies.
+func TestParity_FullSHARootClosureCheckedInAnyCase(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	const root = "abcdef0123456789abcdef0123456789abcdef01"
+	for _, tt := range []struct {
+		name, use, head string
+		block           bool
+	}{
+		{name: "uppercase use, child gone", use: strings.ToUpper(root), head: parityTestMoved, block: true},
+		{name: "uppercase use, healthy", use: strings.ToUpper(root), head: parityTestSHA},
+		{name: "same case, child gone", use: root, head: parityTestMoved, block: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			stubGraph(t, reg,
+				map[string]string{"actions/checkout": tt.head},
+				map[string]string{"octo/root": root, "actions/checkout": tt.head},
+				map[string]string{"octo/root": "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"})
+			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+				httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
+			useDefaultTransport(t, reg)
+			path := writeTempWorkflow(t, "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/root@"+tt.use+"\n")
+			lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+				"  'actions/checkout@v4':\n    ref: 'v4'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+				"  'octo/root@" + root + "':\n    ref: 'v1'\n    commit: 'sha1-" + root + "'\n    owner_id: 1\n    repo_id: 1\n" +
+				"    uses:\n      - 'actions/checkout@v4'\n" +
+				"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@" + root + "'\n"
+			_ = rootSHA
+			lockPath := filepath.Join(".github", "workflows", "actions.lock")
+			require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, reg, "--verify", "--no-interactive", path)
+			if tt.block {
+				require.ErrorIs(t, err, errSilent, stderr)
+				assert.Contains(t, stderr, "is not in actions/checkout's history")
+				return
+			}
+			require.NoError(t, err, stderr)
+		})
+	}
+}

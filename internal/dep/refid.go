@@ -30,3 +30,12 @@ func RefKeyOf(key string) string {
 	nwo, ref, _ := strings.Cut(key, "@")
 	return RefKey(nwo, ref)
 }
+
+// NormalizeRef is ref with a full SHA lowercased, the form references take
+// once parsed: every comparison downstream sees one spelling per commit.
+func NormalizeRef(ref parserlock.ActionRef) parserlock.ActionRef {
+	if parserlock.IsFullSha(ref.Ref) {
+		ref.Ref = strings.ToLower(ref.Ref)
+	}
+	return ref
+}

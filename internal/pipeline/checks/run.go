@@ -22,21 +22,21 @@ import (
 // because they need lookup tables runChecks doesn't carry.
 func RunChecks(ctx context.Context, pw ParsedWorkflow, lf parserlock.File, r CheckResolver) []Finding {
 	wfEntry, tracked := lf.LookupWorkflow(workflowfile.KeyFromPath(pw.Path))
-	depPins, depIndex := parseWorkflowDeps(wfEntry, lf.Dependencies)
 	refs := lockfile.NewRefIndex(lf)
+	depPins, depIndex := parseWorkflowDeps(wfEntry, lf.Dependencies, refs)
 
 	var out []Finding
 	out = append(out, checkUntracked(pw, tracked)...)
-	out = append(out, checkNotPinned(pw, depPins, depIndex, refs)...)
+	out = append(out, checkNotPinned(pw, depPins, depIndex)...)
 	out = append(out, checkSHARecordedRef(pw, wfEntry, lf.Dependencies)...)
-	out = append(out, checkRecordedClosure(pw, lf, refs)...)
-	out = append(out, checkShaAsRef(pw, depIndex, refs)...)
+	out = append(out, checkRecordedClosure(pw, lf)...)
+	out = append(out, checkShaAsRef(pw, depIndex)...)
 	out = append(out, checkRefChanged(pw, depPins)...)
-	out = append(out, checkStale(pw, depPins, refs)...)
+	out = append(out, checkStale(pw, depPins)...)
 
 	if r != nil {
 		out = append(out, checkMisleadingSha(ctx, pw, r)...)
-		refMoved := checkRefMovedAndForgery(ctx, pw, depIndex, refs, r)
+		refMoved := checkRefMovedAndForgery(ctx, pw, depIndex, r)
 		out = append(out, refMoved...)
 	}
 	return out
@@ -60,10 +60,12 @@ func (lp lockedPin) SHA() string {
 	return lp.Commit
 }
 
-// parseWorkflowDeps decodes a workflow's dependency pin strings into Pins
-// plus an index keyed by stored key carrying commit info from the lockfile.
-// Unparseable entries are dropped silently.
-func parseWorkflowDeps(rawDeps []string, deps map[string]parserlock.Action) ([]lockedPin, map[string]lockedPin) {
+// parseWorkflowDeps decodes a workflow's recorded roots into Pins plus an
+// index keyed by reference identity (dep.RefKey), carrying each root's
+// commit. A root keeps its stored key as Key; its Pin is the identity, a
+// full SHA lowercased, and a root spelling a full SHA in another case than
+// its only entry takes that entry's commit. Unparseable roots are dropped.
+func parseWorkflowDeps(rawDeps []string, deps map[string]parserlock.Action, refs lockfile.RefIndex) ([]lockedPin, map[string]lockedPin) {
 	pins := make([]lockedPin, 0, len(rawDeps))
 	idx := make(map[string]lockedPin, len(rawDeps))
 	for _, raw := range rawDeps {
@@ -72,11 +74,16 @@ func parseWorkflowDeps(rawDeps []string, deps map[string]parserlock.Action) ([]l
 			continue
 		}
 		lp := lockedPin{Key: raw, Pin: pin}
+		if parserlock.IsFullSha(pin.Ref) {
+			lp.Pin.Ref = strings.ToLower(pin.Ref)
+		}
 		if action, found := deps[raw]; found {
 			lp.Commit = action.Commit
+		} else if c := refs.Lookup(pin.NWO, pin.Ref).Candidates; len(c) == 1 {
+			lp.Commit = deps[c[0]].Commit
 		}
 		pins = append(pins, lp)
-		idx[raw] = lp
+		idx[dep.RefKey(pin.NWO, pin.Ref)] = lp
 	}
 	return pins, idx
 }
@@ -124,10 +131,8 @@ func formatUseName(owner, repo, path string) string {
 	return s
 }
 
-// storedKey is the stored key the lockfile records for ref's exact spelling,
-// or "" when it records none. The workflow-local maps here are keyed by
-// stored keys, so this reproduces an exact-spelling lookup without building
-// a key outside the lockfile package.
-func storedKey(refs lockfile.RefIndex, ref parserlock.ActionRef) string {
-	return refs.Lookup(ref.Owner+"/"+ref.Repo, ref.Ref).Exact
+// rootKey is ref's identity, the key of the workflow-local root index
+// (see parseWorkflowDeps).
+func rootKey(ref parserlock.ActionRef) string {
+	return dep.RefKey(ref.Owner+"/"+ref.Repo, ref.Ref)
 }
