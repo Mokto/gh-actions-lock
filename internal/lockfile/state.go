@@ -410,6 +410,9 @@ func (s *State) Get(workflowKey string) ([]dep.Dependency, error) {
 
 // LockedPin is one entry in a workflow's recorded closure.
 type LockedPin struct {
+	// Key is the entry's stored key. Address the entry by it; don't rebuild
+	// it from Pin.
+	Key    string
 	Pin    parserlock.Pin
 	Action parserlock.Action
 	// Parent is the canonical key of the composite action that pulls this
@@ -451,7 +454,7 @@ func InspectClosure(file parserlock.File, workflowKey string, live func(parserlo
 			missing = append(missing, MissingPin{Key: key, Parent: parent})
 			return parserlock.Action{}, false
 		}
-		out = append(out, LockedPin{Pin: pin, Action: action, Parent: parent})
+		out = append(out, LockedPin{Key: key, Pin: pin, Action: action, Parent: parent})
 		return action, true
 	}
 	var walk func(key, parent string)
