@@ -346,7 +346,26 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 		depth++
 	}
 
+	if err := conflictingCommits(allDeps); err != nil {
+		resolveErr = errors.Join(resolveErr, err)
+	}
 	return dep.Dedup(allDeps), parentMap, resolveErr
+}
+
+// conflictingCommits rejects a run that resolved one NWO@Ref to two commits,
+// e.g. a branch that advanced between fetching a composite and a sub-action
+// in the same repository. Dedup would keep one commit but every manifest's
+// edges.
+func conflictingCommits(deps []dep.Dependency) error {
+	commits := make(map[string]string, len(deps))
+	for _, d := range deps {
+		key := strings.ToLower(d.NWO) + "@" + d.Ref
+		if prev, ok := commits[key]; ok && !strings.EqualFold(prev, d.SHA) {
+			return fmt.Errorf("%s resolved to both %s and %s in one run; retry", d.Key(), prev, d.SHA)
+		}
+		commits[key] = d.SHA
+	}
+	return nil
 }
 
 // resolveWithActionYMLParallel resolves refs one-per-worker via the shared pool
