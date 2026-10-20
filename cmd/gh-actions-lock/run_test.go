@@ -221,6 +221,67 @@ func TestRemoteCompositeLocalActionsRemainVisibleAcrossOnlineModes(t *testing.T)
 	}
 }
 
+func TestLockedLocalActionNoticeSurvivesNewRemoteRoot(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		args []string
+	}{
+		{name: "fix"},
+		{name: "read only", args: []string{"--no-fix"}},
+		{name: "verify", args: []string{"--verify"}},
+	} {
+		for _, jsonOutput := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json=%t", mode.name, jsonOutput), func(t *testing.T) {
+				const manifest = "runs:\n  using: composite\n  steps:\n    - uses: ./workspace-helper\n"
+				path := writeTempWorkflow(t, cleanWorkflow)
+				reg := &httpmock.Registry{}
+				registerSetupGoManifest(reg, manifest)
+				_, _, err := runCommandWithHTTP(t, reg, path)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, []byte(cleanWorkflow+"      - uses: actions/checkout@v4.2.1\n"), 0o600))
+				reg = &httpmock.Registry{}
+				registerParity(reg)
+				registerSetupGoManifest(reg, manifest)
+				reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+					"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+				}))
+				reg.Register(httpmock.REST("GET", `repos/actions/checkout$`), httpmock.JSONResponse(map[string]any{
+					"default_branch": "main", "id": 1, "owner": map[string]any{"id": 1},
+				}))
+				args := append([]string{"--no-narrow"}, mode.args...)
+				if jsonOutput {
+					args = append(args, "--json=valid,findings")
+				}
+				stdout, stderr, err := runCommandWithHTTP(t, reg, append(args, path)...)
+				if mode.name == "fix" {
+					require.NoError(t, err, stderr)
+				} else {
+					require.ErrorIs(t, err, errSilent)
+				}
+				if !jsonOutput {
+					assert.Contains(t, stderr, "./workspace-helper")
+					assert.Contains(t, stderr, "uses: dependencies are not covered")
+					return
+				}
+				var payload struct {
+					Valid    bool             `json:"valid"`
+					Findings []format.Finding `json:"findings"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
+				assert.False(t, payload.Valid, "the new root retains its pre-fix not-pinned finding")
+				var notice bool
+				for _, f := range payload.Findings {
+					if f.Category == "local-action" && strings.Contains(f.Detail, "./workspace-helper") {
+						assert.Equal(t, "info", f.Severity)
+						notice = true
+					}
+				}
+				assert.True(t, notice, "locked manifests must disclose opaque dependencies beside an unrecorded root")
+			})
+		}
+	}
+}
+
 const graphWorkflow = `
 name: ci
 on: push
