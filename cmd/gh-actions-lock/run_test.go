@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -120,6 +122,8 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					sha = graphLeafSHA
 				}
 				yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/leaf@v3\n"
+			case "fresh":
+				yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/child@v2\n"
 			case "old", "new":
 				data[fmt.Sprintf("a%d", i)] = testRepoResponse("acme/new", graphLeafSHA, nodeActionYAML)
 				continue
@@ -127,6 +131,7 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				if g.leafUsesParent {
 					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/parent@v1.0.0\n"
 				}
+			case "other":
 			default:
 				return nil, fmt.Errorf("unexpected fixture repository %s", name)
 			}
@@ -203,7 +208,7 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return httpmock.JSONResponse(httpmock.TagListResponse("v2.1.0", graphChildSHA, "v2", graphChildSHA))(req)
 		case "/repos/acme/parent/branches":
 			return httpmock.JSONResponse(httpmock.BranchListResponse("main", graphParentSHA))(req)
-		case "/repos/acme/parent", "/repos/acme/child", "/repos/acme/leaf", "/repos/acme/old", "/repos/acme/new":
+		case "/repos/acme/parent", "/repos/acme/child", "/repos/acme/leaf", "/repos/acme/old", "/repos/acme/new", "/repos/acme/other", "/repos/acme/fresh":
 			return httpmock.JSONResponse(map[string]any{
 				"id": 1, "owner": map[string]any{"id": 1}, "default_branch": "main",
 			})(req)
@@ -308,29 +313,37 @@ func TestCompleteness_RelockRebuildsWithoutRefMovement(t *testing.T) {
 	}
 }
 
-func TestCompleteness_VerifyInspectsLockedManifests(t *testing.T) {
-	for _, keepChild := range []bool{false, true} {
-		t.Run(fmt.Sprintf("child recorded=%v", keepChild), func(t *testing.T) {
-			path, file := generateGraph(t)
-			parent := file.Dependencies["acme/parent@v1.0.0"]
-			parent.Uses = nil
-			file.Dependencies["acme/parent@v1.0.0"] = parent
-			if !keepChild {
-				delete(file.Dependencies, "acme/child@v2")
-			}
-			writeGraph(t, file)
-			before := snapshotWorkflows(t)
+func TestCompleteness_OnlineModesInspectLockedManifests(t *testing.T) {
+	for _, mode := range []string{"--verify", "--no-fix", "--no-onboard", ""} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			for _, keepChild := range []bool{false, true} {
+				t.Run(fmt.Sprintf("child recorded=%v", keepChild), func(t *testing.T) {
+					path, file := generateGraph(t)
+					parent := file.Dependencies["acme/parent@v1.0.0"]
+					parent.Uses = nil
+					file.Dependencies["acme/parent@v1.0.0"] = parent
+					if !keepChild {
+						delete(file.Dependencies, "acme/child@v2")
+					}
+					writeGraph(t, file)
+					before := snapshotWorkflows(t)
 
-			_, _, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", path)
-			require.NoError(t, err, "offline verification cannot infer an erased remote edge")
-			transport := &graphTransport{movedParent: true}
-			p, err := runParity(t, transport, "--verify", path)
-			require.ErrorIs(t, err, errSilent)
-			assert.False(t, p.Valid)
-			require.Len(t, p.Findings, 1)
-			assert.Contains(t, p.Findings[0].Detail, "lockfile omits that edge")
-			assert.Equal(t, "acme/parent@v1.0.0", p.Findings[0].RequiredBy)
-			assert.Equal(t, before, snapshotWorkflows(t))
+					_, _, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", path)
+					require.NoError(t, err, "offline verification cannot infer an erased remote edge")
+					transport := &graphTransport{movedParent: true}
+					args := []string{path}
+					if mode != "" {
+						args = append([]string{mode}, args...)
+					}
+					p, err := runParity(t, transport, args...)
+					require.ErrorIs(t, err, errSilent)
+					assert.False(t, p.Valid)
+					require.Len(t, p.Findings, 1)
+					assert.Contains(t, p.Findings[0].Detail, "lockfile omits that edge")
+					assert.Equal(t, "acme/parent@v1.0.0", p.Findings[0].RequiredBy)
+					assert.Equal(t, before, snapshotWorkflows(t))
+				})
+			}
 		})
 	}
 }
@@ -353,33 +366,419 @@ func TestCompleteness_RelockReplacesObsoleteEdges(t *testing.T) {
 	assert.NotContains(t, file.Dependencies, "acme/obsolete@v1")
 }
 
-func TestCompleteness_VerifyManifestFailureIsBlocking(t *testing.T) {
-	for _, tt := range []struct {
-		name       string
-		dropEdge   bool
-		categories []string
-	}{
-		{name: "complete recorded graph", categories: []string{"reachability-unknown"}},
-		{name: "omitted edge does not hide inspection failure", dropEdge: true, categories: []string{"not-pinned", "reachability-unknown"}},
+func TestCompleteness_OnlineManifestFailureIsBlocking(t *testing.T) {
+	for _, mode := range []string{"--verify", "--no-fix", "--no-onboard", ""} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			for _, tt := range []struct {
+				name       string
+				dropEdge   bool
+				categories []string
+			}{
+				{name: "complete recorded graph", categories: []string{"reachability-unknown"}},
+				{name: "omitted edge does not hide inspection failure", dropEdge: true, categories: []string{"not-pinned", "reachability-unknown"}},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					path, file := generateGraph(t)
+					if tt.dropEdge {
+						parent := file.Dependencies["acme/parent@v1.0.0"]
+						parent.Uses = nil
+						file.Dependencies["acme/parent@v1.0.0"] = parent
+						writeGraph(t, file)
+					}
+					before := snapshotWorkflows(t)
+					args := []string{path}
+					if mode != "" {
+						args = append([]string{mode}, args...)
+					}
+					p, err := runParity(t, &graphTransport{failChild: true}, args...)
+					require.ErrorIs(t, err, errSilent)
+					assert.False(t, p.Valid)
+					var categories []string
+					for _, f := range p.Findings {
+						categories = append(categories, f.Category)
+						assert.Equal(t, "error", f.Severity)
+					}
+					assert.ElementsMatch(t, tt.categories, categories)
+					assert.Equal(t, before, snapshotWorkflows(t))
+				})
+			}
+		})
+	}
+}
+
+func TestCompleteness_WorkflowEditsCannotBypassLockedManifests(t *testing.T) {
+	for _, mode := range []string{"", "--no-fix", "--no-onboard", "--verify"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			for _, edit := range []struct {
+				name   string
+				before string
+				after  string
+			}{
+				{name: "adding a direct action", after: "      - uses: acme/other@v1\n"},
+				{name: "bumping a direct action", before: "      - uses: acme/other@v1\n", after: "      - uses: acme/other@v2\n"},
+				{name: "removing a direct action", before: "      - uses: acme/other@v1\n"},
+			} {
+				t.Run(edit.name, func(t *testing.T) {
+					for _, damage := range []string{"omitted edge", "unreadable manifest"} {
+						t.Run(damage, func(t *testing.T) {
+							path, file := generateGraph(t)
+							if edit.before != "" {
+								require.NoError(t, os.WriteFile(path, []byte(graphWorkflow+edit.before), 0o600))
+								_, stderr, err := runCommandWithHTTP(t, &graphTransport{}, "--no-narrow", path)
+								require.NoError(t, err, stderr)
+								file, err = parserlock.Parse([]byte(readTempLockfilePins(t)))
+								require.NoError(t, err)
+							}
+							transport := &graphTransport{failChild: damage == "unreadable manifest"}
+							if damage == "omitted edge" {
+								parent := file.Dependencies["acme/parent@v1.0.0"]
+								parent.Uses = nil
+								file.Dependencies["acme/parent@v1.0.0"] = parent
+								writeGraph(t, file)
+							}
+							require.NoError(t, os.WriteFile(path, []byte(graphWorkflow+edit.after), 0o600))
+							before := snapshotWorkflows(t)
+							args := []string{"--no-narrow", path}
+							if mode != "" {
+								args = append([]string{mode}, args...)
+							}
+							p, err := runParity(t, transport, args...)
+							assert.ErrorIs(t, err, errSilent)
+							assert.False(t, p.Valid)
+							var found bool
+							for _, f := range p.Findings {
+								if strings.Contains(f.Detail, "lockfile omits that edge") ||
+									strings.Contains(f.Detail, "could not verify locked dependency manifests") {
+									found = true
+									assert.Equal(t, "error", f.Severity)
+								}
+							}
+							assert.True(t, found, "locked graph damage must be diagnosed: %+v", p.Findings)
+							assert.Equal(t, before, snapshotWorkflows(t))
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestCompleteness_ReadOnlyRefreshInspectsRetainedGraph(t *testing.T) {
+	for _, mode := range [][]string{
+		{"--verify", "--relock"},
+		{"--verify", "--accept-moved"},
+		{"--no-fix", "--relock"},
+		{"--no-fix", "--accept-moved"},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			path, file := generateGraph(t)
-			if tt.dropEdge {
-				parent := file.Dependencies["acme/parent@v1.0.0"]
-				parent.Uses = nil
-				file.Dependencies["acme/parent@v1.0.0"] = parent
-				writeGraph(t, file)
+		t.Run(strings.Join(mode, " "), func(t *testing.T) {
+			for _, damage := range []string{"omitted edge", "unreadable manifest"} {
+				t.Run(damage, func(t *testing.T) {
+					path, file := generateGraph(t)
+					if damage == "omitted edge" {
+						parent := file.Dependencies["acme/parent@v1.0.0"]
+						parent.Uses = nil
+						file.Dependencies["acme/parent@v1.0.0"] = parent
+						writeGraph(t, file)
+					}
+					before := snapshotWorkflows(t)
+					args := append(slices.Clone(mode), "--no-narrow", path)
+					p, err := runParity(t, &graphTransport{failChild: damage == "unreadable manifest"}, args...)
+					assert.ErrorIs(t, err, errSilent)
+					assert.False(t, p.Valid)
+					var found bool
+					for _, f := range p.Findings {
+						if damage == "omitted edge" && strings.Contains(f.Detail, "lockfile omits that edge") {
+							found = true
+							assert.Equal(t, "not-pinned", f.Category)
+							assert.Equal(t, "acme/parent@v1.0.0", f.RequiredBy)
+							assert.Equal(t, "error", f.Severity)
+						}
+						if damage == "unreadable manifest" && strings.Contains(f.Detail, "could not verify locked dependency manifests") {
+							found = true
+							assert.Equal(t, "reachability-unknown", f.Category)
+							assert.Equal(t, "error", f.Severity)
+						}
+					}
+					assert.True(t, found, "retained graph damage must be diagnosed: %+v", p.Findings)
+					assert.Equal(t, before, snapshotWorkflows(t))
+				})
 			}
+		})
+	}
+}
+
+func TestCompleteness_ScopedOnboardingInspectsReusedPins(t *testing.T) {
+	for _, reuse := range []struct {
+		name, root, parent string
+	}{
+		{name: "locked root from another workflow", root: "acme/parent@v1.0.0", parent: "acme/parent@v1.0.0"},
+		{name: "cached transitive below a fresh root", root: "acme/fresh@v1", parent: "acme/child@v2"},
+	} {
+		t.Run(reuse.name, func(t *testing.T) {
+			for _, mode := range []string{"", "--no-fix", "--no-onboard", "--verify"} {
+				t.Run("mode="+mode, func(t *testing.T) {
+					for _, damage := range []string{"omitted edge", "unreadable manifest"} {
+						t.Run(damage, func(t *testing.T) {
+							_, file := generateGraph(t)
+							const path = ".github/workflows/new.yml"
+							require.NoError(t, os.WriteFile(path, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", reuse.root, 1)), 0o600))
+							if damage == "omitted edge" {
+								parent := file.Dependencies[reuse.parent]
+								parent.Uses = nil
+								file.Dependencies[reuse.parent] = parent
+								writeGraph(t, file)
+							}
+							before := snapshotWorkflows(t)
+							args := []string{"--no-narrow", path}
+							if mode != "" {
+								args = append([]string{mode}, args...)
+							}
+							p, err := runParity(t, &graphTransport{failChild: damage == "unreadable manifest"}, args...)
+							assert.ErrorIs(t, err, errSilent)
+							assert.False(t, p.Valid)
+							var found bool
+							for _, f := range p.Findings {
+								if damage == "omitted edge" && strings.Contains(f.Detail, "lockfile omits that edge") {
+									found = true
+									assert.Equal(t, "not-pinned", f.Category)
+									assert.Equal(t, reuse.parent, f.RequiredBy)
+									assert.Equal(t, "error", f.Severity)
+								}
+								if damage == "unreadable manifest" && strings.Contains(f.Detail, "could not verify locked dependency manifests") {
+									found = true
+									assert.Equal(t, "reachability-unknown", f.Category)
+									assert.Equal(t, "error", f.Severity)
+								}
+							}
+							assert.True(t, found, "reused locked pin must be inspected: %+v", p.Findings)
+							assert.Equal(t, before, snapshotWorkflows(t))
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestCompleteness_ScopedOnboardingPreservesReusedClosure(t *testing.T) {
+	for _, root := range []string{"acme/parent@v1.0.0", "acme/fresh@v1"} {
+		t.Run(root, func(t *testing.T) {
+			old, file := generateGraph(t)
+			const path = ".github/workflows/new.yml"
+			require.NoError(t, os.WriteFile(path, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", root, 1)), 0o600))
+			_, stderr, err := runCommandWithHTTP(t, &graphTransport{}, "--no-narrow", path)
+			require.NoError(t, err, stderr)
+			after, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+			require.NoError(t, err)
+			assert.Equal(t, file.Workflows[old], after.Workflows[old])
+			assert.Equal(t, []string{root}, after.Workflows[path])
+			assert.Equal(t, []string{"acme/leaf@v3"}, after.Dependencies["acme/child@v2"].Uses)
 			before := snapshotWorkflows(t)
-			p, err := runParity(t, &graphTransport{failChild: true}, "--verify", path)
-			require.ErrorIs(t, err, errSilent)
-			assert.False(t, p.Valid)
-			var categories []string
-			for _, f := range p.Findings {
-				categories = append(categories, f.Category)
-				assert.Equal(t, "error", f.Severity)
+			_, stderr, err = runCommandWithHTTP(t, &graphTransport{}, "--verify", path)
+			require.NoError(t, err, stderr)
+			assert.Equal(t, before, snapshotWorkflows(t))
+		})
+	}
+}
+
+type manifestTransport func(*http.Request) (*http.Response, error)
+
+func (f manifestTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestCompleteness_WorkflowRootsShareManifestBatch(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		for _, fullSHA := range []bool{false, true} {
+			t.Run(fmt.Sprintf("shared=%v/full-SHA=%v", shared, fullSHA), func(t *testing.T) {
+				path, other := seedManifestWorkflows(t, shared)
+				if fullSHA {
+					require.NoError(t, os.WriteFile(path, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/leaf@"+graphLeafSHA, 1)), 0o600))
+				}
+				before := snapshotWorkflows(t)
+				var batches atomic.Int64
+				var inspected sync.Map
+				transport := manifestTransport(func(req *http.Request) (*http.Response, error) {
+					if !httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`)(req) {
+						return (&graphTransport{}).RoundTrip(req)
+					}
+					batches.Add(1)
+					var body struct {
+						Variables map[string]string `json:"variables"`
+					}
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						return nil, err
+					}
+					data := map[string]any{}
+					for i := 0; ; i++ {
+						name, ok := body.Variables[fmt.Sprintf("name%d", i)]
+						if !ok {
+							break
+						}
+						inspected.Store(name, true)
+						assert.Equal(t, graphLeafSHA+"^{commit}", body.Variables[fmt.Sprintf("expr%d", i)])
+						data[fmt.Sprintf("a%d", i)] = testRepoResponse("acme/"+name, graphLeafSHA, nodeActionYAML)
+					}
+					return httpmock.JSONResponse(map[string]any{"data": data})(req)
+				})
+				p, err := runParity(t, transport, "--verify", path, other)
+				require.NoError(t, err, "%+v", p.Findings)
+				assert.True(t, p.Valid)
+				assert.EqualValues(t, 1, batches.Load(), "both one-level roots fit one manifest batch")
+				_, leaf := inspected.Load("leaf")
+				_, second := inspected.Load("other")
+				assert.True(t, leaf, "the full-SHA remap must retain the first root")
+				assert.Equal(t, !shared, second)
+				assert.Equal(t, before, snapshotWorkflows(t))
+			})
+		}
+	}
+}
+
+func seedManifestWorkflows(t *testing.T, shared bool) (string, string) {
+	t.Helper()
+	path := writeTempWorkflow(t, strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/leaf@v3", 1))
+	otherRef := "acme/other@v1"
+	if shared {
+		otherRef = "acme/leaf@v3"
+	}
+	const other = ".github/workflows/other.yml"
+	require.NoError(t, os.WriteFile(other, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", otherRef, 1)), 0o600))
+	_, stderr, err := runCommandWithHTTP(t, &graphTransport{}, "--no-narrow", path, other)
+	require.NoError(t, err, stderr)
+	return path, other
+}
+
+func TestCompleteness_BatchedFailuresBelongToTheirWorkflows(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		manifest string
+		denied   bool
+		category string
+	}{
+		{name: "denied alias", manifest: nodeActionYAML, denied: true, category: "reachability-unknown"},
+		{name: "missing manifest", category: "reachability-unknown"},
+		{name: "malformed manifest", manifest: "runs: [", category: "reachability-unknown"},
+		{name: "unlocked child", manifest: "runs:\n  using: composite\n  steps:\n    - uses: acme/unrecorded@v1\n", category: "not-pinned"},
+		{name: "uses cycle", manifest: "runs:\n  using: composite\n  steps:\n    - uses: acme/other@v1\n", category: "not-pinned"},
+	} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reversed=%v", tt.name, reverse), func(t *testing.T) {
+				path, other := seedManifestWorkflows(t, false)
+				before := snapshotWorkflows(t)
+				var batches atomic.Int64
+				transport := manifestTransport(func(req *http.Request) (*http.Response, error) {
+					if !httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`)(req) {
+						return (&graphTransport{}).RoundTrip(req)
+					}
+					batches.Add(1)
+					var body struct {
+						Variables map[string]string `json:"variables"`
+					}
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						return nil, err
+					}
+					data := map[string]any{}
+					var failures []map[string]any
+					for i := 0; ; i++ {
+						name, ok := body.Variables[fmt.Sprintf("name%d", i)]
+						if !ok {
+							break
+						}
+						alias := fmt.Sprintf("a%d", i)
+						yml := nodeActionYAML
+						if name == "other" {
+							yml = tt.manifest
+							if tt.denied {
+								failures = append(failures, map[string]any{
+									"type": "FORBIDDEN", "message": "manifest denied", "path": []string{alias, "object", "fileYaml"},
+								})
+							}
+						}
+						data[alias] = testRepoResponse("acme/"+name, graphLeafSHA, yml)
+					}
+					return httpmock.JSONResponse(map[string]any{"data": data, "errors": failures})(req)
+				})
+				paths := []string{path, other}
+				if reverse {
+					slices.Reverse(paths)
+				}
+				p, err := runParity(t, transport, append([]string{"--verify"}, paths...)...)
+				require.ErrorIs(t, err, errSilent)
+				assert.False(t, p.Valid)
+				var failures int
+				for _, finding := range p.Findings {
+					if finding.Severity != "error" {
+						continue
+					}
+					failures++
+					assert.Equal(t, other, finding.Workflow)
+					assert.Equal(t, tt.category, finding.Category)
+				}
+				assert.Positive(t, failures)
+				assert.EqualValues(t, 1, batches.Load(), "alias, parse and graph failures do not retry the traversal")
+				assert.Equal(t, before, snapshotWorkflows(t))
+			})
+		}
+	}
+}
+
+func TestCompleteness_BatchedProxyReadsDoNotRefetchFailures(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusForbidden, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			path, other := seedManifestWorkflows(t, false)
+			t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			for repo, ref := range map[string]string{"leaf": "v3", "other": "v1"} {
+				reg.Register(httpmock.REST("GET", `^/repos/acme/`+repo+`$`), httpmock.JSONResponse(map[string]any{
+					"full_name": "acme/" + repo, "id": 1, "owner": map[string]any{"id": 1},
+				}))
+				reg.Register(httpmock.REST("GET", `^/repos/acme/`+repo+`/git/ref/tags/`+ref+`$`),
+					httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/"+ref, graphLeafSHA)))
+				reg.Register(httpmock.REST("GET", `^/repos/acme/`+repo+`/commits/`+graphLeafSHA+`$`),
+					httpmock.JSONResponse(map[string]any{"sha": graphLeafSHA}))
+				var respond httpmock.Responder = httpmock.JSONResponse(map[string]any{
+					"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(nodeActionYAML)),
+				})
+				if repo == "other" && status != http.StatusOK {
+					respond = httpmock.StatusResponse(status)
+				}
+				reg.Register(httpmock.REST("GET", `^/repos/acme/`+repo+`/contents/action\.yml$`), respond)
 			}
-			assert.ElementsMatch(t, tt.categories, categories)
+			var commits, manifests atomic.Int64
+			transport := manifestTransport(func(req *http.Request) (*http.Response, error) {
+				if strings.Contains(req.URL.Path, "/commits/") {
+					commits.Add(1)
+				}
+				if strings.Contains(req.URL.Path, "/contents/") {
+					manifests.Add(1)
+				}
+				return reg.RoundTrip(req)
+			})
+			useDefaultTransport(t, transport)
+			before := snapshotWorkflows(t)
+			if status == http.StatusServiceUnavailable {
+				_, _, err := runCommandWithHTTP(t, transport, "--verify", path, other)
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, errSilent, "a proxy outage remains a retry rather than a finding")
+				assert.ErrorContains(t, err, "could not verify locked dependency manifests")
+			} else {
+				p, err := runParity(t, transport, "--verify", path, other)
+				if status == http.StatusOK {
+					require.NoError(t, err, "%+v", p.Findings)
+					assert.True(t, p.Valid)
+				} else {
+					require.ErrorIs(t, err, errSilent)
+					assert.False(t, p.Valid)
+					for _, finding := range p.Findings {
+						if finding.Severity == "error" {
+							assert.Equal(t, other, finding.Workflow)
+							assert.Equal(t, "reachability-unknown", finding.Category)
+						}
+					}
+				}
+			}
+			assert.EqualValues(t, 2, commits.Load(), "each ref has one immutable commit lookup; parity uses the matching tag target")
+			assert.EqualValues(t, 2, manifests.Load(), "each ref has one immutable manifest read, including failures")
 			assert.Equal(t, before, snapshotWorkflows(t))
 		})
 	}

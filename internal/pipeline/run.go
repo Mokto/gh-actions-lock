@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -21,11 +22,12 @@ type RunOptions struct {
 	Pool          *pinpool.Pool
 	// Relock re-resolves every ref live instead of trusting the lockfile.
 	Relock bool
+	// ReadOnly means planning will not rebuild the graph, even under Relock.
+	ReadOnly bool
 	// AcceptMoved accepts recorded pins whose ref no longer vouches for
 	// them; it implies Relock.
 	AcceptMoved bool
-	// Verify also checks that each pin on a mutable ref is still in that
-	// ref's history and that locked manifests match the recorded graph.
+	// Verify selects frozen parity diagnostics.
 	Verify bool
 	// CollapseSpellings is --relock of every workflow: it rebuilds each
 	// graph, so a full SHA recorded under several spellings is rewritten
@@ -105,6 +107,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	refs, _ := CollectUnrecordedResolvable(unresolved, recordedRefs)
 	var resolved []dep.Dependency
 	var parents dep.ParentMap
+	var resolvedGraph *resolve.Graph
 
 	// Phase 2: Resolve.
 	if r != nil {
@@ -115,7 +118,10 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		if len(refs) > 0 {
 			endResolve := prof.Phase("  resolve refs")
 			var err error
-			resolved, parents, err = r.ResolveAllRecursive(ctx, refs)
+			resolvedGraph, err = r.ResolveGraph(ctx, refs)
+			var flatErr error
+			resolved, parents, flatErr = resolvedGraph.Flatten()
+			err = errors.Join(err, flatErr)
 			endResolve()
 			// Behind the proxy a pin that can't be resolved for a transient
 			// reason is a retry, not a not-pinned finding.
@@ -171,10 +177,8 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
-	if opts.Verify && r != nil && opts.Store != nil {
-		if err := checkLockedManifests(ctx, r, parsed, opts.Store, report); err != nil {
-			return nil, err
-		}
+	if err := checkLockedManifests(ctx, opts, parsed, report, resolved, parents, resolvedGraph); err != nil {
+		return nil, err
 	}
 	return &RunResult{Report: report, Valid: report.IsValid()}, nil
 }

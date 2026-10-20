@@ -16,26 +16,57 @@ import (
 	"github.com/github/gh-actions-lock/internal/resolve"
 )
 
-func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report) error {
-	file := store.File()
-	deps := store.AllDeps()
+func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, resolved []dep.Dependency, resolvedParents dep.ParentMap, resolvedGraph *resolve.Graph) error {
+	// Only a writable refresh replaces the recorded graph instead of retaining it.
+	if opts.Resolver == nil || opts.Store == nil || opts.Relock && !opts.ReadOnly {
+		return nil
+	}
+	r := opts.Resolver
+	file := opts.Store.File()
+	deps := opts.Store.AllDeps()
 	refs := lockfile.NewRefIndex(file)
+	fresh := freshClosure(resolved, resolvedParents)
+	type inspection struct {
+		workflow int
+		roots    []parserlock.ActionRef
+	}
+	var inspections []inspection
+	var roots []parserlock.ActionRef
 	for i, pw := range parsed {
-		if isBlocked(pw) || report.Workflows[i].SkipCommit || !report.Workflows[i].IsValid() {
+		wr := &report.Workflows[i]
+		// Repairable diagnostics do not exempt retained pins from inspection.
+		if isBlocked(pw) || wr.SkipCommit || wr.BlockingResolverError {
 			continue
 		}
-		recorded, _ := pw.PartitionRefs()
-		recorded = lockedRoots(recorded, pw.ExistingDeps)
-		_, parents, err := r.ResolveLockedRecursive(ctx, recorded, deps)
+		// Seeds are shared across workflows, including descendants of fresh
+		// roots. Inspect the reached recorded pins, not just this workflow's
+		// previous lockfile ownership.
+		reached := pw
+		reached.Refs = slices.Clone(pw.Refs)
+		for _, o := range fresh(pw, resolve.RefSet{}) {
+			reached.Refs = append(reached.Refs, o.ref)
+		}
+		reached.ExistingDeps = deps
+		recorded := lockedManifestRoots(reached)
+		inspections = append(inspections, inspection{workflow: i, roots: recorded})
+		roots = append(roots, recorded...)
+	}
+	graph, err := r.ResolveLockedGraph(ctx, roots, deps)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	// Behind the proxy a transient read is a retry, matching resolution
+	// and parity, not a finding.
+	if err != nil && ghapi.DependabotProxy() && ghapi.IsTransient(err) {
+		return fmt.Errorf("could not verify locked dependency manifests: %w", err)
+	}
+	for _, inspection := range inspections {
+		pw := parsed[inspection.workflow]
+		wr := &report.Workflows[inspection.workflow]
+		_, parents, err := graph.Inspect(inspection.roots)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		// Behind the proxy a transient read is a retry, matching resolution
-		// and parity, not a finding.
-		if err != nil && ghapi.DependabotProxy() && ghapi.IsTransient(err) {
-			return fmt.Errorf("could not verify locked dependency manifests: %w", err)
-		}
-		wr := &report.Workflows[i]
 		// The recorded edges must include every edge discovered at the locked
 		// commits, even when a child exists elsewhere in the same lockfile.
 		// Discovery names entries as manifests spell them; match them to the
@@ -150,6 +181,11 @@ func lockedParents(refs lockfile.RefIndex, parents []string) []string {
 		}
 	}
 	return out
+}
+
+func lockedManifestRoots(pw checks.ParsedWorkflow) []parserlock.ActionRef {
+	recorded, _ := pw.PartitionRefs()
+	return lockedRoots(recorded, pw.ExistingDeps)
 }
 
 // onlyExplained reports whether every error in err already has a finding:

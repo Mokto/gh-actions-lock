@@ -77,9 +77,13 @@ the full-SHA `uses:`, and drops the entry if nothing uses it; a commit no tag
 or branch contains still fails the run and nothing is written. A run given
 workflow paths leaves another workflow's such entry as it is, warns about it
 (exit 0), and doesn't report every workflow valid.
-`--verify` also reads action manifests at
-the locked commits to check that the recorded transitive graph covers their
-dependencies, without advancing to current upstream commits.
+Every online run that retains recorded pins also reads their action manifests
+at the locked commits to check that the recorded transitive graph covers their
+dependencies, without advancing to current upstream commits. This includes pins
+reused from another workflow and read-only runs with refresh flags; only a
+writable refresh rebuilds the graph instead.
+Selected workflows share batched manifest reads; failures remain attributed
+only to the workflows that reach them.
 
 `--verify-local` runs offline and never writes. It checks direct refs and all
 recorded transitive edges for missing dependency entries, but cannot discover an

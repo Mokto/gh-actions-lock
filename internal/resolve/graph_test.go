@@ -205,7 +205,6 @@ func TestGraphRejectsMergingDifferentTargets(t *testing.T) {
 		})
 	}
 }
-
 func entryDepsOf(entries []Entry) []dep.Dependency {
 	deps := make([]dep.Dependency, len(entries))
 	for i, e := range entries {
@@ -258,4 +257,102 @@ func TestEntryKeyHasNoFactory(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{"Graph.FlattenPlanned"}, producers)
+}
+
+func TestGraphInspectScopesFailuresAndEdges(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, tt := range []struct {
+		name     string
+		manifest string
+		depth    int
+		want     string
+	}{
+		{name: "parse failure", manifest: "runs: [", want: "reading manifest"},
+		{name: "local path", manifest: "runs:\n  using: composite\n  steps:\n    - uses: ./local\n", want: "local path"},
+		{name: "invalid self ref", manifest: "runs:\n  using: composite\n  steps:\n    - uses: $/sub@v1\n", want: "forbidden @ref"},
+		{name: "malformed nested ref", manifest: "runs:\n  using: composite\n  steps:\n    - uses: o/action@v1:action.yml\n", want: "action.yml"},
+		{name: "cycle", manifest: "runs:\n  using: composite\n  steps:\n    - uses: o/root@v1\n", want: "reaches itself"},
+		{name: "depth limit", manifest: "runs:\n  using: node20\n", depth: 1, want: "max depth"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			depth := tt.depth
+			if depth == 0 {
+				depth = DefaultMaxRecursionDepth
+			}
+			r := seedCache(&Resolver{MaxRecursionDepth: depth}, map[ghapi.ActionRef]resolvedEntry{
+				ghapi.ForActionRef("o", "root", "", "v1"): {
+					dep:       dep.Dependency{NWO: "o/root", Ref: "v1", SHA: sha},
+					actionYML: "runs:\n  using: composite\n  steps:\n    - uses: o/failed@v1\n",
+				},
+				ghapi.ForActionRef("o", "failed", "", "v1"): {
+					dep: dep.Dependency{NWO: "o/failed", Ref: "v1", SHA: sha}, actionYML: tt.manifest,
+				},
+				ghapi.ForActionRef("o", "healthy", "", "v1"): {
+					dep: dep.Dependency{NWO: "o/healthy", Ref: "v1", SHA: sha}, actionYML: "runs:\n  using: node20\n",
+				},
+			})
+			bad := parserlock.ActionRef{Owner: "o", Repo: "root", Ref: "v1"}
+			good := parserlock.ActionRef{Owner: "o", Repo: "healthy", Ref: "v1"}
+			g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{bad, good})
+			require.ErrorContains(t, err, tt.want, "the existing aggregate wrapper still reports the failure")
+
+			deps, parents, err := g.Inspect([]parserlock.ActionRef{good})
+			require.NoError(t, err, "unrelated failure must not leak into a healthy root")
+			assert.Equal(t, []string{"o/healthy@v1"}, depKeys(deps))
+			assert.Empty(t, parents)
+
+			_, parents, err = g.Inspect([]parserlock.ActionRef{bad})
+			require.ErrorContains(t, err, tt.want)
+			assert.Equal(t, []string{"o/root@v1"}, parents[dep.RefKeyOf("o/failed@v1")])
+			parents[dep.RefKeyOf("o/failed@v1")] = nil
+			_, again, err := g.Inspect([]parserlock.ActionRef{bad, bad})
+			require.ErrorContains(t, err, tt.want)
+			assert.Equal(t, []string{"o/root@v1"}, again[dep.RefKeyOf("o/failed@v1")], "each view owns its flattened edges")
+		})
+	}
+}
+
+func TestGraphInspectRejectsUntraversedRoot(t *testing.T) {
+	g := newGraph(nil)
+	_, _, err := g.Inspect([]parserlock.ActionRef{{Owner: "o", Repo: "missing", Ref: "v1"}})
+	require.ErrorContains(t, err, "was not traversed")
+}
+
+func TestGraphManifestsPreserveSiblingPaths(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	root := parserlock.ActionRef{Owner: "o", Repo: "root", Ref: "v1"}
+	r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
+		ghapi.ForActionRef("o", "root", "", "v1"): {
+			dep:       dep.Dependency{NWO: "o/root", Ref: "v1", SHA: sha},
+			actionYML: "runs:\n  using: composite\n  steps:\n    - uses: o/actions/a@v1\n    - uses: o/actions/b@v1\n",
+		},
+		ghapi.ForActionRef("o", "actions", "a", "v1"): {
+			dep: dep.Dependency{NWO: "o/actions", Path: "a", Ref: "v1", SHA: sha}, actionYML: "runs:\n  using: node20\n",
+		},
+		ghapi.ForActionRef("o", "actions", "b", "v1"): {
+			dep:       dep.Dependency{NWO: "o/actions", Path: "b", Ref: "v1", SHA: sha},
+			actionYML: "runs:\n  using: composite\n  steps:\n    - uses: o/leaf@v1\n",
+		},
+		ghapi.ForActionRef("o", "leaf", "", "v1"): {
+			dep: dep.Dependency{NWO: "o/leaf", Ref: "v1", SHA: sha}, actionYML: "runs:\n  using: node20\n",
+		},
+	})
+	g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{root})
+	require.NoError(t, err)
+	manifests, err := g.Manifests([]parserlock.ActionRef{root})
+	require.NoError(t, err)
+	var paths []string
+	for _, manifest := range manifests {
+		if manifest.Ref.Repo != "actions" {
+			continue
+		}
+		paths = append(paths, manifest.Ref.Path)
+		assert.Equal(t, sha, manifest.Entry.Dep.SHA)
+		if manifest.Ref.Path == "a" {
+			assert.Empty(t, manifest.Parents)
+		} else {
+			assert.Equal(t, dep.ParentMap{dep.RefKeyOf("o/leaf@v1"): {"o/actions@v1"}}, manifest.Parents)
+		}
+	}
+	assert.Equal(t, []string{"a", "b"}, paths)
 }

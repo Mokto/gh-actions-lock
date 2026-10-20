@@ -54,6 +54,7 @@ func TestCheckCommand_JSONGolden(t *testing.T) {
 		"  steps:\n" +
 		"    - uses: actions/cache@v4\n" +
 		"    - uses: helper/only-transitive@v1\n"
+	registerLockedManifests(reg, map[string]string{"actions/setup-go": compositeYAML})
 
 	// Direct refs from the workflow: checkout@v6, setup-go@v6, cache@v3.
 	// The resolver batches them into a single GraphQL request keyed by

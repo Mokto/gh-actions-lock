@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -22,7 +23,8 @@ type Graph struct {
 	order []ghapi.ActionRef
 	roots []ghapi.ActionRef
 	// host is the resolver's host, which an empty Dependency.Hostname means.
-	host string
+	host          string
+	inspectionErr error
 }
 
 type graphNode struct {
@@ -31,6 +33,7 @@ type graphNode struct {
 	dep      dep.Dependency
 	resolved bool
 	children []graphEdge
+	err      error
 }
 
 // graphEdge is one `uses:` as its manifest writes it. A manifest can't be
@@ -69,6 +72,101 @@ func (g *Graph) setResolved(ref parserlock.ActionRef, d dep.Dependency) {
 	}
 	n.dep, n.resolved = d, true
 	g.order = append(g.order, cacheKey(ref))
+}
+
+func (g *Graph) addError(ref parserlock.ActionRef, err error) {
+	n := g.nodes[g.node(ref)]
+	n.err = errors.Join(n.err, err)
+}
+
+// Inspect returns only the nodes, edges and failures reached from roots.
+// It shares the completed traversal's nodes without resolving them again.
+func (g *Graph) Inspect(roots []parserlock.ActionRef) ([]dep.Dependency, dep.ParentMap, error) {
+	view, err := g.restrict(roots)
+	if view == nil {
+		return nil, nil, err
+	}
+	deps, parents, flatErr := view.Flatten()
+	return deps, parents, errors.Join(err, flatErr)
+}
+
+// Manifest preserves an action file's path and its own dependency edges.
+type Manifest struct {
+	Ref     parserlock.ActionRef
+	Entry   Entry
+	Parents dep.ParentMap
+}
+
+// Manifests keeps sibling action files separate while deriving their entry
+// identities through the same flattening used by planning.
+func (g *Graph) Manifests(roots []parserlock.ActionRef) ([]Manifest, error) {
+	view, err := g.restrict(roots)
+	if view == nil {
+		return nil, err
+	}
+	var out []Manifest
+	for _, key := range view.order {
+		n := view.nodes[key]
+		direct := &Graph{nodes: map[ghapi.ActionRef]*graphNode{key: n}, roots: []ghapi.ActionRef{key}, order: []ghapi.ActionRef{key}, host: g.host}
+		for _, edge := range n.children {
+			if _, ok := direct.nodes[edge.key]; ok {
+				continue
+			}
+			child := *view.nodes[edge.key]
+			child.children = nil
+			direct.nodes[edge.key] = &child
+			if child.resolved {
+				direct.order = append(direct.order, edge.key)
+			}
+		}
+		entries, parents, flatErr := direct.FlattenPlanned(Decisions{})
+		err = errors.Join(err, flatErr)
+		for _, entry := range entries {
+			if entry.Root {
+				out = append(out, Manifest{Ref: n.ref, Entry: entry, Parents: parents})
+			}
+		}
+	}
+	return out, err
+}
+
+func (g *Graph) restrict(roots []parserlock.ActionRef) (*Graph, error) {
+	view := &Graph{nodes: make(map[ghapi.ActionRef]*graphNode), host: g.host}
+	var queue []ghapi.ActionRef
+	for _, ref := range roots {
+		key := cacheKey(ref)
+		if _, ok := g.nodes[key]; !ok {
+			return nil, fmt.Errorf("inspection root %s@%s was not traversed", ref.FullName(), ref.Ref)
+		}
+		if !slices.Contains(view.roots, key) {
+			view.roots = append(view.roots, key)
+			queue = append(queue, key)
+		}
+	}
+	err := g.inspectionErr
+	for len(queue) > 0 {
+		key := queue[0]
+		queue = queue[1:]
+		if _, ok := view.nodes[key]; ok {
+			continue
+		}
+		n := g.nodes[key]
+		view.nodes[key] = n
+		err = errors.Join(err, n.err)
+		for _, child := range n.children {
+			queue = append(queue, child.key)
+		}
+	}
+	for _, key := range g.order {
+		if _, ok := view.nodes[key]; ok {
+			view.order = append(view.order, key)
+		}
+	}
+	err = errors.Join(err, view.conflictingCommits())
+	if cycle := view.cycle(); cycle != nil {
+		err = errors.Join(err, cycle)
+	}
+	return view, err
 }
 
 func (g *Graph) addEdge(parent, child parserlock.ActionRef, self bool) {

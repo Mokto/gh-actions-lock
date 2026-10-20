@@ -229,6 +229,13 @@ func lockedKey(owner, repo, ref string) ghapi.NWORef {
 // ResolveLockedRecursive discovers dependencies using only recorded commits.
 // Its content cache is separate from live-ref resolution and lockfile seeds.
 func (r *Resolver) ResolveLockedRecursive(ctx context.Context, refs []parserlock.ActionRef, deps []dep.Dependency) ([]dep.Dependency, dep.ParentMap, error) {
+	g, err := r.ResolveLockedGraph(ctx, refs, deps)
+	deps, parents, flatErr := g.Flatten()
+	return deps, parents, errors.Join(err, flatErr)
+}
+
+// ResolveLockedGraph retains failure provenance for root-scoped inspection.
+func (r *Resolver) ResolveLockedGraph(ctx context.Context, refs []parserlock.ActionRef, deps []dep.Dependency) (*Graph, error) {
 	locked := make(map[ghapi.NWORef]string, len(deps))
 	for _, d := range deps {
 		owner, repo := d.OwnerRepo()
@@ -236,9 +243,7 @@ func (r *Resolver) ResolveLockedRecursive(ctx context.Context, refs []parserlock
 			locked[lockedKey(owner, repo, d.Ref)] = d.SHA
 		}
 	}
-	g, err := r.resolveRecursive(ctx, refs, locked)
-	deps, parents, flatErr := g.Flatten()
-	return deps, parents, errors.Join(err, flatErr)
+	return r.resolveRecursive(ctx, refs, locked)
 }
 
 func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.ActionRef, locked map[ghapi.NWORef]string) (*Graph, error) {
@@ -284,10 +289,18 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 	}
 
 	var resolveErr error
+	fail := func(ref parserlock.ActionRef, err error) {
+		g.addError(ref, err)
+		resolveErr = errors.Join(resolveErr, err)
+	}
 
 	for len(pending) > 0 {
 		if depth >= r.MaxRecursionDepth {
-			return g, fmt.Errorf("composite action recursion exceeded max depth %d", r.MaxRecursionDepth)
+			err := fmt.Errorf("composite action recursion exceeded max depth %d", r.MaxRecursionDepth)
+			for _, request := range pending {
+				g.addError(request.ref, err)
+			}
+			return g, err
 		}
 
 		var toResolve []resolutionRequest
@@ -301,7 +314,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 				if locked != nil && request.fetchRef == "" {
 					request.fetchRef = locked[lockedKey(request.ref.Owner, request.ref.Repo, request.ref.Ref)]
 					if request.fetchRef == "" {
-						resolveErr = errors.Join(resolveErr, &UnlockedRefError{Ref: request.ref})
+						fail(request.ref, &UnlockedRefError{Ref: request.ref})
 						continue
 					}
 				}
@@ -313,7 +326,14 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 			break
 		}
 
-		deps, actionYMLs, requested, err := r.resolveWithActionYMLParallel(ctx, toResolve, depth, &resolveDone, &resolveTotal, locked != nil)
+		files, err := r.resolveWithActionYMLParallel(ctx, toResolve, depth, &resolveDone, &resolveTotal, locked != nil)
+		deps, actionYMLs, requested := files.deps, files.ymls, files.requested
+		for _, failure := range files.failures {
+			g.addError(failure.ref, failure.err)
+		}
+		if err != nil && len(files.failures) == 0 {
+			g.inspectionErr = errors.Join(g.inspectionErr, err)
+		}
 		if depth > 0 || ghapi.DependabotProxy() || locked != nil {
 			// A remote composite's `uses:` can't be rewritten here, and the
 			// runner looks it up as written, so keep the name it uses. Nor
@@ -348,7 +368,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 
 			meta, parseErr := parserlock.ParseActionMeta(yml)
 			if parseErr != nil {
-				resolveErr = errors.Join(resolveErr, fmt.Errorf("reading manifest for %s: %w", deps[i].Key(), parseErr))
+				fail(requested[i], fmt.Errorf("reading manifest for %s: %w", deps[i].Key(), parseErr))
 			}
 			if parseErr != nil || meta.Execution != parserlock.ExecComposite {
 				continue
@@ -358,7 +378,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 			for _, rawUse := range meta.NestedUses {
 				use := strings.TrimSpace(rawUse)
 				if strings.HasPrefix(use, "./") {
-					resolveErr = errors.Join(resolveErr, &CompositeLocalPathError{
+					fail(requested[i], &CompositeLocalPathError{
 						Parent:    parentKey,
 						LocalPath: use,
 					})
@@ -367,7 +387,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 				var request resolutionRequest
 				if strings.HasPrefix(use, selfRepositoryPrefix) {
 					if strings.Contains(use, "@") {
-						resolveErr = errors.Join(resolveErr, &InvalidSelfRepositoryRefError{
+						fail(requested[i], &InvalidSelfRepositoryRefError{
 							Parent: parentKey,
 							Ref:    use,
 						})
@@ -391,7 +411,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 				} else {
 					c := uses.Classify(use, uses.Step)
 					if c.Kind == uses.Invalid {
-						resolveErr = errors.Join(resolveErr, &MalformedNestedRefError{Parent: parentKey, Ref: use})
+						fail(requested[i], &MalformedNestedRefError{Parent: parentKey, Ref: use})
 					}
 					if c.Kind != uses.Action {
 						continue
@@ -423,6 +443,18 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 	return g, resolveErr
 }
 
+type actionFileResolution struct {
+	deps      []dep.Dependency
+	ymls      []string
+	requested []parserlock.ActionRef
+	failures  []resolutionFailure
+}
+
+type resolutionFailure struct {
+	ref parserlock.ActionRef
+	err error
+}
+
 // resolveWithActionYMLParallel resolves refs one-per-worker via the shared pool
 // so the UI can show a stable [done/total] counter and per-worker status rows.
 // Cached refs short-circuit without a worker.
@@ -431,11 +463,12 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 // that span every BFS depth, so a single non-jumping progress bar can cover
 // direct + transitive resolution as one phase.
 // The returned requests align with the returned deps.
-func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []resolutionRequest, depth int, resolveDone, resolveTotal *atomic.Int64, locked bool) ([]dep.Dependency, []string, []parserlock.ActionRef, error) {
+func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []resolutionRequest, depth int, resolveDone, resolveTotal *atomic.Int64, locked bool) (actionFileResolution, error) {
 	type resolveResult struct {
 		dep dep.Dependency
 		yml string
 		ok  bool
+		err error
 	}
 	results := make([]resolveResult, len(refs))
 
@@ -455,25 +488,25 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 		}
 	}
 
-	flatten := func() ([]dep.Dependency, []string, []parserlock.ActionRef) {
-		var deps []dep.Dependency
-		var ymls []string
-		var requested []parserlock.ActionRef
+	flatten := func() actionFileResolution {
+		var out actionFileResolution
 		for i, res := range results {
+			if res.err != nil {
+				out.failures = append(out.failures, resolutionFailure{ref: refs[i].ref, err: res.err})
+			}
 			if !res.ok {
 				continue
 			}
-			deps = append(deps, res.dep)
-			ymls = append(ymls, res.yml)
-			requested = append(requested, refs[i].ref)
+			out.deps = append(out.deps, res.dep)
+			out.ymls = append(out.ymls, res.yml)
+			out.requested = append(out.requested, refs[i].ref)
 		}
-		return deps, ymls, requested
+		return out
 	}
 
 	total := len(uncachedIdx)
 	if total == 0 {
-		deps, ymls, requested := flatten()
-		return deps, ymls, requested, nil
+		return flatten(), nil
 	}
 
 	// Grow the rolling resolve total by the new uncached refs at this depth.
@@ -541,7 +574,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 			for j, idx := range b.idxs {
 				ref := refs[idx].ref
 				if j < len(res) && res[j].Err == nil && res[j].ActionYML == "" && !res[j].Dockerfile && !isWorkflowCallee(res[j].Path) {
-					errs = append(errs, fmt.Errorf("%s@%s: action manifest is missing at %s", ref.NWO(), ref.Ref, res[j].CommitOID))
+					results[idx].err = fmt.Errorf("%s@%s: action manifest is missing at %s", ref.NWO(), ref.Ref, res[j].CommitOID)
 				} else if j < len(res) && res[j].Err == nil {
 					d := dep.Dependency{
 						Hostname: res[j].Hostname,
@@ -561,7 +594,10 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 					}
 					results[idx] = resolveResult{dep: d, yml: res[j].ActionYML, ok: true}
 				} else if j < len(res) && res[j].Err != nil {
-					errs = append(errs, fmt.Errorf("%s@%s: %w", ref.NWO(), ref.Ref, res[j].Err))
+					results[idx].err = fmt.Errorf("%s@%s: %w", ref.NWO(), ref.Ref, res[j].Err)
+				}
+				if results[idx].err != nil {
+					errs = append(errs, results[idx].err)
 				}
 				done := resolveDone.Add(1)
 				r.FireResolveProgress(int(done), int(resolveTotal.Load()))
@@ -579,8 +615,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 		poolErr = errors.Join(batchErrs...)
 	}
 
-	deps, ymls, requested := flatten()
-	return deps, ymls, requested, poolErr
+	return flatten(), poolErr
 }
 
 // isWorkflowCallee reports whether path names a reusable workflow, which has

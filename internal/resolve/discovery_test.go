@@ -3,6 +3,7 @@ package resolve
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -102,7 +103,97 @@ func TestResolveLockedRecursiveMissingChildDoesNotResolveLiveRef(t *testing.T) {
 	require.ErrorAs(t, err, &missing)
 	assert.Equal(t, "Main", missing.Ref.Ref)
 	assert.Equal(t, []string{"o/root@v1"}, parents[dep.RefKeyOf("o/child@Main")])
+	g, err := r.ResolveLockedGraph(context.Background(),
+		[]parserlock.ActionRef{{Owner: "o", Repo: "root", Ref: "v1"}},
+		[]dep.Dependency{{NWO: "o/root", Ref: "v1", SHA: sha}})
+	require.ErrorAs(t, err, &missing)
+	_, scoped, err := g.Inspect([]parserlock.ActionRef{{Owner: "o", Repo: "root", Ref: "v1"}})
+	require.ErrorAs(t, err, &missing, "an unresolved child is not in resolution order but still belongs to its root")
+	assert.Equal(t, parents, scoped)
 	assert.Len(t, reg.Requests, 1)
+}
+
+func TestResolveLockedGraphScopesAliasFailures(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+	reg.Register(httpmock.GraphQL(`file: file\(path`), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{
+			"a0": map[string]any{"nameWithOwner": "o/healthy", "object": map[string]any{
+				"oid": sha, "file": map[string]any{"object": map[string]any{"text": "runs:\n  using: node20\n"}},
+			}},
+			"a1": map[string]any{"nameWithOwner": "o/failed", "object": map[string]any{"oid": sha}},
+		},
+		"errors": []map[string]any{{"type": "FORBIDDEN", "message": "manifest denied", "path": []string{"a1", "object", "file"}}},
+	}))
+	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+	require.NoError(t, err)
+	healthy := parserlock.ActionRef{Owner: "o", Repo: "healthy", Ref: "v1"}
+	failed := parserlock.ActionRef{Owner: "o", Repo: "failed", Ref: "v1"}
+	g, err := r.ResolveLockedGraph(context.Background(), []parserlock.ActionRef{healthy, failed}, []dep.Dependency{
+		{NWO: "o/healthy", Ref: "v1", SHA: sha}, {NWO: "o/failed", Ref: "v1", SHA: sha},
+	})
+	require.ErrorContains(t, err, "manifest denied")
+	_, _, err = g.Inspect([]parserlock.ActionRef{healthy})
+	require.NoError(t, err)
+	_, _, err = g.Inspect([]parserlock.ActionRef{failed})
+	require.ErrorContains(t, err, "o/failed@v1")
+	require.ErrorContains(t, err, "manifest denied")
+	assert.Len(t, reg.Requests, 1, "scoped views never fetch or retry a failed alias")
+}
+
+func TestResolveLockedGraphBatchLimit(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, count := range []int{1, batchActionFileSize, batchActionFileSize + 1} {
+		t.Run(fmt.Sprintf("%d roots", count), func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			batches := (count + batchActionFileSize - 1) / batchActionFileSize
+			for range batches {
+				reg.Register(httpmock.GraphQL(`file: file\(path`), func(req *http.Request) (*http.Response, error) {
+					var body struct {
+						Variables map[string]string `json:"variables"`
+					}
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						return nil, err
+					}
+					data := map[string]any{}
+					for i := 0; ; i++ {
+						name, ok := body.Variables[fmt.Sprintf("name%d", i)]
+						if !ok {
+							break
+						}
+						assert.Less(t, i, batchActionFileSize)
+						assert.Equal(t, sha+"^{commit}", body.Variables[fmt.Sprintf("expr%d", i)])
+						data[fmt.Sprintf("a%d", i)] = map[string]any{
+							"nameWithOwner": "o/" + name, "object": map[string]any{
+								"oid": sha, "file": map[string]any{"object": map[string]any{"text": "runs:\n  using: node20\n"}},
+							},
+						}
+					}
+					return httpmock.JSONResponse(map[string]any{"data": data})(req)
+				})
+			}
+			var roots []parserlock.ActionRef
+			var deps []dep.Dependency
+			for i := range count {
+				name := fmt.Sprintf("r%d", i)
+				roots = append(roots, parserlock.ActionRef{Owner: "o", Repo: name, Ref: "v1"})
+				deps = append(deps, dep.Dependency{NWO: "o/" + name, Ref: "v1", SHA: sha})
+			}
+			r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+			require.NoError(t, err)
+			g, err := r.ResolveLockedGraph(context.Background(), roots, deps)
+			require.NoError(t, err)
+			for _, root := range roots {
+				found, parents, err := g.Inspect([]parserlock.ActionRef{root})
+				require.NoError(t, err)
+				assert.Equal(t, []string{root.NWO() + "@v1"}, depKeys(found))
+				assert.Empty(t, parents)
+			}
+			assert.Len(t, reg.Requests, batches)
+		})
+	}
 }
 
 func TestResolveRecursiveRejectsMalformedManifest(t *testing.T) {

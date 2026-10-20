@@ -43,6 +43,7 @@ func TestCheckCommand_HelpExplainsHostAndAuthOverrides(t *testing.T) {
 func TestCheckCommand_JSONWithHTTPMocks(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerNodeManifests(reg)
 
 	reg.Register(
 		httpmock.GraphQLForRepo("actions", "checkout"),
@@ -489,6 +490,7 @@ func runCommandWithHTTPContext(t *testing.T, ctx context.Context, rt http.RoundT
 func TestCheck_Reachable(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerNodeManifests(reg)
 
 	sha := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
@@ -604,6 +606,7 @@ jobs:
 func TestCheck_UnreachablePin_LegitAncestor(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerNodeManifests(reg)
 
 	pinnedSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	liveSHA := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -667,6 +670,7 @@ jobs:
 func TestCheck_UnreachablePin_RateLimited(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerNodeManifests(reg)
 
 	pinnedSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	liveSHA := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -730,6 +734,7 @@ jobs:
 func TestCheckCommand_JSONDependenciesWithRequiredBy(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerNodeManifests(reg)
 
 	compositeYAML := "name: Setup Go\nruns:\n  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
 
@@ -819,6 +824,7 @@ jobs:
 func TestCheckCommand_JSONDependenciesInfersRequiredByWithoutComments(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerNodeManifests(reg)
 
 	compositeYAML := "name: Setup Go\nruns:\n  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
 
@@ -880,6 +886,7 @@ jobs:
 func TestCheckCommand_JSONDefaultFieldsExcludesDependencies(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerNodeManifests(reg)
 
 	reg.Register(
 		httpmock.GraphQLForRepo("actions", "checkout"),
@@ -921,18 +928,16 @@ jobs:
 
 // TestCheck_SeedFromLockfile_SkipsHTTPForCachedDeps verifies that
 // SeedFromLockfile pre-warms the resolution cache so known deps skip
-// network calls, while new deps still resolve from the network.
-// The workflow has two deps: checkout (in lockfile) and setup-go (not in
-// lockfile). Only setup-go should hit the HTTP mock.
-func TestCheck_SeedFromLockfile_SkipsHTTPForCachedDeps(t *testing.T) {
+// ref-resolution calls, while new deps still resolve from the network.
+// Locked manifests are independently inspected at their recorded commits.
+func TestCheck_SeedFromLockfile_DoesNotReresolveCachedRefs(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
 	checkoutSHA := "de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
 
-	// Only register an HTTP stub for setup-go (the NEW dep).
-	// No stub for checkout — the seed must serve it from cache.
+	// Only setup-go needs live ref resolution.
 	reg.Register(
 		httpmock.GraphQLForRepo("actions", "setup-go"),
 		httpmock.JSONResponse(map[string]any{
@@ -968,8 +973,9 @@ jobs:
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lockYAML), 0o600))
 	t.Chdir(dir)
 
-	// Locked checkout is only parity-checked, never re-resolved.
+	// Locked checkout is parity-checked and inspected, never re-resolved.
 	registerParity(reg)
+	registerNodeManifests(reg)
 	stdout, _, err := runCommandWithHTTP(t, reg,
 		"--no-fix", "--json=valid,findings",
 		".github/workflows/workflow.yml",
@@ -986,7 +992,6 @@ jobs:
 	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
 
 	// The finding should be about setup-go being unpinned, NOT about checkout.
-	// If checkout required an HTTP call, reg.Verify would fail (no stub registered).
 	require.Len(t, payload.Findings, 1)
 	assert.Equal(t, "not-pinned", payload.Findings[0].Category)
 	assert.Contains(t, payload.Findings[0].Dependency, "setup-go")
@@ -1129,6 +1134,7 @@ jobs:
 func TestCheck_Relock_DetectsRefMovementDespiteLockfile(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerNodeManifests(reg)
 
 	staleSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	liveSHA := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -1196,11 +1202,10 @@ func TestCheckCommand_JSONDeduplicatesDependencies(t *testing.T) {
 	// When two workflow files share the same dep, top-level dependencies
 	// should deduplicate them.
 	reg := &httpmock.Registry{}
+	registerNodeManifests(reg)
 	defer reg.Verify(t)
 
-	// No HTTP stub: both workflows are fully recorded in the lockfile, so
-	// the fast path skips every network round-trip. The dedup logic under
-	// test operates purely on the inventory built from disk.
+	// Locked manifests are inspected without changing the shared pin.
 
 	wf1 := writeTempWorkflow(t, `
 name: ci
@@ -1399,10 +1404,11 @@ jobs:
 
 // TestCheck_DefaultRun_DoesNotBumpBranchRef is the counterpart to the relock
 // test: without --relock a mutable branch ref is trusted from the lockfile
-// (fast path, no network) and its recorded SHA is left as-is.
+// and its recorded SHA is left as-is while its manifest is inspected.
 func TestCheck_DefaultRun_DoesNotBumpBranchRef(t *testing.T) {
 	reg := &httpmock.Registry{}
-	defer reg.Verify(t) // no stubs should be hit on the fast path
+	registerNodeManifests(reg)
+	defer reg.Verify(t)
 
 	staleSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 

@@ -193,6 +193,9 @@ jobs:
 				"actions/setup-go@v5=sha1-"+parityTestSHA,
 			)
 			reg := &httpmock.Registry{}
+			if !slices.Contains(tc.mode, "--verify-local") {
+				registerNodeManifests(reg)
+			}
 			args := append(slices.Clone(tc.mode), "--no-interactive", path)
 
 			p, err := runParity(t, reg, args...)
@@ -242,7 +245,11 @@ jobs:
 				"actions/checkout@v4.2.1=sha1-"+parityTestSHA,
 				"actions/setup-go@v5=sha1-"+parityTestSHA,
 			)
-			_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, mode, "--no-interactive", path)
+			reg := &httpmock.Registry{}
+			if mode == "--verify" {
+				registerNodeManifests(reg)
+			}
+			_, stderr, err := runCommandWithHTTP(t, reg, mode, "--no-interactive", path)
 			require.ErrorIs(t, err, errSilent)
 			assert.Contains(t, stderr, "Unused lockfile entry actions/setup-go@v5")
 			assert.Contains(t, stderr, "without "+mode)
