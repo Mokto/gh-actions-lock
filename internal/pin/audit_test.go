@@ -44,13 +44,24 @@ func TestWritten(t *testing.T) {
 }
 
 func TestCarryVerified(t *testing.T) {
-	const sha = "bbbb"
-	verified := map[string]bool{checks.VerifiedKey("o/child@v4", sha): true}
+	a, b := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	path := filepath.Join(t.TempDir(), "actions.lock")
+	body := "version: v0.0.3\nworkflows:\n  ci.yml:\n    - o/child@v4.2.1\ndependencies:\n" +
+		"  o/child@v4.2.1:\n    ref: v4.2.1\n    commit: sha1-" + b + "\n    owner_id: 1\n    repo_id: 2\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	store, err := lockfile.LoadStateAt(path, nil)
+	require.NoError(t, err)
+	preview := store.Preview()
+	verified := map[string]bool{
+		checks.VerifiedKey("o/child@v4", a): true,
+		checks.VerifiedKey("o/child@v4", b): true,
+	}
 	writers := []WorkflowPlan{{Rewrites: map[string]string{"o/child@v4": "o/child@v4.2.1"}}}
 
-	got := carryVerified(verified, writers)
-	assert.True(t, got[checks.VerifiedKey("o/child@v4.2.1", sha)], "a narrowed use carries its proof to the new key")
-	assert.True(t, got[checks.VerifiedKey("o/child@v4", sha)])
-	assert.False(t, got[checks.VerifiedKey("o/child@v4.2.0", sha)], "a sibling ref at the same commit gains nothing")
-	assert.False(t, verified[checks.VerifiedKey("o/child@v4.2.1", sha)], "the report's own evidence is left alone")
+	got := carryVerified(preview, verified, writers)
+	assert.True(t, got[checks.VerifiedKey("o/child@v4.2.1", b)], "a narrowed use carries the proof for the commit it's written at")
+	assert.False(t, got[checks.VerifiedKey("o/child@v4.2.1", a)], "another commit verified under the old key carries nothing")
+	assert.True(t, got[checks.VerifiedKey("o/child@v4", a)])
+	assert.False(t, got[checks.VerifiedKey("o/child@v4.2.0", b)], "a sibling ref at the same commit gains nothing")
+	assert.False(t, verified[checks.VerifiedKey("o/child@v4.2.1", b)], "the report's own evidence is left alone")
 }

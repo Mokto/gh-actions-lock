@@ -42,7 +42,7 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 			return err
 		}
 		preview.GC()
-		verified := carryVerified(report.Verified, writers)
+		verified := carryVerified(preview, report.Verified, writers)
 		blocked := false
 		for i := range report.Workflows {
 			wr := &report.Workflows[i]
@@ -64,10 +64,11 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 
 // carryVerified extends verified through the writers' planned `uses:`
 // rewrites. Narrowing, reverse lookup and re-recording each rewrite a use
-// only to a ref they checked names the same commit, so a commit verified
-// under the old key is verified under the new one. A sibling ref merely at
-// the same commit gains nothing.
-func carryVerified(verified map[string]bool, writers []WorkflowPlan) map[string]bool {
+// only to a ref they checked names the same commit, so the commit the
+// preview writes under the new key is verified there if it was verified
+// under the old one. Other commits verified under the old key, and sibling
+// refs merely at the same commit, gain nothing.
+func carryVerified(preview *lockfile.State, verified map[string]bool, writers []WorkflowPlan) map[string]bool {
 	out := make(map[string]bool, len(verified))
 	for k := range verified {
 		out[k] = true
@@ -79,10 +80,13 @@ func carryVerified(verified map[string]bool, writers []WorkflowPlan) map[string]
 			if !ok || !ok2 || oldKey == newKey {
 				continue
 			}
-			for k := range verified {
-				if sha, ok := strings.CutPrefix(k, oldKey+":"); ok {
-					out[checks.VerifiedKey(newKey, sha)] = true
-				}
+			a, ok := preview.Entry(newKey)
+			if !ok {
+				continue
+			}
+			_, sha, _ := strings.Cut(a.Commit, "-")
+			if verified[checks.VerifiedKey(oldKey, sha)] {
+				out[checks.VerifiedKey(newKey, sha)] = true
 			}
 		}
 	}
