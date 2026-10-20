@@ -1,6 +1,7 @@
 package format
 
 import (
+	"cmp"
 	"fmt"
 	"sort"
 	"strings"
@@ -147,7 +148,7 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 		icon = out.TermRed(ui.IconError)
 	}
 	out.TermDetail("%s %s %s", icon, out.TermDim(label), dep)
-	out.TermDetail("  %s", f.Detail)
+	out.TermDetail("  %s", cmp.Or(f.TermDetail, f.Detail))
 	if f.Category == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
 		owner, repo := f.Dependency.OwnerRepo()
 		if owner != "" {
@@ -176,10 +177,14 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 
 // findingLabel is categoryLabel with terminal-only titles for refs that
 // don't exist upstream, which share the not-pinned and unreachable-pin
-// categories in JSON.
+// categories in JSON. Only a ref the lockfile recorded can no longer exist.
 func findingLabel(f checks.Finding) string {
 	switch {
-	case f.RefMissing && f.Category == checks.UnreachablePin:
+	case f.RefRefused && f.Category == checks.UnreachablePin:
+		return "Ref name refused"
+	case (f.RefMissing || f.RefGone) && f.Category == checks.UnreachablePin && f.FreshRef:
+		return "Not a tag or branch"
+	case (f.RefMissing || f.RefGone) && f.Category == checks.UnreachablePin:
 		return "Ref no longer exists"
 	case f.RefMissing:
 		return "Ref does not exist"
@@ -297,7 +302,7 @@ func renderFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 		icon = out.Red(ui.IconError)
 	}
 	out.Detail("%s %s %s", icon, out.Dim(label), dep)
-	out.Detail("  %s", f.Detail)
+	out.Detail("  %s", cmp.Or(f.TermDetail, f.Detail))
 	if f.Category == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
 		owner, repo := f.Dependency.OwnerRepo()
 		if owner != "" {
@@ -354,6 +359,9 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 				if key == "" {
 					key = f.WorkflowPath
 				}
+				// One dependency can draw warnings of different kinds (a
+				// full-SHA `uses:` and its moved recorded tag); keep each.
+				key += "\x00" + string(f.Category)
 				if wg, ok := warnMap[key]; ok {
 					wg.count++
 					wg.workflows = append(wg.workflows, f.WorkflowPath)
@@ -383,7 +391,7 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 			if !isTransitive {
 				bareSHADeps = append(bareSHADeps, key)
 			}
-		case f.Category == checks.RefMoved:
+		case f.Category == checks.RefMoved && !f.TagMoved:
 			// Moved mutable refs are sticky; --relock advances them, so
 			// there is nothing actionable to print here.
 		case f.Category.IsInconclusive() &&
@@ -425,12 +433,12 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 		wg := warnMap[key]
 		f := wg.finding
 		depKey := f.DepKey()
-		if f.Category.IsInconclusive() && f.Severity == checks.SeverityWarning {
+		if f.Category.IsInconclusive() || f.TagMoved {
 			label := depKey
 			if label == "" {
 				label = f.WorkflowPath
 			}
-			out.TermWarn("%s: %s", label, f.Detail)
+			out.TermWarn("%s: %s", label, cmp.Or(f.TermDetail, f.Detail))
 			if f.Remediation != "" {
 				out.TermDetail("↳ %s", f.Remediation)
 			}

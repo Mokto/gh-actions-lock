@@ -342,7 +342,8 @@ end
 
 # ── Fixture data ────────────────────────────────────────────────────────
 
-CHECKOUT_SHA      = "de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+# Real actions/checkout v4.2.2 commit; recorded v4 and main refs contain it.
+CHECKOUT_SHA      = "11bd71901bbe5b1630ceea73d27597364c9af683"
 # Real actions/checkout v4.2.0 commit; exact tags are peeled on every run.
 CHECKOUT_V420_SHA = "d632683dd7b4114ad314bca15554477dd762a938"
 SETUP_GO_SHA      = "4a3601121dd01d1626a1e23e37211e3254c1c06c"
@@ -553,7 +554,8 @@ def checkout_parity(body)
     next unless (m = k.match(/\Aoid(\d+)\z/))
     i = m[1]
     data["a#{i}"] = { nameWithOwner: "actions/checkout", databaseId: 197_814_629,
-                      commit: { oid: vars[k] }, tag: { oid: vars[k] } }
+                      commit: { oid: vars[k] }, tag: { oid: vars[k] }, head: { oid: vars[k] },
+                      tagRef: {}, headRef: {} }
   end
   [200, { "Content-Type" => "application/json" }, JSON.generate({ data: data })]
 end
@@ -649,6 +651,12 @@ end
 # not listed here either use no stub or rely on catalog-level config.
 
 STUB_WIRING = {
+  verify_pinned_stub: ->(s) {
+    wire_checkout_success(s, "gho_fake_verify_token")
+  },
+  verify_json_combined: ->(s) {
+    wire_checkout_success(s, "gho_fake_verify_json_token")
+  },
   fresh_tag_warns_without_cooldown: ->(s) {
     wire_checkout_fresh(s, "gho_fake_fresh_warn_token")
   },
@@ -688,7 +696,10 @@ STUB_WIRING = {
     s.stub_server do |srv|
       # No POST handler: any GraphQL request fails the scenario.
       srv.on(:GET, /.*/) do |req|
-        if req.path.include?("/commits/")
+        if (m = req.path.match(%r{/git/ref/(tags/v4)$}))
+          [200, { "Content-Type" => "application/json" },
+           JSON.generate({ ref: "refs/#{m[1]}", object: { sha: fake_sha, type: "commit" } })]
+        elsif req.path.include?("/commits/")
           [200, { "Content-Type" => "application/json" },
            JSON.generate({ sha: fake_sha })]
         elsif req.path.include?("/contents/")

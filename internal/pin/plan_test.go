@@ -2,6 +2,7 @@ package pin
 
 import (
 	"context"
+	"regexp"
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -57,6 +58,8 @@ func TestNarrowDirectDeps_SameNWOSiblingRefsNormalizeIndependently(t *testing.T)
 	)
 
 	reg := &httpmock.Registry{}
+
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	reg.Register(
 		httpmock.REST("GET", `repos/actions/checkout/tags`),
 		httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", patchSHA, "v21", bareSHA)),
@@ -358,6 +361,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		tagger, _ := newTagger(t)
 		opts := PlanOptions{
 			Tagger:           tagger,
+			Resolver:         tagResolver(t, "actions", "checkout", "v4.2.1", sha),
 			prevImpreciseNWO: map[string]bool{"actions/checkout": true},
 		}
 
@@ -382,6 +386,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		}}
 		opts := PlanOptions{
 			Tagger:           tagger,
+			Resolver:         tagResolver(t, "actions", "checkout", "v4.2.1", sha),
 			prevImpreciseNWO: map[string]bool{"actions/checkout": true},
 		}
 
@@ -419,6 +424,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 
 	t.Run("SHA metadata repairs to branch", func(t *testing.T) {
 		tagger, reg := newTagger(t)
+		httpmock.NoTagsNamed(reg, "actions", "checkout")
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
 			httpmock.JSONResponse(map[string]any{
 				"ref": "refs/heads/main", "object": map[string]any{"sha": sha, "type": "commit"},
@@ -445,6 +451,45 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		)
 	})
 
+	t.Run("SHA metadata never repairs to a tag-shadowed branch", func(t *testing.T) {
+		tagger, reg := newTagger(t)
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/main", sha)))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/main`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/main", "dddddddddddddddddddddddddddddddddddddddd")))
+		resolver, err := resolve.New("github.com", pinpool.New(2, nil), resolve.WithTransport(reg))
+		require.NoError(t, err)
+		report := fastPathReport(sha)
+		report.Inventory[0].Dep.Branch = "main"
+		report.ActionRefs = []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}}
+
+		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger, Resolver: resolver}, func(string) {})
+		require.NoError(t, err)
+
+		require.Len(t, result.entries, 1)
+		assert.Equal(t, sha, result.entries[0].Ref, "@main would name the tag's commit")
+		assert.Empty(t, result.wplans[0].Rewrites)
+	})
+
+	t.Run("SHA metadata repairs to a non-semver tag at the commit", func(t *testing.T) {
+		tagger, reg := newTagger(t)
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/z-129$`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/z-129", sha)))
+		resolver, err := resolve.New("github.com", pinpool.New(2, nil), resolve.WithTransport(reg))
+		require.NoError(t, err)
+		report := fastPathReport(sha)
+		// A non-semver recorded ref is stored as a branch name.
+		report.Inventory[0].Dep.Branch = "z-129"
+		report.ActionRefs = []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}}
+
+		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger, Resolver: resolver}, func(string) {})
+		require.NoError(t, err)
+
+		require.Len(t, result.entries, 1)
+		assert.Equal(t, "z-129", result.entries[0].Ref)
+		assert.Equal(t, map[string]string{"actions/checkout@" + sha: "actions/checkout@z-129"}, result.wplans[0].Rewrites)
+	})
+
 	t.Run("repair preserves source NWO spelling", func(t *testing.T) {
 		tagger, _ := newTagger(t)
 		report := fastPathReport(sha)
@@ -455,7 +500,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 			Ref:   sha,
 		}}
 
-		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger}, func(string) {})
+		result, err := planWorkflow(context.Background(), report, PlanOptions{Tagger: tagger, Resolver: tagResolver(t, "actions", "checkout", "v4.2.1", sha)}, func(string) {})
 		require.NoError(t, err)
 
 		require.Len(t, result.entries, 1)
@@ -528,6 +573,7 @@ func TestPlanPreservesDifferentHistoricalSHAsOnSameBranch(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
+			httpmock.NoTagsNamed(reg, "owner", "action")
 			defer reg.Verify(t)
 			reg.Register(httpmock.REST("GET", `repos/owner/action/git/ref/heads/main`),
 				httpmock.JSONResponse(map[string]any{
@@ -616,6 +662,7 @@ func TestPlanNormalizationRespectsLockedTarget(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
+			reg.RegisterReusable(httpmock.REST("GET", `/git/ref/tags/`), httpmock.StatusResponse(404))
 			defer reg.Verify(t)
 			reg.Register(httpmock.REST("GET", `repos/`+tt.nwo+`$`),
 				httpmock.JSONResponse(map[string]any{"default_branch": "main"}))
@@ -671,7 +718,60 @@ func TestPlanNormalizationRespectsLockedTarget(t *testing.T) {
 	}
 }
 
-func TestPlanRejectsConflictingSameRunRepairs(t *testing.T) {
+// TestNarrowVerifiedEntries_SHARepairRequiresTagAtCommit is #174: the
+// recorded tag of a full-SHA entry is lock data, not proof. Rewriting
+// `uses:` to a tag that doesn't point at the locked commit would launder a
+// fork commit under a benign-looking tag.
+func TestNarrowVerifiedEntries_SHARepairRequiresTagAtCommit(t *testing.T) {
+	const (
+		sha   = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+		other = "d23441a49e5d9e4ba0dd8e0f0b5b86ff8ad2e2d5"
+	)
+	tests := []struct {
+		name    string
+		tags    []string
+		wantRef string
+	}{
+		{"tag at another commit", []string{"v6.1.0", other}, sha},
+		{"tag missing upstream", []string{"v4.2.2", other}, sha},
+		{"tag at the locked commit", []string{"v6.1.0", sha}, "v6.1.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`),
+				httpmock.JSONResponse(httpmock.TagListResponse(tt.tags...)))
+			report := checks.WorkflowReport{
+				Path: ".github/workflows/ci.yml",
+				Inventory: []checks.InventoryEntry{{
+					Dep:    dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v6.1.0"},
+					File:   ".github/workflows/ci.yml",
+					Direct: true,
+				}},
+				ActionRefs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: sha}},
+			}
+
+			opts := PlanOptions{Tagger: tag.NewListerForTest(t, reg), Resolver: tagResolver(t, "actions", "checkout", tt.tags...)}
+			result, err := planWorkflow(context.Background(), report, opts, func(string) {})
+			require.NoError(t, err)
+
+			require.Len(t, result.entries, 1)
+			assert.Equal(t, tt.wantRef, result.entries[0].Ref)
+			require.Len(t, result.wplans, 1)
+			if tt.wantRef == sha {
+				assert.Empty(t, result.wplans[0].Rewrites, "no rewrite to a tag that doesn't point at the commit")
+				assert.Empty(t, result.entries[0].AutoFixedRef)
+			}
+		})
+	}
+}
+
+// TestPlanRepairsOnlyTheSHAItsRecordedTagPeelsTo covers two workflows that
+// record the same tag for different SHAs. Before #174 both were repaired to
+// the tag and conflicted (#167). A repair names the commit by its tag, so
+// only the SHA the tag points at now is rewritten, even if the tag's history
+// contains the other.
+func TestPlanRepairsOnlyTheSHAItsRecordedTagPeelsTo(t *testing.T) {
 	const firstSHA = "abc1230000000000000000000000000000000000"
 	const secondSHA = "def4560000000000000000000000000000000000"
 	report := func(path, sha string) checks.WorkflowReport {
@@ -688,17 +788,24 @@ func TestPlanRejectsConflictingSameRunRepairs(t *testing.T) {
 		}
 	}
 
-	_, err := Plan(context.Background(), &checks.Report{
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`),
+		httpmock.JSONResponse(httpmock.TagListResponse("v4.2.1", firstSHA)))
+	record, err := Plan(context.Background(), &checks.Report{
 		Workflows: []checks.WorkflowReport{
 			report(".github/workflows/first.yml", firstSHA),
 			report(".github/workflows/second.yml", secondSHA),
 		},
 	}, PlanOptions{
-		Tagger: new(tag.Lister),
-		Pool:   pinpool.New(2, nil),
+		Tagger:   tag.NewListerForTest(t, reg),
+		Resolver: tagResolver(t, "actions", "checkout", "v4.2.1", firstSHA),
+		Pool:     pinpool.New(2, nil),
 	})
 
-	require.ErrorContains(t, err, "conflicting planned target actions/checkout@v4.2.1")
+	require.NoError(t, err)
+	require.Len(t, record.Entries, 2)
+	assert.Equal(t, "v4.2.1", record.Entries[0].Ref)
+	assert.Equal(t, secondSHA, record.Entries[1].Ref)
 }
 
 func TestPlanRejectsRepairConflictingWithSymbolicEntry(t *testing.T) {
@@ -724,11 +831,16 @@ func TestPlanRejectsRepairConflictingWithSymbolicEntry(t *testing.T) {
 		}},
 	}
 
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse([]any{
+		map[string]any{"name": "v4.2.1", "commit": map[string]any{"sha": repairedSHA}},
+	}))
 	_, err := Plan(context.Background(), &checks.Report{
 		Workflows: []checks.WorkflowReport{repair, symbolic},
 	}, PlanOptions{
-		Tagger: new(tag.Lister),
-		Pool:   pinpool.New(2, nil),
+		Tagger:   tag.NewListerForTest(t, reg),
+		Resolver: tagResolver(t, "actions", "checkout", "v4.2.1", repairedSHA),
+		Pool:     pinpool.New(2, nil),
 	})
 
 	require.ErrorContains(t, err, "conflicting planned target actions/checkout@v4.2.1")
@@ -845,6 +957,7 @@ func TestNoNarrow_BareSHA(t *testing.T) {
 	newSlowPathFixtures := func(t *testing.T) (*resolve.Resolver, *tag.Lister, checks.WorkflowReport, *httpmock.Registry) {
 		t.Helper()
 		reg := &httpmock.Registry{}
+		httpmock.NoTagsNamed(reg, "actions", "checkout")
 
 		// GraphQL: resolve the bare-SHA ref to itself.
 		reg.Register(
@@ -1086,4 +1199,19 @@ func keys(m map[string]Entry) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// tagResolver is a Resolver whose exact tag lookups answer from tags (name,
+// commit pairs); every other tag or branch name doesn't exist.
+func tagResolver(t *testing.T, owner, repo string, tags ...string) *resolve.Resolver {
+	t.Helper()
+	reg := &httpmock.Registry{}
+	for i := 0; i+1 < len(tags); i += 2 {
+		reg.RegisterReusable(httpmock.REST("GET", `(?i)repos/`+owner+`/`+repo+`/git/ref/tags/`+regexp.QuoteMeta(tags[i])+`$`),
+			httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/"+tags[i], tags[i+1])))
+	}
+	reg.RegisterReusable(httpmock.REST("GET", `(?i)repos/`+owner+`/`+repo+`/git/ref/`), httpmock.StatusResponse(404))
+	r, err := resolve.New("github.com", pinpool.New(2, nil), resolve.WithTransport(reg))
+	require.NoError(t, err)
+	return r
 }

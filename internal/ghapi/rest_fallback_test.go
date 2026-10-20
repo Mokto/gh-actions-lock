@@ -471,3 +471,41 @@ func TestSSOFallback_RateLimitedGuidance(t *testing.T) {
 		})
 	}
 }
+
+// TestCompareRefs_SSOFallback: a recorded ref that moved in a public
+// repository behind an org's SSO is still compared anonymously.
+func TestCompareRefs_SSOFallback(t *testing.T) {
+	anonProbeCache = sync.Map{}
+	anonRateLimited = sync.Map{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/orgs/acme":
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/repos/acme/widget/compare/"):
+			json.NewEncoder(w).Encode(map[string]any{"status": "ahead", "merge_base_commit": map[string]string{"sha": "aaa"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	saml := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		resp, _ := jsonHTTP(map[string]any{"message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."})
+		resp.StatusCode = http.StatusForbidden
+		resp.Request = req
+		return resp, nil
+	})
+	c, err := New("github.com", WithClientTransport(saml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.anonBaseURL = srv.URL
+	c.anonHTTP = srv.Client()
+
+	status, base, err := c.CompareRefs(context.Background(), "acme", "widget", "aaa", "bbb")
+	if err != nil {
+		t.Fatalf("expected anonymous fallback to succeed, got %v", err)
+	}
+	if status != "ahead" || base != "aaa" {
+		t.Fatalf("got status=%q base=%q", status, base)
+	}
+}

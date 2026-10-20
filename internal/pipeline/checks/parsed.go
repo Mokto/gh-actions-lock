@@ -77,15 +77,6 @@ func (pw ParsedWorkflow) IsFullyRecorded() bool {
 	return len(pw.Refs) == 0 || len(unrecorded) == 0
 }
 
-// IsImmutableRef reports whether ref is a full semver tag (e.g. v4.2.1),
-// which resolves to exactly one commit for its entire lifetime. Full semver
-// pins have their tag re-checked on every run; mutable refs (v4, v4.2,
-// branches) stay locked until --relock because they legitimately move.
-func IsImmutableRef(ref string) bool {
-	sv, ok := parserlock.ParseSemVer(ref)
-	return ok && sv.IsFull()
-}
-
 // RecordedDeps returns the subset of ExistingDeps whose NWO@Ref or
 // NWO@SHA matches one of the given recorded refs.
 func (pw ParsedWorkflow) RecordedDeps(recorded []parserlock.ActionRef) []dep.Dependency {

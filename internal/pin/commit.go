@@ -44,7 +44,25 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 		return err
 	}
 
-	// Phase 1: Rewrite workflow files (uses: line changes).
+	// Phase 1: Update lockfile entries in memory. It runs before any file is
+	// rewritten, so an entry the lockfile refuses leaves every file as it was.
+	pinnedByWorkflow := groupPinnedByWorkflow(rec)
+	if len(rec.Workflows) > 0 {
+		progress("Updating lockfile")
+	}
+	for _, wp := range rec.Workflows {
+		wfPath := wp.Path
+		wfKey := workflowfile.KeyFromPath(wfPath)
+		deps := pinnedByWorkflow[wfPath]
+		parentMap := buildParentMap(rec, wfPath)
+		directKeys := buildDirectKeys(rec, wfPath)
+		deps = retainUnresolvablePins(rec, store, wfPath, deps, directKeys)
+		if err := store.Set(ctx, wfKey, deps, parentMap, directKeys); err != nil {
+			return fmt.Errorf("updating lockfile for %s: %w", wfPath, err)
+		}
+	}
+
+	// Phase 2: Rewrite workflow files (uses: line changes).
 	if len(rec.Workflows) > 0 {
 		progress("Rewriting workflows")
 	}
@@ -70,23 +88,6 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 	// rewrites and write each file once, serially.
 	if err := rewriteSelfActionFiles(rec.Workflows); err != nil {
 		return err
-	}
-
-	// Phase 2: Update lockfile entries for each scanned workflow.
-	pinnedByWorkflow := groupPinnedByWorkflow(rec)
-	if len(rec.Workflows) > 0 {
-		progress("Updating lockfile")
-	}
-	for _, wp := range rec.Workflows {
-		wfPath := wp.Path
-		wfKey := workflowfile.KeyFromPath(wfPath)
-		deps := pinnedByWorkflow[wfPath]
-		parentMap := buildParentMap(rec, wfPath)
-		directKeys := buildDirectKeys(rec, wfPath)
-		deps = retainUnresolvablePins(rec, store, wfPath, deps, directKeys)
-		if err := store.Set(ctx, wfKey, deps, parentMap, directKeys); err != nil {
-			return fmt.Errorf("updating lockfile for %s: %w", wfPath, err)
-		}
 	}
 
 	// Phase 3: Persist lockfile to disk.

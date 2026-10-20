@@ -44,7 +44,9 @@ func (c *Client) ListBranches(ctx context.Context, owner, repo string) ([]Branch
 			return cached, nil
 		}
 		var all []BranchHead
-		for page := 1; page <= 3; page++ {
+		// Every page: this listing runs only after the likely branches
+		// missed, and a commit on a later page is not an impostor.
+		for page := 1; ; page++ {
 			path := fmt.Sprintf("repos/%s/%s/branches?per_page=100&page=%d",
 				url.PathEscape(owner), url.PathEscape(repo), page)
 			var resp []struct {
@@ -234,28 +236,15 @@ func (c *Client) GetBranchHead(ctx context.Context, owner, repo, name string) (B
 		if bh, ok := c.namedBranchCache.Get(key); ok {
 			return bh, nil
 		}
-		path := fmt.Sprintf("repos/%s/%s/git/ref/heads/%s",
-			url.PathEscape(owner), url.PathEscape(repo), escapeBranchPath(name))
-		var resp struct {
-			Ref    string `json:"ref"`
-			Object struct {
-				SHA  string `json:"sha"`
-				Type string `json:"type"`
-			} `json:"object"`
-		}
-		if err := c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &resp); err != nil {
-			var httpErr *api.HTTPError
-			if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
-				c.namedBranchCache.Put(key, BranchHead{}) // negative cache
-			}
+		ref, found, err := c.gitRef(ctx, owner, repo, "refs/heads/"+name)
+		if err != nil {
 			return BranchHead{}, nil
 		}
-		// A prefix (non-exact) match returns an array, decoding to an empty
-		// object here; treat that as "not found" rather than guessing.
-		if resp.Object.SHA == "" {
+		if !found || ref.Object.SHA == "" {
+			c.namedBranchCache.Put(key, BranchHead{}) // negative cache
 			return BranchHead{}, nil
 		}
-		bh := BranchHead{Name: name, SHA: resp.Object.SHA}
+		bh := BranchHead{Name: name, SHA: ref.Object.SHA}
 		c.namedBranchCache.Put(key, bh)
 		return bh, nil
 	})
@@ -431,6 +420,12 @@ func (c *Client) CompareRefs(ctx context.Context, owner, repo, base, head string
 		err = c.anonGet(ctx, path, &resp)
 	} else {
 		err = c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &resp)
+		// Same fallback as CompareCommits: a public repository behind an
+		// org's SSO is still readable anonymously.
+		if err != nil && IsSAMLEnforcement(err) && c.SSOFallbackEligible(ctx, owner) {
+			resp = compareResponse{}
+			err = c.anonGet(ctx, path, &resp)
+		}
 	}
 	if err != nil {
 		return "", "", err

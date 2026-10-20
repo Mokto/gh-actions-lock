@@ -3,6 +3,7 @@ package pipeline
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -17,11 +18,13 @@ import (
 
 // checkParity re-checks every locked pin in each workflow's recorded closure
 // the way the runner does at job start: same repository identity, commit
-// still present, exact-version tag still at the commit. Mutable refs that
-// moved are not reported; the lock is sticky until --relock. With verify, a
-// commit on a mutable ref must still be in that ref's history: a fork-network
-// commit resolves under the upstream name, so existence alone proves nothing,
-// and the ref must still exist: the runner rejects a pin whose ref is gone.
+// still present, and the lock entry's ref (a tag, else a branch) still
+// vouching for it: the commit must be in the ref's history, since a
+// fork-network commit resolves under the upstream name, so existence alone
+// proves nothing (#174). A ref that has moved ahead is fine: the lock is
+// sticky until --relock. Tags can move too, so with verify an exact-version
+// tag that moved ahead only warns. A ref that is gone, or a history check
+// that can't finish, blocks.
 //
 // A pinned commit fixes the dependencies it declares, so the flattened
 // closure in the lockfile is checked in one batch with no recursion.
@@ -36,7 +39,7 @@ import (
 //
 // Under the Dependabot proxy any inconclusive check is an error: the run
 // aborts so Dependabot retries rather than shipping an unverified lock.
-func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(checks.Category) bool, verify bool) error {
+func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedKeys map[string]bool, resolved []dep.Dependency, parents map[string][]string, keep func(*checks.Finding, parserlock.Pin) bool, verify bool) error {
 	gh := r.GHClient()
 	if gh == nil || store == nil {
 		return nil
@@ -58,19 +61,16 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		}
 		// Pin.String folds owner/repo only: refs are case-sensitive, as
 		// the runner keys them.
-		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit))
+		// A recorded and a fresh owner of one pin can have different targets
+		// (the recorded ref, and what this run will write), so the target is
+		// part of the key. The lockfile parser has already rejected an entry
+		// ref the Actions backend resolver would not accept.
+		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + o.lp.Action.Ref
 		i, seen := pinIdx[key]
 		if !seen {
 			i = len(pins)
 			pinIdx[key] = i
-			pins = append(pins, ghapi.PinCheck{Owner: o.lp.Pin.Owner, Repo: o.lp.Pin.Repo, SHA: lockedSHA(o.lp.Action.Commit)})
-		}
-		switch {
-		case o.fresh:
-		case checks.IsImmutableRef(o.lp.Pin.Ref):
-			pins[i].Tag = o.lp.Pin.Ref
-		case verify && !parserlock.IsFullSha(o.lp.Pin.Ref):
-			pins[i].Head = o.lp.Pin.Ref
+			pins = append(pins, ghapi.PinCheck{Owner: o.lp.Pin.Owner, Repo: o.lp.Pin.Repo, SHA: lockedSHA(o.lp.Action.Commit), Head: o.lp.Action.Ref})
 		}
 		if j, dup := owned[[2]int{o.report, i}]; dup {
 			owners[i][j].fresh = owners[i][j].fresh || o.fresh
@@ -117,33 +117,58 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	// tagMoved marks an exact-version ref that moved ahead of its commit.
+	// The Actions backend accepts it, so --verify only warns.
+	tagMoved := make([]bool, len(states))
 	for i := range states {
 		st, pc := &states[i], pins[i]
 		if pc.Head == "" || st.Err != nil || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
 			continue
 		}
-		switch ancestry, detail := r.CheckAncestry(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); ancestry {
+		switch ancestry, detail, cause := r.CheckAncestryCause(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); ancestry {
 		case resolve.AncestryNotAncestor:
 			st.CommitFound = false
 		case resolve.AncestryUnknown:
-			st.Err = fmt.Errorf("checking %s history: %s", pc.Head, detail)
+			brief := fmt.Sprintf("could not check %s history", pc.Head)
+			if cause != nil {
+				brief += ": " + ghapi.Brief(cause)
+			}
+			st.Err = &ghapi.BriefError{Msg: brief, Err: fmt.Errorf("checking %s history: %s", pc.Head, detail)}
+		default:
+			sv, ok := parserlock.ParseSemVer(pc.Head)
+			tagMoved[i] = ok && sv.IsFull()
 		}
 	}
 	if ghapi.DependabotProxy() {
 		for i, st := range states {
 			if st.Err != nil {
-				return fmt.Errorf("could not verify locked %s/%s@%s: %w", pins[i].Owner, pins[i].Repo, parserlock.ShortSHA(pins[i].SHA), st.Err)
+				msg := fmt.Sprintf("could not verify locked %s/%s@%s", pins[i].Owner, pins[i].Repo, parserlock.ShortSHA(pins[i].SHA))
+				return &ghapi.BriefError{Msg: msg + ": " + briefCause(st.Err), Err: fmt.Errorf("%s: %s", msg, verbose(st.Err))}
 			}
 		}
 	}
 	for i, st := range states {
 		for _, o := range owners[i] {
 			f, ok := parityFinding(o.pw, o.ref, o.lp, pins[i], st)
+			if o.fresh {
+				f.FreshRef = true
+			} else {
+				f.RecordedRef = o.lp.Action.Ref
+			}
+			if !ok && verify && tagMoved[i] {
+				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
+			}
 			switch {
 			case ok && o.fresh && st.Err != nil:
 				f.Severity = checks.SeverityError
 				f.Remediation = "retry; nothing is written until the repository identity is confirmed"
-			case !ok || !keep(f.Category):
+			// A history check fails closed: the commit is otherwise unproven.
+			case ok && pins[i].Head != "" && st.Err != nil && keep(&checks.Finding{Category: checks.UnreachablePin}, o.lp.Pin):
+				f.Severity = checks.SeverityError
+				f.Remediation = "retry; a pin is accepted only once its commit is traced to its tag or branch"
+			// keep filters recorded pins a relock is about to replace; a
+			// freshly resolved pin is what the run would write.
+			case !ok || !o.fresh && !keep(&f, o.lp.Pin):
 				continue
 			}
 			wr := &report.Workflows[o.report]
@@ -204,7 +229,7 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 			owner, repo := d.OwnerRepo()
 			o := parityOwner{pw: pw, fresh: true, ref: ref, lp: lockfile.LockedPin{
 				Pin:    parserlock.Pin{NWO: d.NWO, Owner: owner, Repo: repo, Ref: d.Ref},
-				Action: parserlock.Action{Commit: d.SHA},
+				Action: parserlock.Action{Ref: freshEntryRef(d), Commit: d.SHA},
 				Parent: parent,
 			}}
 			out = append(out, o)
@@ -226,6 +251,89 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 	}
 }
 
+// shaPinRemediation is the next step for a pin whose recorded ref no longer
+// vouches for its commit. --accept-moved repairs a direct pin, but not a
+// composite's full-SHA child (see parityKeep): only its parent can change it.
+func shaPinRemediation(parent, nwo string, pin parserlock.Pin) string {
+	if parent != "" && parserlock.IsFullSha(pin.Ref) {
+		return fmt.Sprintf("upgrade or replace %s with a version whose pin of %s can be verified, or stop using it", parent, nwo)
+	}
+	return checks.AcceptMovedRemediation
+}
+
+// briefCause is err for a terminal line: see ghapi.Brief.
+func briefCause(err error) string {
+	var be *ghapi.BriefError
+	if errors.As(err, &be) {
+		return be.Msg
+	}
+	return ghapi.Brief(err)
+}
+
+// verbose is err with any underlying detail a BriefError shortened.
+func verbose(err error) string {
+	var be *ghapi.BriefError
+	if errors.As(err, &be) {
+		return be.Verbose()
+	}
+	return err.Error()
+}
+
+// movedTagFinding warns that an exact-version tag moved ahead of its locked
+// commit. Tags can move and the Actions backend accepts the pin, so it never
+// blocks. The advice must follow the tag: --relock re-resolves a tag
+// `uses:`, but leaves a full-SHA one, and only its parent changes a
+// composite's pin.
+func movedTagFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfile.LockedPin, pc ghapi.PinCheck, st ghapi.PinState) checks.Finding {
+	nwo := pc.Owner + "/" + pc.Repo
+	f := checks.Finding{
+		WorkflowPath: pw.Path,
+		ActionRef:    &ref,
+		Dependency:   &dep.Dependency{NWO: nwo, Path: ref.Path, Ref: lp.Pin.Ref, SHA: pc.SHA},
+		Category:     checks.RefMoved,
+		Severity:     checks.SeverityWarning,
+		Confidence:   checks.ConfidenceHigh,
+		ObservedSHA:  st.HeadOID,
+		TagMoved:     true,
+		ParentNWO:    lockParent(lp),
+		Detail:       fmt.Sprintf("tag %s now points at %s; locked commit %s is still in its history", pc.Head, parserlock.ShortSHA(st.HeadOID), parserlock.ShortSHA(pc.SHA)),
+		Remediation:  "the Actions backend accepts this pin; run `gh actions-lock --relock` to lock the tag's current commit",
+	}
+	if f.ParentNWO != "" {
+		f.Detail += fmt.Sprintf(" (used by %s)", f.ParentNWO)
+	}
+	if parserlock.IsFullSha(lp.Pin.Ref) {
+		uses := nwo
+		if ref.Path != "" {
+			uses += "/" + ref.Path
+		}
+		f.Remediation = fmt.Sprintf("the Actions backend accepts this pin; to follow the tag, change `uses:` to %s@%s and run `gh actions-lock`", uses, pc.Head)
+		if f.ParentNWO != "" {
+			f.Remediation = fmt.Sprintf("the Actions backend accepts this pin; only upgrading %s follows the tag", f.ParentNWO)
+		}
+	}
+	return f
+}
+
+// lockParent is the NWO@ref of the composite that pins lp, or "" for a
+// workflow's own pin.
+func lockParent(lp lockfile.LockedPin) string {
+	if parent, ok := parserlock.ParsePin(lp.Parent); ok {
+		return parent.NWO + "@" + parent.Ref
+	}
+	return ""
+}
+
+// freshEntryRef is the ref a fresh pin is checked against. A full-SHA key
+// has none yet: planning picks its tag or branch by reverse lookup, which
+// only accepts a tag at the commit or a branch containing it.
+func freshEntryRef(d dep.Dependency) string {
+	if parserlock.IsFullSha(d.Ref) {
+		return ""
+	}
+	return d.Ref
+}
+
 func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfile.LockedPin, pc ghapi.PinCheck, st ghapi.PinState) (checks.Finding, bool) {
 	nwo := pc.Owner + "/" + pc.Repo
 	f := checks.Finding{
@@ -235,11 +343,7 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		Severity:     checks.SeverityError,
 		Confidence:   checks.ConfidenceHigh,
 	}
-	if lp.Parent != "" {
-		if parent, ok := parserlock.ParsePin(lp.Parent); ok {
-			f.ParentNWO = parent.NWO + "@" + parent.Ref
-		}
-	}
+	f.ParentNWO = lockParent(lp)
 	via := ""
 	if f.ParentNWO != "" {
 		via = fmt.Sprintf(" (used by %s)", f.ParentNWO)
@@ -250,8 +354,13 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		f.Category = checks.ReachabilityUnknown
 		f.Severity = checks.SeverityWarning
 		f.Confidence = checks.ConfidenceLow
-		f.Detail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, st.Err)
-		f.Remediation = "retry; the runner will re-check this pin at job start"
+		f.Detail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, verbose(st.Err))
+		f.TermDetail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, briefCause(st.Err))
+		var be *ghapi.BriefError
+		if errors.As(st.Err, &be) {
+			f.TermDetail = be.Msg
+		}
+		f.Remediation = "retry; the Actions backend will re-check this pin when the job starts"
 	case st.RepoMissing:
 		f.Category = checks.RepoUnavailable
 		f.Detail = fmt.Sprintf("%s is missing or not visible to this token%s", nwo, via)
@@ -270,22 +379,25 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 		}
 	case !st.CommitFound:
 		f.Category = checks.UnreachablePin
-		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, ref.Ref, cmp.Or(st.TagOID, st.HeadOID)) + via
-		f.Remediation = checks.AcceptMovedRemediation
+		f.Detail = checks.NotInHistoryDetail(pc.SHA, nwo, cmp.Or(pc.Head, ref.Ref), st.HeadOID) + via
+		f.Remediation = shaPinRemediation(f.ParentNWO, nwo, lp.Pin)
 	case pc.Head != "" && st.HeadOID == "":
 		f.Category = checks.UnreachablePin
-		f.Detail = fmt.Sprintf("ref %s no longer exists in %s; the runner will reject this pin%s", pc.Head, nwo, via)
-		f.Remediation = "point `uses:` at a tag or branch that exists, then run `gh actions-lock`"
-		f.RefMissing = true
-	case pc.Tag != "" && !strings.EqualFold(st.TagOID, pc.SHA):
-		f.Category = checks.UnreachablePin
-		f.ObservedSHA = st.TagOID
-		if st.TagOID == "" {
-			f.Detail = fmt.Sprintf("tag %s no longer exists in %s; lockfile pins %s%s", pc.Tag, nwo, short, via)
-			f.Remediation = "point `uses:` at a tag that exists, then run `gh actions-lock`"
-		} else {
-			f.Detail = fmt.Sprintf("tag %s now points at %s, lockfile pins %s%s", pc.Tag, parserlock.ShortSHA(st.TagOID), short, via)
-			f.Remediation = "release tags should not move; " + checks.AcceptMovedRemediation
+		f.Detail = fmt.Sprintf("ref %s is not a tag or branch of %s; the Actions backend will reject this pin%s", pc.Head, nwo, via)
+		f.RefGone = true
+		// A full-SHA `uses:` names no ref to repoint; the lock entry is wrong.
+		f.Remediation = shaPinRemediation(f.ParentNWO, nwo, lp.Pin)
+		if !parserlock.IsFullSha(lp.Pin.Ref) {
+			f.Remediation = "point `uses:` at a tag or branch that exists, then run `gh actions-lock`"
+			f.RefMissing = true
+		}
+		if ghapi.DescribeName(pc.Head) {
+			// Refused by name, not looked up: it may well exist.
+			f.Detail = fmt.Sprintf("ref %s looks like `git describe` output, which the Actions backend refuses as a tag or branch name; it will reject this pin%s", pc.Head, via)
+			f.RefGone, f.RefRefused = false, true
+			if f.RefMissing {
+				f.Remediation = "point `uses:` at a tag or branch whose name doesn't end in -g<hex>, then run `gh actions-lock`"
+			}
 		}
 	case st.NameWithOwner != "" && !strings.EqualFold(st.NameWithOwner, nwo):
 		f.Category = checks.RepoRenamed

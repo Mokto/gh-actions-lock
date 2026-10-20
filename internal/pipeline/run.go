@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
@@ -22,6 +23,9 @@ type RunOptions struct {
 	Pool          *pinpool.Pool
 	// Relock re-resolves every ref live instead of trusting the lockfile.
 	Relock bool
+	// AcceptMoved accepts recorded pins whose ref no longer vouches for
+	// them; it implies Relock.
+	AcceptMoved bool
 	// Verify also checks that each pin on a mutable ref is still in that
 	// ref's history, at one Compare call per ref that moved.
 	Verify bool
@@ -127,15 +131,9 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	report := DiagnoseParsed(ctx, parsed, r, opts.Store, opts.Pool)
 	endDiag()
 
-	// Phase 4: Parity. Under --relock the entries are about to be replaced,
-	// so only repository identity, which re-resolving can't fix, matters.
+	// Phase 4: Parity.
 	if r != nil {
-		keep := func(checks.Category) bool { return true }
-		if opts.Relock {
-			keep = func(c checks.Category) bool {
-				return c == checks.RepoRenamed || c == checks.RepoReplaced || c == checks.RepoUnavailable
-			}
-		}
+		keep := parityKeep(opts.Relock, opts.AcceptMoved)
 		endParity := prof.Phase("  parity check")
 		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, keep, opts.Verify)
 		endParity()
@@ -150,4 +148,31 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 
 	return &RunResult{Report: report, Valid: report.IsValid()}, nil
+}
+
+// parityKeep returns the filter for parity findings on recorded pins. Under
+// --relock the entries are about to be replaced, so only what re-resolving
+// can't fix matters: repository identity, a full-SHA key's commit, which no
+// relock moves, and a ref that is not a tag or branch, which resolution
+// would still accept by rev-parse rules.
+//
+// --accept-moved also accepts a direct full-SHA key whose recorded ref no
+// longer vouches for it: the finding becomes a warning, and planning records
+// a tag or branch that contains the commit, or fails. A transitive one stays
+// blocking: planning doesn't rebuild an unchanged composite's dependencies,
+// so nothing would replace its entry.
+func parityKeep(relock, acceptMoved bool) func(*checks.Finding, parserlock.Pin) bool {
+	if !relock {
+		return func(*checks.Finding, parserlock.Pin) bool { return true }
+	}
+	return func(f *checks.Finding, p parserlock.Pin) bool {
+		c := f.Category
+		if acceptMoved && c == checks.UnreachablePin && parserlock.IsFullSha(p.Ref) && !f.RefMissing && f.ParentNWO == "" {
+			f.Severity = checks.SeverityWarning
+			f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
+			return true
+		}
+		return c == checks.RepoRenamed || c == checks.RepoReplaced || c == checks.RepoUnavailable ||
+			c == checks.UnreachablePin && (parserlock.IsFullSha(p.Ref) || f.RefMissing)
+	}
 }

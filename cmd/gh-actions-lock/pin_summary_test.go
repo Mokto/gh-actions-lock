@@ -13,6 +13,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/github/gh-actions-lock/internal/ui"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // A workflow shared between two different actions must still be listed under
@@ -664,4 +665,102 @@ func TestRenderAcceptedOverrides_NamesEachOverride(t *testing.T) {
 	assert.Contains(t, out, "Re-pinned actions/checkout@v4.2.2: 111111111111 → 11bd71901bbe (accepted)")
 	assert.Contains(t, out, "Re-pinned actions/setup-node@v4.4.0: 8f152de45cc3 → 49933ea5288c (accepted)")
 	assert.NotContains(t, out, "octo/kept", "an unchanged pin is not an override")
+}
+
+// TestRenderAcceptedOverrides_NamesReRecordedRef: a full-SHA pin keeps its
+// commit, but --accept-moved records a new tag or branch for it.
+func TestRenderAcceptedOverrides_NamesReRecordedRef(t *testing.T) {
+	const sha = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	report := &checks.Report{Workflows: []checks.WorkflowReport{{
+		Path: ".github/workflows/ci.yml",
+		Findings: []checks.Finding{
+			{Category: checks.UnreachablePin, Severity: checks.SeverityWarning, RecordedRef: "v4-gone",
+				Dependency: &dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha}},
+		},
+	}}}
+	for name, pinned := range map[string][]pin.Entry{
+		"uses: rewritten to the tag": {{NWO: "actions/checkout", Ref: "v4.2.2", AutoFixedRef: sha, SHA: sha}},
+		"uses: kept as the SHA":      {{NWO: "actions/checkout", Ref: sha, SHA: sha, Tag: "v4.2.2"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			renderAcceptedOverrides(ui.NewPlain(&buf), report, pinned)
+			assert.Contains(t, buf.String(), "actions/checkout: recorded ref v4-gone no longer contains 11bd71901bbe; re-recorded as v4.2.2 (--accept-moved)")
+		})
+	}
+}
+
+// TestRenderAcceptedOverrides_AttributesTheFindingsPin: another workflow
+// pinning the same commit under a different ref is not the re-recorded pin.
+func TestRenderAcceptedOverrides_AttributesTheFindingsPin(t *testing.T) {
+	const sha = "a7bc67e1a1d9ae52bb4f3b3a2ef3c1fe62b9d3a4"
+	report := &checks.Report{Workflows: []checks.WorkflowReport{
+		{Path: ".github/workflows/a.yml"},
+		{Path: ".github/workflows/b.yml", Findings: []checks.Finding{
+			{Category: checks.UnreachablePin, Severity: checks.SeverityWarning, RecordedRef: "gone",
+				Dependency: &dep.Dependency{NWO: "o/child", Ref: sha, SHA: sha}},
+		}},
+	}}
+	for name, b := range map[string]pin.Entry{
+		"uses: rewritten to the tag": {NWO: "o/child", Ref: "z-032", AutoFixedRef: sha, SHA: sha,
+			Workflows: []string{".github/workflows/b.yml"}},
+		"uses: kept as the SHA": {NWO: "o/child", Ref: sha, SHA: sha, OnBranch: "z-032",
+			Workflows: []string{".github/workflows/b.yml"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pinned := []pin.Entry{
+				{NWO: "o/child", Ref: "z-129", SHA: sha, Workflows: []string{".github/workflows/a.yml"}},
+				b,
+			}
+			var buf bytes.Buffer
+			renderAcceptedOverrides(ui.NewPlain(&buf), report, pinned)
+			assert.Equal(t, "o/child: recorded ref gone no longer contains a7bc67e1a1d9; re-recorded as z-032 (--accept-moved)\n", buf.String())
+		})
+	}
+}
+
+// TestRenderPinSummary_HousekeepingBeforeSummary: the schema upgrade and
+// pruning notes print before the pinned summary, not after it.
+func TestRenderPinSummary_HousekeepingBeforeSummary(t *testing.T) {
+	record := &pin.Record{Entries: []pin.Entry{{
+		NWO: "actions/checkout", Ref: "v4.2.2", SHA: "11bd71901bbe5b1630ceea73d27597364c9af683",
+		Resolution: pin.Pinned, Workflows: []string{".github/workflows/ci.yml"}, Direct: true,
+	}}}
+	report := &checks.Report{Workflows: []checks.WorkflowReport{{Path: ".github/workflows/ci.yml"}}}
+
+	var buf bytes.Buffer
+	err := renderPinSummary(context.Background(), ui.NewPlain(&buf), record, report, nil, nil, true, false, "v0.0.2", []string{".github/workflows/old.yml"})
+	require.NoError(t, err)
+	out := buf.String()
+
+	pinned := strings.Index(out, "Pinned 1 action")
+	require.NotEqual(t, -1, pinned, out)
+	for _, line := range []string{"Upgraded lockfile schema v0.0.2", "Pruned 1 deleted workflow"} {
+		i := strings.Index(out, line)
+		require.NotEqual(t, -1, i, out)
+		assert.Less(t, i, pinned, "%q should precede the summary:\n%s", line, out)
+	}
+}
+
+// TestRenderPinSummary_NamesRefOnlyRepair: --accept-moved keeps a full-SHA
+// key and its commit (e.g. under --no-narrow), so the entry is Verified,
+// but its recorded ref changed and the summary must say so.
+func TestRenderPinSummary_NamesRefOnlyRepair(t *testing.T) {
+	const sha = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	record := &pin.Record{Entries: []pin.Entry{{
+		NWO: "actions/checkout", Ref: sha, SHA: sha, OnBranch: "main",
+		Resolution: pin.Verified, Workflows: []string{".github/workflows/ci.yml"}, Direct: true,
+	}}}
+	report := &checks.Report{Workflows: []checks.WorkflowReport{{
+		Path: ".github/workflows/ci.yml",
+		Findings: []checks.Finding{{
+			Category: checks.UnreachablePin, Severity: checks.SeverityWarning, RecordedRef: "v4-gone",
+			Dependency: &dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha},
+		}},
+	}}}
+
+	var buf bytes.Buffer
+	err := renderPinSummary(context.Background(), ui.NewPlain(&buf), record, report, nil, nil, true, true, "", nil)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "actions/checkout: recorded ref v4-gone no longer contains 11bd71901bbe; re-recorded as main (--accept-moved)")
 }

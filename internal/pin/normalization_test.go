@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -65,6 +66,13 @@ func TestPlanNormalizationPrunesStaleTargetsInOneRun(t *testing.T) {
 			require.NoError(t, store.Save())
 
 			reg := &httpmock.Registry{}
+			// A recorded tag is lock data, not proof (#174): repair looks it
+			// up by exact name.
+			if tt.recorded && tt.tag != "" {
+				reg.RegisterReusable(httpmock.REST("GET", `repos/owner/action/git/ref/tags/`+regexp.QuoteMeta(tt.tag)+`$`),
+					httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/"+tt.tag, headSHA)))
+			}
+			httpmock.NoTagsNamed(reg, "owner", "action")
 			defer reg.Verify(t)
 			if !tt.recorded {
 				reg.Register(httpmock.REST("GET", `repos/owner/action$`),
@@ -187,6 +195,7 @@ func TestPlanNormalizationRetainsSharedTargets(t *testing.T) {
 			}
 
 			reg := &httpmock.Registry{}
+			httpmock.NoTagsNamed(reg, "owner", "action")
 			defer reg.Verify(t)
 			reg.Register(httpmock.REST("GET", `repos/owner/action$`),
 				httpmock.JSONResponse(map[string]any{"default_branch": "main"}))

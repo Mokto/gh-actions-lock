@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -19,10 +18,11 @@ type PinCheck struct {
 	Owner string
 	Repo  string
 	SHA   string
-	// Tag, when set, must still peel to SHA.
-	Tag string
-	// Head, when set, is a mutable ref whose current commit is reported as
-	// HeadOID so the caller can check SHA is still in its history.
+	// Head, when set, is a ref whose current commit is reported as HeadOID
+	// so the caller can check SHA is still in its history. It is looked up
+	// only as an existing refs/tags/<name>, then refs/heads/<name>, of
+	// exactly that name, as the Actions backend resolver does: rev-parse
+	// rules would also accept a pull request head (pull/1/head).
 	Head string
 }
 
@@ -38,8 +38,6 @@ type PinState struct {
 	// where a missing token or SSO grant is the likelier cause.
 	ViaFallback bool
 	CommitFound bool
-	// TagOID is the commit Tag peels to; empty when the tag is gone.
-	TagOID string
 	// HeadOID is the commit Head peels to; empty when the ref is gone.
 	HeadOID string
 	Err     error
@@ -50,7 +48,7 @@ type PinState struct {
 const pinCheckBatchSize = 50
 
 // CheckPins reports, per pin, the repository's canonical name and IDs,
-// whether the pinned commit exists, and where Tag points. It does not walk
+// whether the pinned commit exists, and where Head points. It does not walk
 // action.yml: a pinned commit fixes the dependencies it declares.
 func (c *Client) CheckPins(ctx context.Context, pins []PinCheck) []PinState {
 	if len(pins) == 0 {
@@ -145,15 +143,14 @@ func buildPinCheckQuery(pins []PinCheck) (string, map[string]any) {
 		fmt.Fprintf(&body, " a%d: repository(owner: $owner%d, name: $name%d) {", i, i, i)
 		body.WriteString(" nameWithOwner databaseId owner { ... on Organization { databaseId } ... on User { databaseId } }")
 		fmt.Fprintf(&body, " commit: object(oid: $oid%d) { oid }", i)
-		if p.Tag != "" {
-			vars[fmt.Sprintf("tag%d", i)] = p.Tag + "^{commit}"
-			fmt.Fprintf(&decl, ", $tag%d: String!", i)
-			fmt.Fprintf(&body, " tag: object(expression: $tag%d) { oid }", i)
-		}
-		if p.Head != "" {
-			vars[fmt.Sprintf("head%d", i)] = p.Head + "^{commit}"
-			fmt.Fprintf(&decl, ", $head%d: String!", i)
-			fmt.Fprintf(&body, " head: object(expression: $head%d) { oid }", i)
+		if refs := p.refs(); refs != nil {
+			vars[fmt.Sprintf("tag%d", i)] = refs[0] + "^{commit}"
+			vars[fmt.Sprintf("head%d", i)] = refs[1] + "^{commit}"
+			vars[fmt.Sprintf("tagRef%d", i)] = refs[0]
+			vars[fmt.Sprintf("headRef%d", i)] = refs[1]
+			fmt.Fprintf(&decl, ", $tag%d: String!, $head%d: String!, $tagRef%d: String!, $headRef%d: String!", i, i, i, i)
+			fmt.Fprintf(&body, " tag: object(expression: $tag%d) { oid } head: object(expression: $head%d) { oid }", i, i)
+			fmt.Fprintf(&body, " tagRef: ref(qualifiedName: $tagRef%d) { name } headRef: ref(qualifiedName: $headRef%d) { name }", i, i)
 		}
 		body.WriteString(" }")
 	}
@@ -212,6 +209,8 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 			Head *struct {
 				OID string `json:"oid"`
 			} `json:"head"`
+			TagRef  *struct{} `json:"tagRef"`
+			HeadRef *struct{} `json:"headRef"`
 		}
 		if err := json.Unmarshal(raw, &repo); err != nil {
 			states[i].Err = fmt.Errorf("failed to parse: %w", err)
@@ -223,12 +222,26 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 			RepoID:        repo.DatabaseID,
 			CommitFound:   repo.Commit != nil && repo.Commit.OID != "",
 		}
-		if repo.Tag != nil {
-			states[i].TagOID = repo.Tag.OID
+		// An expression peels the ref, but it would also evaluate a name that
+		// is no ref at all; only a ref that exists by that exact name counts.
+		if repo.TagRef == nil {
+			repo.Tag = nil
 		}
-		if repo.Head != nil {
-			states[i].HeadOID = repo.Head.OID
+		if repo.HeadRef == nil {
+			repo.Head = nil
 		}
+		// Tag precedence keys off the tag existing, not peeling: a tag that
+		// targets a tree or blob still hides a same-named branch.
+		var oid string
+		switch {
+		case repo.TagRef != nil:
+			if repo.Tag != nil {
+				oid = repo.Tag.OID
+			}
+		case repo.Head != nil:
+			oid = repo.Head.OID
+		}
+		states[i].HeadOID = oid
 	}
 	return states
 }
@@ -252,7 +265,7 @@ func aliasError(gqlErr *api.GraphQLError, alias string) error {
 		if len(item.Path) == 0 || item.Path[0] != alias {
 			continue
 		}
-		if item.Type == "NOT_FOUND" && len(item.Path) >= 2 && (item.Path[1] == "commit" || item.Path[1] == "tag" || item.Path[1] == "head") {
+		if item.Type == "NOT_FOUND" && len(item.Path) >= 2 && (item.Path[1] == "commit" || item.Path[1] == "tag" || item.Path[1] == "head" || item.Path[1] == "tagRef" || item.Path[1] == "headRef") {
 			continue
 		}
 		return errors.New(item.Message)
@@ -261,8 +274,9 @@ func aliasError(gqlErr *api.GraphQLError, alias string) error {
 }
 
 // checkPinsREST costs one repos/{owner}/{repo} call per unique repo plus one
-// commits call per intact pin: the tag when one is set (a match proves the
-// commit exists), otherwise the SHA. A Head costs one more commits call.
+// commits call per intact pin: the Head when one is set (a match proves the
+// commit exists), otherwise the SHA. A Head that moved costs one more
+// commits call, and a branch rather than a tag one more again.
 func (c *Client) checkPinsREST(ctx context.Context, pins []PinCheck) []PinState {
 	states := make([]PinState, len(pins))
 	for i, p := range pins {
@@ -280,52 +294,20 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 		return PinState{Err: err}
 	}
 	s := PinState{NameWithOwner: meta.FullName, OwnerID: meta.OwnerID, RepoID: meta.RepoID}
-	if p.Tag != "" {
-		sha, found, err := c.restCommit(ctx, p.Owner, p.Repo, p.Tag)
-		if err != nil {
+	if p.Head != "" {
+		if s.HeadOID, err = c.ResolveRefName(ctx, p.Owner, p.Repo, p.Head); err != nil {
 			return PinState{Err: err}
 		}
-		if found {
-			s.TagOID = sha
-		}
-		if strings.EqualFold(sha, p.SHA) {
+		if strings.EqualFold(s.HeadOID, p.SHA) {
 			s.CommitFound = true
 			return s
 		}
 	}
-	// No tag, or the tag moved: look the commit up on its own so a moved
-	// tag isn't misreported as a missing commit.
+	// No ref, or the ref moved: look the commit up on its own so a moved
+	// ref isn't misreported as a missing commit.
 	_, s.CommitFound, err = c.restCommit(ctx, p.Owner, p.Repo, p.SHA)
 	if err != nil {
 		return PinState{Err: err}
 	}
-	if p.Head != "" && s.CommitFound {
-		if s.HeadOID, _, err = c.restCommit(ctx, p.Owner, p.Repo, p.Head); err != nil {
-			return PinState{Err: err}
-		}
-	}
 	return s
-}
-
-func (c *Client) restCommit(ctx context.Context, owner, repo, ref string) (string, bool, error) {
-	var commit struct {
-		SHA string `json:"sha"`
-	}
-	path := fmt.Sprintf("repos/%s/%s/commits/%s", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(ref))
-	var err error
-	if c.restOnly {
-		err = c.anonGet(ctx, path, &commit)
-	} else {
-		err = c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &commit)
-		if err != nil && IsSAMLEnforcement(err) && c.SSOFallbackEligible(ctx, owner) {
-			err = c.anonGet(ctx, path, &commit)
-		}
-	}
-	if code, _ := StatusCode(err); code == http.StatusNotFound || code == http.StatusUnprocessableEntity {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, c.ssoErr(owner, err)
-	}
-	return commit.SHA, true, nil
 }

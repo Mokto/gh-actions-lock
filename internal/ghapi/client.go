@@ -59,6 +59,11 @@ type Client struct {
 	namedBranchSF        singleflight.Group
 	protectedBranchCache syncmap.Map[Repo, []BranchHead]
 	protectedBranchSF    singleflight.Group
+
+	// gitRefCache holds exact ref lookups (see gitRef), found or not, for
+	// the invocation; failed lookups are not cached.
+	gitRefCache syncmap.Map[NWOName, gitRefResult]
+	gitRefSF    singleflight.Group
 }
 
 // ClientOption configures a Client at construction time. Pass to New.

@@ -1,6 +1,7 @@
 package pin
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -637,18 +638,16 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 			continue
 		}
 		if parserlock.IsFullSha(e.Ref) {
-			newRef := e.Tag
-			if newRef == "" && e.OnBranch != "" && opts.Resolver != nil {
-				// A containing branch cannot identify an older pinned commit.
-				owner, repo := splitNWO(e.NWO)
-				if head, ok := opts.Resolver.GetBranchHead(ctx, owner, repo, e.OnBranch); ok && strings.EqualFold(head.SHA, e.SHA) {
-					newRef = e.OnBranch
-				}
-			}
-			if newRef == "" {
+			// Rewriting `uses:` names the commit by its recorded ref, which is
+			// lock data, not proof (#174): the ref must resolve, as the
+			// backend resolves it (tag first), to exactly this commit now.
+			// A moved tag or a containing branch would name another commit.
+			newRef := cmp.Or(e.Tag, e.OnBranch)
+			if newRef == "" || opts.Resolver == nil || hasConflictingLockTarget(opts, e.NWO, newRef, e.SHA) {
 				continue
 			}
-			if parserlock.IsFullSha(newRef) || hasConflictingLockTarget(opts, e.NWO, newRef, e.SHA) {
+			owner, repo := splitNWO(e.NWO)
+			if ok, err := opts.Resolver.RefNamesCommit(ctx, owner, repo, newRef, e.SHA); err != nil || !ok {
 				continue
 			}
 			oldRef := e.Ref

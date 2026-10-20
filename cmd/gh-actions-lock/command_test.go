@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -95,6 +96,8 @@ func TestCheck_BareSHAUsesExactMajorTagAndVerifiesLocally(t *testing.T) {
 	)
 
 	reg := &httpmock.Registry{}
+
+	httpmock.NoTagsNamed(reg, "dawidd6", "action-download-artifact")
 	reg.Register(
 		httpmock.GraphQLForRepo("dawidd6", "action-download-artifact"),
 		httpmock.JSONResponse(map[string]any{
@@ -211,9 +214,11 @@ func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 	return map[string]any{
 		"nameWithOwner": nameWithOwner,
 		// commit, tag and head answer the parity query from the same fixture.
-		"commit": map[string]any{"oid": oid},
-		"tag":    map[string]any{"oid": oid},
-		"head":   map[string]any{"oid": oid},
+		"commit":  map[string]any{"oid": oid},
+		"tag":     map[string]any{"oid": oid},
+		"tagRef":  map[string]any{"oid": oid},
+		"head":    map[string]any{"oid": oid},
+		"headRef": map[string]any{"oid": oid},
 		"object": map[string]any{
 			"oid": oid,
 			"file": map[string]any{
@@ -250,7 +255,9 @@ func parityOK(req *http.Request) (*http.Response, error) {
 			"nameWithOwner": owner + "/" + body.Variables[fmt.Sprintf("name%d", i)].(string),
 			"commit":        oid,
 			"tag":           oid,
+			"tagRef":        oid,
 			"head":          oid,
+			"headRef":       oid,
 		}
 	}
 	return httpmock.JSONResponse(map[string]any{"data": data})(req)
@@ -314,26 +321,26 @@ func writeTempWorkflow(t *testing.T, body string, pins ...string) string {
 // pinString has the form "owner/repo@ref" (the v0.0.2 pin key format).
 // A synthetic commit hash is generated from the pin key for each entry.
 // The ref field in each action body matches the pin key's ref. Overrides
-// can pass "owner/repo@ref=sha1-hex" to supply an explicit commit.
+// can pass "owner/repo@ref=sha1-hex" to supply an explicit commit, and
+// "owner/repo@ref=sha1-hex=ref" to record a different ref (a full-SHA key
+// must record the tag or branch its commit came from).
 func writeTempLockfile(t *testing.T, repoDir, wfName string, pinStrings []string) {
 	t.Helper()
 	var sb strings.Builder
 	sb.WriteString("version: '" + parserlock.Version + "'\ndependencies:\n")
 	for _, raw := range pinStrings {
-		key, commit := raw, ""
-		if idx := strings.Index(raw, "="); idx >= 0 {
-			key = raw[:idx]
-			commit = raw[idx+1:]
-		}
+		key, commit, _ := strings.Cut(raw, "=")
+		commit, ref, _ := strings.Cut(commit, "=")
 		pin, ok := parserlock.ParsePin(key)
 		if !ok {
 			t.Fatalf("writeTempLockfile: invalid pin %q", key)
 		}
+		ref = cmp.Or(ref, pin.Ref)
 		if commit == "" {
 			// Generate deterministic fake commit from pin key.
 			commit = "sha1-" + strings.Repeat(string("abcdef0123456789"[len(key)%16]), 40)
 		}
-		sb.WriteString("  '" + key + "':\n    ref: '" + pin.Ref + "'\n    commit: '" + commit + "'\n    owner_id: 1\n    repo_id: 1\n")
+		sb.WriteString("  '" + key + "':\n    ref: '" + ref + "'\n    commit: '" + commit + "'\n    owner_id: 1\n    repo_id: 1\n")
 	}
 	sb.WriteString("workflows:\n  '.github/workflows/" + wfName + "':\n")
 	for _, raw := range pinStrings {
@@ -1476,4 +1483,99 @@ jobs:
 
 	_, _, err = runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", workflowPath)
 	require.ErrorIs(t, err, errSilent, "an unlocked bare SHA must not pass the offline gate")
+}
+
+// TestFreshMalformedRemoteRefCannotOnboard: a remote-looking uses: value the
+// parser rejects is never skipped, in a workflow or a $/ composite, in
+// any mode or transport. Nothing is fetched or written.
+func TestFreshMalformedRemoteRefCannotOnboard(t *testing.T) {
+	for _, rejected := range []string{"actions/checkout@main:action.yml", "actions/checkout/.github/workflows/ci.yml@v4"} {
+		t.Run(rejected, func(t *testing.T) { testMalformedRemoteRefCannotOnboard(t, rejected) })
+	}
+}
+
+func testMalformedRemoteRefCannotOnboard(t *testing.T, rejected string) {
+	for _, surface := range []string{"workflow", "self composite"} {
+		for _, proxy := range []bool{false, true} {
+			for _, refresh := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/proxy=%t/refresh=%t", surface, proxy, refresh), func(t *testing.T) {
+					if proxy {
+						t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+					}
+					dir := t.TempDir()
+					require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+					workflowPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
+					require.NoError(t, os.MkdirAll(filepath.Dir(workflowPath), 0o755))
+					use := rejected
+					var actionPath string
+					var action []byte
+					if surface == "self composite" {
+						use = "$/outer"
+						actionPath = filepath.Join(dir, "outer", "action.yml")
+						action = []byte("runs:\n  using: composite\n  steps:\n    - uses: " + rejected + "\n")
+						require.NoError(t, os.MkdirAll(filepath.Dir(actionPath), 0o755))
+						require.NoError(t, os.WriteFile(actionPath, action, 0o600))
+					}
+					workflow := []byte("on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: " + use + "\n")
+					require.NoError(t, os.WriteFile(workflowPath, workflow, 0o600))
+					t.Chdir(dir)
+					transport := &requestCountingTransport{}
+					args := []string{"--no-interactive", "--no-narrow", workflowPath}
+					if refresh {
+						args = append(args, "--relock", "--accept-moved")
+					}
+
+					_, stderr, err := runCommandWithHTTP(t, transport, args...)
+
+					assert.Error(t, err, stderr)
+					assert.Contains(t, stderr, rejected)
+					assert.Zero(t, transport.calls.Load())
+					assert.NoFileExists(t, filepath.Join(filepath.Dir(workflowPath), "actions.lock"))
+					got, readErr := os.ReadFile(workflowPath)
+					require.NoError(t, readErr)
+					assert.Equal(t, workflow, got)
+					if actionPath != "" {
+						got, readErr := os.ReadFile(actionPath)
+						require.NoError(t, readErr)
+						assert.Equal(t, action, got)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestRemoteCompositeMalformedRefBlocks: a fetched composite whose uses:
+// can't be parsed blocks the run instead of locking without that child.
+func TestRemoteCompositeMalformedRefBlocks(t *testing.T) {
+	tests := map[string]string{
+		"actions/checkout@main:action.yml":             "uses: actions/checkout@main:action.yml is not an action reference the Actions backend accepts",
+		"actions/checkout/.github/workflows/ci.yml@v4": "reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps",
+	}
+	for use, want := range tests {
+		t.Run(use, func(t *testing.T) { testRemoteCompositeMalformedRef(t, use, want) })
+	}
+}
+
+func testRemoteCompositeMalformedRef(t *testing.T, use, want string) {
+	const sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: " + use + "\n"
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQLForRepo("octo", "composite"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("octo/composite", sha, composite)},
+	}))
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/composite@v1
+`)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent, stderr)
+	assert.Contains(t, stderr, want)
+	assert.NoFileExists(t, filepath.Join(filepath.Dir(path), "actions.lock"))
 }

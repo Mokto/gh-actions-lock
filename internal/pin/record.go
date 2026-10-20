@@ -52,6 +52,11 @@ func (r *Record) Pinned() []Entry {
 	return r.byResolution(Pinned)
 }
 
+// Verified returns entries with Resolution == Verified.
+func (r *Record) Verified() []Entry {
+	return r.byResolution(Verified)
+}
+
 // Investigated returns entries with Resolution == Investigate.
 func (r *Record) Investigated() []Entry {
 	return r.byResolution(Investigate)

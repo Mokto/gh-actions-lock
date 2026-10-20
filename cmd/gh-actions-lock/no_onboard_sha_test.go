@@ -32,9 +32,9 @@ func TestNoOnboard_BareSHAOnTrackedAction(t *testing.T) {
 		uses    string
 		blocked bool
 	}{
-		{"sha to sha", "actions/checkout@" + oldSHA + "=sha1-" + oldSHA, newSHA, false},
+		{"sha to sha", "actions/checkout@" + oldSHA + "=sha1-" + oldSHA + "=main", newSHA, false},
 		{"tag to sha", "actions/checkout@v4.2.1=sha1-" + oldSHA, newSHA, false},
-		{"impostor sha", "actions/checkout@" + oldSHA + "=sha1-" + oldSHA, impostor, true},
+		{"impostor sha", "actions/checkout@" + oldSHA + "=sha1-" + oldSHA + "=main", impostor, true},
 	}
 	for _, tt := range tests {
 		for _, proxy := range []bool{false, true} {
@@ -142,7 +142,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@`+newSHA+`
-`, "actions/checkout@"+oldSHA+"=sha1-"+oldSHA)
+`, "actions/checkout@"+oldSHA+"=sha1-"+oldSHA+"=main")
 				lockBefore := readTempLockfilePins(t)
 
 				_, stderr, err := runCommandWithHTTP(t, reg,
@@ -193,6 +193,7 @@ func trackedSHAStubs(reg *httpmock.Registry, uses, head string) *httpmock.Regist
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
 		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`), httpmock.JSONResponse(compare))
 	}
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
 	return reg
 }
 
@@ -222,7 +223,7 @@ jobs:
     steps:
       - uses: nope/gone@v1
       - uses: actions/checkout@`+newSHA+`
-`, "actions/checkout@"+oldSHA+"=sha1-"+oldSHA)
+`, "actions/checkout@"+oldSHA+"=sha1-"+oldSHA+"=main")
 	lockBefore := readTempLockfilePins(t)
 
 	_, stderr, err := runCommandWithHTTP(t, reg,

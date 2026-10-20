@@ -342,7 +342,7 @@ scenarios:
 
   - name: onboarded_corrupt_recovery
     category: lockfile
-    description: "Corrupt YAML lockfile — user confirms delete, lockfile rewritten from scratch"
+    description: "Corrupt YAML lockfile in a fix run — never deleted or recreated; fails and points at version control"
     needs_token: true
     fixtures:
       workflows:
@@ -350,12 +350,13 @@ scenarios:
           name: CI
           actions: ["actions/checkout@v4"]
       lockfile: "{{{{invalid yaml content not parseable at all}}}}"
-    input:
-      - prompt: "(y/N)"
-        response: "y"
     expect:
-      exit: 0
-      lockfile_deps_cover_direct: true
+      exit: 2
+      output_contains:
+        - "restore it from version control"
+      output_excludes:
+        - "Delete and recreate"
+        - "unreadable"
 
   - name: onboarded_future_version
     category: lockfile
@@ -679,7 +680,7 @@ scenarios:
 
   - name: verify_pinned_stub
     category: output_modes
-    description: "--verify with stub server — pinned lockfile passes (inconclusive is non-blocking in read-only mode)"
+    description: "Real-binary --verify succeeds with reachable pins and available locked manifests"
     needs_stub: true
     tags: [stub]
     flags: ["--verify"]
@@ -1631,7 +1632,8 @@ scenarios:
     expect:
       exit: 2
       output_contains:
-        - "unreadable"
+        - ".github/workflows/actions.lock:"
+        - "restore it from version control"
 
   - name: onboarded_no_interactive_corrupt
     category: lockfile
@@ -1647,7 +1649,8 @@ scenarios:
     expect:
       exit: 2
       output_contains:
-        - "unreadable"
+        - ".github/workflows/actions.lock:"
+        - "restore it from version control"
 
   # ╔═════════════════════════════════════════════════════════════════════════╗
   # ║══════════════════════════════ dependabot ═══════════════════════════════║
@@ -1698,7 +1701,7 @@ scenarios:
                 hash_algo: sha1
                 nwo: actions/checkout
                 ref: v4
-                sha: de0fac2e4500dabe0009e67214ff5f5447ce83dd
+                sha: 11bd71901bbe5b1630ceea73d27597364c9af683
             findings: []
             path: .github/workflows/ci.yml
             valid: true
@@ -1793,7 +1796,7 @@ scenarios:
                 hash_algo: sha1
                 nwo: actions/checkout
                 ref: v4
-                sha: de0fac2e4500dabe0009e67214ff5f5447ce83dd
+                sha: 11bd71901bbe5b1630ceea73d27597364c9af683
             findings:
               - category: onboarding-required
                 confidence: high
@@ -1819,7 +1822,8 @@ scenarios:
     expect:
       exit: 2
       output_contains:
-        - "unreadable"
+        - ".github/workflows/actions.lock:"
+        - "restore it from version control"
 
   - name: dbot_multi_workflow
     category: dependabot
@@ -1871,7 +1875,7 @@ scenarios:
                 hash_algo: sha1
                 nwo: actions/checkout
                 ref: v4
-                sha: de0fac2e4500dabe0009e67214ff5f5447ce83dd
+                sha: 11bd71901bbe5b1630ceea73d27597364c9af683
             findings: []
             path: .github/workflows/ci.yml
             valid: true
@@ -1918,9 +1922,9 @@ scenarios:
         findings: []
         lockfile_version: v0.0.3
         valid: true
-  - name: dbot_transient_403_drops_pin
+  - name: dbot_inconclusive_ref_blocks
     category: dependabot
-    description: "SSO 403 on a previously-pinned action — pin retained, inconclusive parity warning, clean exit"
+    description: "Real-binary JSON/exit contract for an inconclusive recorded-ref check: fail closed and retain the lockfile; Go tests cover history-check logic"
     needs_stub: true
     tags: [stub]
     flags: ["--no-onboard", "--no-narrow", "--no-interactive", "--json=valid,findings"]
@@ -1931,22 +1935,24 @@ scenarios:
           actions: ["actions/checkout@v4"]
       lockfile_template: pinned_checkout
     expect:
-      exit: 0
+      exit: 1
       lockfile_deps_cover_direct: true
       stdout_is_json: true
       jq:
         - expr: '.valid'
-          equals: "true"
+          equals: "false"
         - expr: '.findings | length'
           equals: "1"
         - expr: '.findings[0].category'
           equals: 'reachability-unknown'
+        - expr: '.findings[0].severity'
+          equals: 'error'
 
       lockfile_contains:
         - "version: 'v0.0.2'"
         - "'actions/checkout@v4':"
         - "ref: 'v4'"
-        - "commit: 'sha1-de0fac2e4500dabe0009e67214ff5f5447ce83dd'"
+        - "commit: 'sha1-11bd71901bbe5b1630ceea73d27597364c9af683'"
 
   - name: dbot_renamed_repo_warns
     category: dependabot
@@ -2027,7 +2033,7 @@ scenarios:
           - category: unreachable-pin
             confidence: high
             dependency: actions/checkout@v4
-            detail: "locked commit de0fac2e4500 is not in actions/checkout's history: it was force-pushed away, or the lockfile was edited; v4 currently points at bbbbbbbbbbbb"
+            detail: "locked commit 11bd71901bbe is not in actions/checkout's history: it was force-pushed away, or the lockfile was edited; v4 currently points at bbbbbbbbbbbb"
             doc_url: "https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions"
             remediation: "verify it, then run `gh actions-lock --accept-moved`"
             severity: error
@@ -2076,7 +2082,7 @@ scenarios:
         - "'actions/checkout@main':"
         - "ref: 'main'"
         - "commit: 'sha1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"
-      lockfile_comment_excludes: "de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+      lockfile_comment_excludes: "11bd71901bbe5b1630ceea73d27597364c9af683"
 
   - name: onboard_roundtrip_v003
     category: onboarding

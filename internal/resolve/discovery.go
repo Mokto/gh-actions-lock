@@ -12,6 +12,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/pinpool"
+	"github.com/github/gh-actions-lock/internal/uses"
 )
 
 // CompositeLocalPathError is returned when a remote composite action uses a
@@ -51,6 +52,18 @@ func (e *InvalidSelfRepositoryRefError) Error() string {
 func IsInvalidSelfRepositoryRef(err error) bool {
 	var target *InvalidSelfRepositoryRefError
 	return errors.As(err, &target)
+}
+
+// MalformedNestedRefError is returned when a fetched composite's `uses:`
+// names a remote action the parser can't accept. It is never skipped: the
+// composite's dependencies would be locked without it.
+type MalformedNestedRefError struct {
+	Parent string
+	Ref    string
+}
+
+func (e *MalformedNestedRefError) Error() string {
+	return fmt.Sprintf("composite action %s: %s", e.Parent, uses.Classify(e.Ref, uses.Step).Err())
 }
 
 // selfRepositoryPrefix marks a `$/…` self repository action inside a composite's
@@ -244,11 +257,14 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 						fetchRef: deps[i].SHA,
 					}
 				} else {
-					actionRef := parserlock.ParseActionRef(use)
-					if actionRef == nil {
+					c := uses.Classify(use, uses.Step)
+					if c.Kind == uses.Invalid {
+						resolveErr = errors.Join(resolveErr, &MalformedNestedRefError{Parent: parentKey, Ref: use})
+					}
+					if c.Kind != uses.Action {
 						continue
 					}
-					request = resolutionRequest{ref: *actionRef}
+					request = resolutionRequest{ref: c.Action}
 				}
 				actionRef := request.ref
 				if actionRef.Owner == "" {

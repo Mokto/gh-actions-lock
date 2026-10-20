@@ -52,6 +52,26 @@ type Finding struct {
 	// separately and skips the release and doc links; the JSON category is
 	// unchanged.
 	RefMissing bool
+	// RefGone marks an unreachable-pin finding whose checked ref is not a
+	// tag or branch, including a full-SHA key's recorded ref, which
+	// RefMissing leaves unset. It only picks the terminal title.
+	RefGone bool
+	// RefRefused marks an unreachable-pin finding whose ref name the Actions
+	// backend refuses by policy, so it was never looked up. It only picks
+	// the terminal title.
+	RefRefused bool
+	// TagMoved marks a ref-moved warning from parity: an exact-version tag
+	// moved ahead of its locked commit. Unlike a sticky mutable ref, the
+	// terminal shows it; the JSON category is unchanged.
+	TagMoved bool
+	// RecordedRef is the lock entry ref a parity finding on a recorded pin
+	// checked; empty for a ref this run resolved. FreshRef marks the
+	// latter, which the lockfile never recorded.
+	RecordedRef string
+	FreshRef    bool
+	// TermDetail, when set, replaces Detail on the terminal: a short form
+	// without request URLs. --json and the run log keep Detail.
+	TermDetail string
 	// TrackedAction marks a not-pinned bare SHA whose owner/repo the
 	// workflow already locks at another ref. It is a ref change on a
 	// tracked action, not onboarding, so --no-onboard lets it through to
@@ -129,19 +149,23 @@ func (f *Finding) IsValid() bool {
 	return f.Severity != SeverityError
 }
 
-// IsWarning returns true for findings that should render as warnings (not errors).
+// IsWarning returns true for findings that should render as warnings (not
+// errors). An error-severity finding never does: it blocks the run.
 func (f *Finding) IsWarning() bool {
+	if f.Severity == SeverityError {
+		return false
+	}
 	switch {
 	case f.Category == ShaAsRef:
 		return true
 	case f.Category == RefMoved:
 		return true
 	case f.Category == LocalAction, f.Category == RepoRenamed:
-		return f.Severity != SeverityError
+		return true
 	case f.Category.IsInconclusive():
 		return true
 	case f.Category == NotPinned && f.ActionRef == nil:
-		return f.Severity != SeverityError
+		return true
 	default:
 		return false
 	}

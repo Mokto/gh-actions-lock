@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -134,7 +135,18 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	// the log can never call a failed run valid.
 	rl := &runLog{}
 	defer func() {
-		if path := rl.save(runErr); path != "" && runErr != nil && opts.jsonFields == "" {
+		path := rl.save(runErr)
+		if runErr == nil || opts.jsonFields != "" {
+			return
+		}
+		// A tool failure prints here, before the log path, rather than
+		// after it in execute.
+		if !errors.Is(runErr, errSilent) && !errors.Is(runErr, context.Canceled) {
+			console.StopProgress()
+			console.TermError("%s", runErr)
+			runErr = printedError{runErr}
+		}
+		if path != "" {
 			console.TermBlank()
 			console.TermDetail("Run log: %s", path)
 		}
@@ -175,10 +187,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	// this before newRun overwrites opts.workflowPaths with the discovered
 	// set.
 	fullScan := len(opts.workflowPaths) == 0
-	// check fix mode can rebuild a deleted lockfile, so interactive sessions
-	// may delete-and-recreate an unreadable one. --no-fix is read-only and
-	// must not delete; it fails instead.
-	recoverLock := newLockRecovery(noInteractiveFlag(cmd), console, confirmFactoryHook, !opts.noFix)
+	recoverLock := newLockRecovery()
 	paths, r, store, err := newRun(opts.workflowPaths, opts.hostname, pool, newResolver, recoverLock)
 	if err != nil {
 		return err
@@ -296,8 +305,11 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		Store:         store,
 		Pool:          pool,
 		Relock:        relock,
-		Verify:        opts.verify,
-		Profile:       prof,
+		// Accepting a moved pin relies on planning to re-record it, which a
+		// read-only run never does.
+		AcceptMoved: opts.acceptMoved && !opts.noFix,
+		Verify:      opts.verify,
+		Profile:     prof,
 	}
 	// Defer spinner start until actual network work begins. The fast path
 	// (everything trusted from the lockfile) returns before resolve fires,

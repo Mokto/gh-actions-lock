@@ -4,9 +4,11 @@ package lockfile
 
 import (
 	"fmt"
+	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/ghapi"
 )
 
 // depToPin converts a dep.Dependency into a parserlock.Pin without any
@@ -30,6 +32,35 @@ func depToPin(d dep.Dependency) (parserlock.Pin, error) {
 		Repo:  repo,
 		Ref:   d.Ref,
 	}, nil
+}
+
+// ValidEntryRef reports whether ref is a lock entry ref the Actions backend
+// resolver accepts for pin: a short tag or branch name it accepts (never a
+// SHA, a refs/ name, revision syntax like main~1, or a `git describe` name),
+// and the key's own ref unless the key is a full SHA. The
+// resolver looks it up as refs/tags/<ref>, then refs/heads/<ref>, and
+// requires the locked commit in its history.
+func ValidEntryRef(pin parserlock.Pin, ref string) bool {
+	if !ghapi.RecordableRefName(ref) {
+		return false
+	}
+	return parserlock.IsFullSha(pin.Ref) || ref == pin.Ref
+}
+
+// entryRefError says what is wrong with an entry's recorded ref. It reads
+// as a predicate of "entry for <pin>".
+func entryRefError(pin parserlock.Pin, ref string) error {
+	switch {
+	case ref == "":
+		return fmt.Errorf("records no ref")
+	case isSHARef(ref):
+		return fmt.Errorf("records ref %q, a commit SHA rather than the tag or branch it was taken from", ref)
+	case strings.HasPrefix(ref, "refs/"):
+		return fmt.Errorf("records ref %q, which isn't a short tag or branch name", ref)
+	case !ghapi.AcceptedRefName(ref):
+		return fmt.Errorf("records ref %q, which isn't a tag or branch name the Actions backend accepts", ref)
+	}
+	return fmt.Errorf("records ref %q, which doesn't match its key's ref %q", ref, pin.Ref)
 }
 
 // pinToDep converts a parser Pin back into the internal dep.Dependency type.

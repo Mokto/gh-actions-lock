@@ -101,6 +101,17 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 				})
 				blockingResolverError = true
 			}
+			for _, malformed := range malformedNestedRefs(resolveErr) {
+				wr.Findings = append(wr.Findings, checks.Finding{
+					WorkflowPath: pw.Path,
+					Category:     checks.NotPinned,
+					Severity:     checks.SeverityError,
+					Confidence:   checks.ConfidenceHigh,
+					Detail:       malformed.Error(),
+					Remediation:  fmt.Sprintf("fix the reference in %s, or stop using that version", malformed.Parent),
+				})
+				blockingResolverError = true
+			}
 			for _, missing := range missingRefs(resolveErr) {
 				nwo := missing.Owner + "/" + missing.Repo
 				wr.Findings = append(wr.Findings, checks.Finding{
@@ -198,7 +209,7 @@ func selfRepositoryFinding(pw checks.ParsedWorkflow) checks.Finding {
 }
 
 // precheckWorkflow handles terminal preconditions (load error, local-path
-// actions, non-hosted runner, no refs, unreadable deps). It returns true when
+// actions, non-hosted runner, no refs, invalid deps). It returns true when
 // one fired; otherwise the report is seeded with ActionRefs/ParseWarnings.
 func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.WorkflowReport, bool) {
 	wr := checks.WorkflowReport{Path: pw.Path}
@@ -406,4 +417,27 @@ func missingRefRemediation(ref, nwo string) string {
 
 func isFullSHA(ref string) bool {
 	return (len(ref) == 40 || len(ref) == 64) && isHex(ref)
+}
+
+// malformedNestedRefs lists every malformed composite reference in err.
+func malformedNestedRefs(err error) []*resolve.MalformedNestedRefError {
+	var out []*resolve.MalformedNestedRefError
+	var walk func(error)
+	walk = func(err error) {
+		if m, ok := err.(*resolve.MalformedNestedRefError); ok {
+			out = append(out, m)
+			return
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, e := range joined.Unwrap() {
+				walk(e)
+			}
+			return
+		}
+		if e := errors.Unwrap(err); e != nil {
+			walk(e)
+		}
+	}
+	walk(err)
+	return out
 }

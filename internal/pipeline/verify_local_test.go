@@ -257,7 +257,7 @@ func TestVerifyLocalCoverage_ValidFollowsSeverity(t *testing.T) {
 	lock := `version: 'v0.0.2'
 dependencies:
   'actions/checkout@` + sha + `':
-    ref: '` + sha + `'
+    ref: 'main'
     commit: 'sha1-` + sha + `'
     owner_id: 1
     repo_id: 1

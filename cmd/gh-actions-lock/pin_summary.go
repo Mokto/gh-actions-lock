@@ -106,6 +106,17 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	investigated := record.Investigated()
 	narrowed := record.Narrowed()
 
+	// Housekeeping goes before the summary it would otherwise trail.
+	if len(report.Workflows) > 0 {
+		if n := len(prunedWorkflows); n > 0 {
+			console.TermDetail("Pruned %d deleted %s from the lockfile", n, ui.Pluralize(n, "workflow", "workflows"))
+		}
+		// The on-disk schema differs from the binary's (e.g. v0.0.1 → v0.0.2).
+		if originalVersion != "" && originalVersion != parserlock.Version {
+			console.TermDetail("Upgraded lockfile schema %s → %s", originalVersion, parserlock.Version)
+		}
+	}
+
 	for _, wp := range record.Workflows {
 		for _, oldUse := range slices.Sorted(maps.Keys(wp.RequiredRewrites)) {
 			where := strings.Join(wp.RewrittenIn[oldUse], ", ")
@@ -128,7 +139,8 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 		renderNarrowedEntries(console, narrowed)
 	}
 	if acceptMoved {
-		renderAcceptedOverrides(console, report, pinned)
+		// A ref-only repair keeps the key and commit, so it is Verified.
+		renderAcceptedOverrides(console, report, append(slices.Clone(pinned), record.Verified()...))
 	}
 
 	renderFullScanWarnings(console, pinned)
@@ -152,16 +164,6 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	if total == 0 {
 		console.TermNeutral("No workflows to check")
 		return nil
-	}
-
-	if n := len(prunedWorkflows); n > 0 {
-		console.TermDetail("Pruned %d deleted %s from the lockfile", n, ui.Pluralize(n, "workflow", "workflows"))
-	}
-
-	// Surface lockfile schema upgrade when the on-disk version differs from
-	// the current binary's version (e.g. v0.0.1 → v0.0.2).
-	if originalVersion != "" && originalVersion != parserlock.Version {
-		console.TermDetail("Upgraded lockfile schema %s → %s", originalVersion, parserlock.Version)
 	}
 
 	onboardingRefused := len(refusedLabels)
@@ -244,9 +246,32 @@ func renderAcceptedOverrides(console *ui.UI, report *checks.Report, pinned []pin
 					console.TermWarn("Re-pinned %s@%s: %s → %s (accepted)", e.NWO, e.Ref, parserlock.ShortSHA(d.SHA), parserlock.ShortSHA(e.SHA))
 					break
 				}
+				// Same commit, new recorded ref: a full-SHA pin whose
+				// recorded tag or branch stopped vouching for it. Only the
+				// entry for the finding's own key, kept or rewritten from it,
+				// is that pin; another pin of the commit is not.
+				if f.RecordedRef != "" && strings.EqualFold(e.NWO, d.NWO) && strings.EqualFold(e.SHA, d.SHA) &&
+					(e.Ref == d.Ref || e.AutoFixedRef == d.Ref) {
+					if ref := recordedEntryRef(e); ref != "" && ref != f.RecordedRef {
+						seen[d.Key()] = true
+						console.TermWarn("%s: recorded ref %s no longer contains %s; re-recorded as %s (--accept-moved)", e.NWO, f.RecordedRef, parserlock.ShortSHA(e.SHA), ref)
+						break
+					}
+				}
 			}
 		}
 	}
+}
+
+// recordedEntryRef is the ref the lockfile records for e: see State.Set.
+func recordedEntryRef(e pin.Entry) string {
+	if !parserlock.IsFullSha(e.Ref) {
+		return e.Ref
+	}
+	if e.Tag != "" {
+		return e.Tag
+	}
+	return e.OnBranch
 }
 
 // renderPinnedEntries prints the "Pinned N actions across M workflows" block,

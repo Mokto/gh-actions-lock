@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -55,6 +56,17 @@ func ParseAll(paths []string, store *lockfile.State) []checks.ParsedWorkflow {
 		}
 		scan := wf.ExtractActionRefs()
 		selfScan := workflowfile.ScanSelfRepositoryActions(path, scan.SelfRepositoryActionRefs)
+		// A reference that can't be parsed is never skipped: the workflow
+		// would lock without it.
+		if bad := mergeStrings(scan.MalformedRefs, selfScan.MalformedRefs); len(bad) > 0 {
+			errs := make([]error, len(bad))
+			for i, msg := range bad {
+				errs[i] = errors.New(msg)
+			}
+			pw.LoadErr = errors.Join(errs...)
+			out = append(out, pw)
+			continue
+		}
 
 		pw.Refs = mergeActionRefs(scan.Refs, selfScan.Refs)
 		// Refs inside `$/…` actions are rewritable too: their action file is

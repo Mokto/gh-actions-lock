@@ -49,13 +49,42 @@ type State struct {
 	hostname        string
 }
 
-// ErrCorruptLockfile reports that a lockfile exists on disk but cannot be
-// parsed (malformed YAML, unknown fields, or a dependency entry missing a
-// required key). It is distinct from a missing lockfile (legitimately empty)
-// and from a future-version lockfile (ErrFutureVersion). Callers decide
-// recovery policy: prompt to delete and recreate, or fail loudly. Loading
-// must never silently discard an unreadable lockfile and overwrite it.
-var ErrCorruptLockfile = errors.New("lockfile is unreadable")
+// ErrCorruptLockfile reports that a lockfile exists on disk but its contents
+// can't be used: malformed YAML, unknown fields, a dependency entry missing a
+// required key, or an entry ref the Actions backend wouldn't accept. It is
+// distinct from a missing lockfile (legitimately empty) and from a
+// future-version lockfile (ErrFutureVersion). Loading must never silently
+// discard such a lockfile and overwrite it. Match it with errors.Is; the
+// error text names the actual problem instead.
+var ErrCorruptLockfile = errors.New("invalid lockfile")
+
+// contentError is an ErrCorruptLockfile whose message names the problem.
+type contentError struct{ msg string }
+
+func (e *contentError) Error() string { return e.msg }
+
+func (e *contentError) Is(target error) bool { return target == ErrCorruptLockfile }
+
+// entryLine returns the 1-based line of the dependency entry for pin, or 0
+// if it can't be found. It matches whole quoted mapping keys ('key':), so a
+// workflow list item doesn't match, and compares canonical pin keys: owner
+// and repo fold, refs are case-sensitive.
+func entryLine(contents []byte, pin parserlock.Pin) int {
+	want := pin.String()
+	for n, line := range bytes.Split(contents, []byte("\n")) {
+		key, ok := strings.CutPrefix(string(bytes.TrimSpace(line)), "'")
+		if !ok {
+			continue
+		}
+		if key, ok = strings.CutSuffix(key, "':"); !ok {
+			continue
+		}
+		if p, ok := parserlock.ParsePin(key); ok && p.String() == want {
+			return n + 1
+		}
+	}
+	return 0
+}
 
 // LoadState reads the lockfile at repoRoot, returning an empty in-memory file
 // when none exists on disk. A lockfile that exists but cannot be parsed is
@@ -91,7 +120,7 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 			// dependency entry missing a required key) is surfaced, not
 			// swallowed. Treating it as empty here would silently discard
 			// the user's pins and overwrite them on the next save.
-			return nil, fmt.Errorf("%w: %s: %v", ErrCorruptLockfile, parserlock.Path, err)
+			return nil, &contentError{fmt.Sprintf("%s: %v", parserlock.Path, err)}
 		}
 	case errors.Is(err, os.ErrNotExist):
 		file = parserlock.File{Version: parserlock.Version}
@@ -125,6 +154,13 @@ func LoadStateAt(lockfilePath string, meta MetadataResolver) (*State, error) {
 		if !ok {
 			normalizedDependencies[pinKey] = action
 			continue
+		}
+		if !ValidEntryRef(pin, action.Ref) {
+			where := parserlock.Path
+			if line := entryLine(contents, pin); line > 0 {
+				where = fmt.Sprintf("%s: line %d", where, line)
+			}
+			return nil, &contentError{fmt.Sprintf("%s: entry for %s %s", where, pinKey, entryRefError(pin, action.Ref))}
 		}
 		canon := pin.String()
 		normalizedDependencies[canon] = action
@@ -349,31 +385,47 @@ type LockedPin struct {
 
 // Closure returns the workflow's recorded pins, direct and transitive, by
 // walking the `uses:` list of each direct pin that live accepts. Stale roots
-// are skipped so their children are not reported. Each pin appears once.
+// are skipped so their children are not reported. Each pin appears once; a
+// pin the workflow uses directly is always reported as direct (no Parent),
+// even when a composite also uses it.
 func (s *State) Closure(workflowKey string, live func(parserlock.Pin) bool) []LockedPin {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []LockedPin
 	seen := map[string]bool{}
-	var walk func(key, parent string)
-	walk = func(key, parent string) {
+	add := func(key, parent string) (parserlock.Action, bool) {
 		if seen[key] {
-			return
+			return parserlock.Action{}, false
 		}
 		seen[key] = true
 		pin, ok := parserlock.ParsePin(key)
 		action, found := s.file.Dependencies[key]
 		if !ok || !found {
-			return
+			return parserlock.Action{}, false
 		}
 		out = append(out, LockedPin{Pin: pin, Action: action, Parent: parent})
-		for _, child := range action.Uses {
-			walk(child, key)
+		return action, true
+	}
+	var walk func(key, parent string)
+	walk = func(key, parent string) {
+		if action, ok := add(key, parent); ok {
+			for _, child := range action.Uses {
+				walk(child, key)
+			}
 		}
 	}
+	// Claim every root first, so traversal order can't make one transitive.
+	var roots []string
 	for _, key := range s.file.Workflows[workflowKey] {
 		if pin, ok := parserlock.ParsePin(key); ok && live(pin) {
-			walk(key, "")
+			if _, ok := add(key, ""); ok {
+				roots = append(roots, key)
+			}
+		}
+	}
+	for _, key := range roots {
+		for _, child := range s.file.Dependencies[key].Uses {
+			walk(child, key)
 		}
 	}
 	return out
@@ -600,6 +652,9 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 				uses = append(uses, c)
 			}
 			sort.Strings(uses)
+		}
+		if !ValidEntryRef(pin, ref) {
+			return fmt.Errorf("entry for %s %w", pinKey, entryRefError(pin, ref))
 		}
 		s.file.Dependencies[pinKey] = parserlock.Action{
 			Hostname: hostname,
