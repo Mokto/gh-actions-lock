@@ -241,23 +241,27 @@ func TestResolveLockedRecursiveDoesNotFoldRefCasing(t *testing.T) {
 
 func TestResolveAllRecursiveCanonicalizesParentCasing(t *testing.T) {
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
-		ghapi.ForActionRef("vendor", "child", "", "v1"): {
-			dep:       dep.Dependency{NWO: "vendor/child", Ref: "v1", SHA: sha},
-			actionYML: "runs:\n  using: node20\n",
-		},
-		ghapi.ForActionRef("o", "parent", "", "v1"): {
-			dep:       dep.Dependency{NWO: "o/parent", Ref: "v1", SHA: sha},
-			actionYML: "runs:\n  using: composite\n  steps:\n    - uses: Vendor/Child@v1\n",
-		},
-	})
-	_, parents, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
-		{Owner: "vendor", Repo: "child", Ref: "v1"},
-		{Owner: "o", Repo: "parent", Ref: "v1"},
-	})
-	require.NoError(t, err)
-	assert.Equal(t, dep.ParentMap{"vendor/child@v1": {"o/parent@v1"}}, parents,
-		"edges are keyed by the resolved dependency, so the writer finds them")
+	for _, ref := range []string{"v1", "Release@2024"} {
+		t.Run(ref, func(t *testing.T) {
+			r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
+				ghapi.ForActionRef("vendor", "child", "", ref): {
+					dep:       dep.Dependency{NWO: "vendor/child", Ref: ref, SHA: sha},
+					actionYML: "runs:\n  using: node20\n",
+				},
+				ghapi.ForActionRef("o", "parent", "", "v1"): {
+					dep:       dep.Dependency{NWO: "o/parent", Ref: "v1", SHA: sha},
+					actionYML: "runs:\n  using: composite\n  steps:\n    - uses: Vendor/Child@" + ref + "\n",
+				},
+			})
+			_, parents, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
+				{Owner: "vendor", Repo: "child", Ref: ref},
+				{Owner: "o", Repo: "parent", Ref: "v1"},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, dep.ParentMap{"vendor/child@" + ref: {"o/parent@v1"}}, parents,
+				"edges are keyed by the resolved dependency, so the writer finds them; refs keep their case")
+		})
+	}
 }
 
 func TestResolveAllRecursiveRejectsConflictingCommits(t *testing.T) {

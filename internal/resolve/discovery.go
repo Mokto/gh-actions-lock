@@ -380,7 +380,8 @@ func canonicalParents(deps []dep.Dependency, parents dep.ParentMap) dep.ParentMa
 		canon[strings.ToLower(d.NWO)+"@"+d.Ref] = d.Key()
 	}
 	key := func(k string) string {
-		if i := strings.LastIndex(k, "@"); i >= 0 {
+		// Refs can contain "@"; owner/repo can't.
+		if i := strings.Index(k, "@"); i >= 0 {
 			if c, ok := canon[strings.ToLower(k[:i])+k[i:]]; ok {
 				return c
 			}
