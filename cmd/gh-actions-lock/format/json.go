@@ -135,7 +135,7 @@ func findingFromReport(f checks.Finding) Finding {
 func WriteJSON(w io.Writer, report *checks.Report, record *pin.Record, valid bool, fieldsCSV, cliVersion, lockfileVersion, homeHost string) error {
 	fields := strings.Split(fieldsCSV, ",")
 	outputHostname := func(host string) string {
-		if ghapi.IsProxima(homeHost) && host == "github.com" {
+		if ghapi.IsTenantHost(homeHost) && host == "github.com" {
 			return host
 		}
 		return ""

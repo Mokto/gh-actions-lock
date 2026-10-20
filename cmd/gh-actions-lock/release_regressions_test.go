@@ -108,7 +108,7 @@ func TestRemoteDockerWarningsStayTerminalOnly(t *testing.T) {
 					pins = []string{"actions/checkout@v4.2.2=sha1-" + parityTestSHA}
 				}
 				path := writeTempWorkflow(t, "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4.2.2\n", pins...)
-				rt := proximaTransport(func(req *http.Request) (*http.Response, error) {
+				rt := tenantHostTransport(func(req *http.Request) (*http.Response, error) {
 					switch {
 					case httpmock.GraphQL(`commit: object\(oid`)(req):
 						return parityOK(req)

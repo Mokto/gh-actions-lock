@@ -17,7 +17,7 @@ import (
 
 type hostMetadata struct{}
 
-func TestDotcomSaveOmitsHostname(t *testing.T) {
+func TestGitHubComSaveOmitsHostname(t *testing.T) {
 	for _, version := range []string{"", "v0.0.2", "v0.0.3"} {
 		t.Run("input version="+version, func(t *testing.T) {
 			dir := t.TempDir()

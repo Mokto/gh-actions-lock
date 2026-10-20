@@ -180,7 +180,7 @@ func (s *State) SetHostname(hostname string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.hostname = hostname
-	if hostname == "github.com" || ghapi.IsProxima(hostname) {
+	if hostname == "github.com" || ghapi.IsTenantHost(hostname) {
 		s.idCache = map[string][2]int64{}
 		for key, action := range s.file.Dependencies {
 			if pin, ok := parserlock.ParsePin(key); ok && action.OwnerID != 0 && action.RepoID != 0 {
@@ -229,14 +229,14 @@ func (s *State) SetMetadataResolver(meta MetadataResolver) {
 }
 
 // VerifyHosts confirms that the pins reachable from workflowKeys can be looked
-// up on their recorded host before they are trusted on Proxima. Older
-// producers used omission for dotcom, not the home tenant. Only inconclusive
+// up on their recorded host before they are trusted on the tenant. Older
+// producers used omission for GitHub.com, not the home tenant. Only inconclusive
 // lookups fail here; a missing repository or a changed repo ID is left to the
 // parity pass, which reports repo-unavailable or repo-replaced.
 func (s *State) VerifyHosts(ctx context.Context, workflowKeys []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !ghapi.IsProxima(s.hostname) || s.originalVersion == "" {
+	if !ghapi.IsTenantHost(s.hostname) || s.originalVersion == "" {
 		return nil
 	}
 	seen := map[string]bool{}
@@ -845,7 +845,7 @@ func (s *State) lookupIDs(ctx context.Context, hostname, owner, repo string) ([2
 	return res.([2]int64), nil
 }
 
-func hostOrDotcom(hostname string) string {
+func hostOrGitHubCom(hostname string) string {
 	if hostname == "" {
 		return "github.com"
 	}
@@ -860,7 +860,7 @@ func (s *State) hostOrHome(hostname string) string {
 }
 
 func repoIDKey(hostname, owner, repo string) string {
-	return hostOrDotcom(hostname) + "/" + strings.ToLower(owner+"/"+repo)
+	return hostOrGitHubCom(hostname) + "/" + strings.ToLower(owner+"/"+repo)
 }
 
 // extractVersion reads the version field from raw lockfile YAML without

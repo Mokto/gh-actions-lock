@@ -42,7 +42,7 @@ func (e *SSORateLimitedError) Unwrap() error { return e.Err }
 // call for an owner, it probes the GitHub API with an unauthenticated
 // request to determine accessibility, then caches a definitive result.
 func (c *Client) SSOFallbackEligible(ctx context.Context, owner string) bool {
-	if IsProxima(c.Hostname) {
+	if IsTenantHost(c.Hostname) {
 		return false
 	}
 	key := c.anonBase() + "/" + owner
@@ -102,7 +102,7 @@ func (c *Client) ssoErr(owner string, err error) error {
 }
 
 func (c *Client) repoFallbackEligible(ctx context.Context, owner, repo string, err error) bool {
-	if IsProxima(c.Hostname) {
+	if IsTenantHost(c.Hostname) {
 		return false
 	}
 	code, _ := StatusCode(err)

@@ -2098,7 +2098,7 @@ scenarios:
 
   - name: onboard_roundtrip_v003
     category: onboarding
-    description: "Real-binary dotcom onboarding emits v0.0.3 without hostnames and a complete live transitive dependency graph"
+    description: "Real-binary GitHub.com onboarding emits v0.0.3 without hostnames and a complete live transitive dependency graph"
     needs_token: true
     tags: [real_repo]
     live_repo: nodeselector/actions-test-fixtures

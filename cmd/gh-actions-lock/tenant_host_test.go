@@ -15,16 +15,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type proximaTransport func(*http.Request) (*http.Response, error)
+type tenantHostTransport func(*http.Request) (*http.Response, error)
 
-func (f proximaTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+func (f tenantHostTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 const tenantSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const publicSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-func proximaFixture(t *testing.T, publicStatus int) http.RoundTripper {
+func tenantHostFixture(t *testing.T, publicStatus int) http.RoundTripper {
 	t.Helper()
-	return proximaTransport(func(req *http.Request) (*http.Response, error) {
+	return tenantHostTransport(func(req *http.Request) (*http.Response, error) {
 		tenant := req.URL.Host == "api.tenant.ghe.com"
 		if tenant {
 			assert.NotEmpty(t, req.Header.Get("Authorization"))
@@ -77,7 +77,7 @@ func proximaFixture(t *testing.T, publicStatus int) http.RoundTripper {
 	})
 }
 
-func TestProximaGenerationPreservesHosts(t *testing.T) {
+func TestTenantHostGenerationPreservesHosts(t *testing.T) {
 	path := writeTempWorkflow(t, `
 name: ci
 on: push
@@ -89,7 +89,7 @@ jobs:
       - uses: actions/public@v2
 `)
 	args := []string{"--hostname", "tenant.ghe.com", "--no-interactive", "--no-narrow", "--no-migrate-local-actions", "--json", path}
-	_, _, err := runCommandWithHTTP(t, proximaFixture(t, 200), args...)
+	_, _, err := runCommandWithHTTP(t, tenantHostFixture(t, 200), args...)
 	require.NoError(t, err)
 	raw := readTempLockfilePins(t)
 	file, err := parserlock.Parse([]byte(raw))
@@ -108,14 +108,14 @@ jobs:
 	assert.EqualValues(t, 22, public.OwnerID)
 	assert.EqualValues(t, 222, public.RepoID)
 
-	_, _, err = runCommandWithHTTP(t, proximaFixture(t, 200), args...)
+	_, _, err = runCommandWithHTTP(t, tenantHostFixture(t, 200), args...)
 	require.NoError(t, err)
 	assert.Equal(t, raw, readTempLockfilePins(t), "repeat generation must retain hosts and IDs")
 
-	base := proximaFixture(t, 200)
-	pinnedTransport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+	base := tenantHostFixture(t, 200)
+	pinnedTransport := tenantHostTransport(func(req *http.Request) (*http.Response, error) {
 		assert.False(t, req.URL.Host == "api.tenant.ghe.com" && req.URL.Path == "/repos/actions/public",
-			"recorded dotcom pins must bypass tenant namesakes")
+			"recorded GitHub.com pins must bypass tenant namesakes")
 		return base.RoundTrip(req)
 	})
 	_, _, err = runCommandWithHTTP(t, pinnedTransport,
@@ -127,12 +127,12 @@ jobs:
 	explicit := strings.Replace(raw, "'tenant/internal@v1':\n", "'tenant/internal@v1':\n        hostname: 'tenant.ghe.com'\n", 1)
 	require.NotEqual(t, raw, explicit)
 	require.NoError(t, os.WriteFile(parserlock.Path, []byte(explicit), 0o600))
-	_, _, err = runCommandWithHTTP(t, proximaFixture(t, 200), args...)
+	_, _, err = runCommandWithHTTP(t, tenantHostFixture(t, 200), args...)
 	require.NoError(t, err)
 	assert.Equal(t, raw, readTempLockfilePins(t))
 }
 
-func TestProximaOmittedPinsCannotMoveToDotcomOrTenantNamesakes(t *testing.T) {
+func TestTenantHostOmittedPinsCannotMoveToGitHubComOrTenantNamesakes(t *testing.T) {
 	for _, status := range []int{200, 401, 403, 404, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			path := writeTempWorkflow(t, `
@@ -148,8 +148,8 @@ jobs:
 			raw = strings.ReplaceAll(raw, "owner_id: 1", "owner_id: 22")
 			raw = strings.ReplaceAll(raw, "repo_id: 1", "repo_id: 222")
 			require.NoError(t, os.WriteFile(parserlock.Path, []byte(raw), 0o600))
-			transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
-				assert.Equal(t, "api.tenant.ghe.com", req.URL.Host, "omitted pins must not fall back to dotcom")
+			transport := tenantHostTransport(func(req *http.Request) (*http.Response, error) {
+				assert.Equal(t, "api.tenant.ghe.com", req.URL.Host, "omitted pins must not fall back to GitHub.com")
 				assert.NotEmpty(t, req.Header.Get("Authorization"))
 				if req.URL.Path == "/graphql" {
 					return parityRepoID(req, status, 333)
@@ -203,7 +203,7 @@ func parityRepoID(req *http.Request, status int, repoID int) (*http.Response, er
 	}}})(req)
 }
 
-func TestProximaIncompleteGenerationDoesNotWrite(t *testing.T) {
+func TestTenantHostIncompleteGenerationDoesNotWrite(t *testing.T) {
 	for _, status := range []int{404, 403, 429, 500} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			path := writeTempWorkflow(t, `
@@ -217,7 +217,7 @@ jobs:
 `)
 			before, err := os.ReadFile(path)
 			require.NoError(t, err)
-			stdout, _, err := runCommandWithHTTP(t, proximaFixture(t, status),
+			stdout, _, err := runCommandWithHTTP(t, tenantHostFixture(t, status),
 				"--hostname", "tenant.ghe.com", "--no-narrow", "--no-migrate-local-actions", "--json", path)
 			require.ErrorIs(t, err, errSilent)
 			var result struct {
@@ -234,7 +234,7 @@ jobs:
 	}
 }
 
-func TestProximaLegacyPinsRequireDotcomIdentity(t *testing.T) {
+func TestTenantHostLegacyPinsRequireGitHubComIdentity(t *testing.T) {
 	for _, matches := range []bool{true, false} {
 		t.Run(fmt.Sprintf("matching IDs=%v", matches), func(t *testing.T) {
 			path := writeTempWorkflow(t, `
@@ -252,7 +252,7 @@ jobs:
 				raw = strings.ReplaceAll(raw, "repo_id: 1", "repo_id: 222")
 			}
 			require.NoError(t, os.WriteFile(parserlock.Path, []byte(raw), 0o600))
-			stdout, _, err := runCommandWithHTTP(t, proximaFixture(t, 200),
+			stdout, _, err := runCommandWithHTTP(t, tenantHostFixture(t, 200),
 				"--hostname", "tenant.ghe.com", "--no-narrow", "--no-migrate-local-actions", "--json", path)
 			if matches {
 				require.NoError(t, err)
