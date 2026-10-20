@@ -32,3 +32,16 @@ func TestUsedRoot(t *testing.T) {
 		})
 	}
 }
+
+func TestRootUse_ExactKeyFirst(t *testing.T) {
+	const sha = "9ddf35b71a482be7d8922b28e8d00df16b77e315"
+	bySHA := parserlock.ActionRef{Owner: "old", Repo: "action", Ref: sha}
+	byTag := parserlock.ActionRef{Owner: "old", Repo: "action", Ref: "v1"}
+	use := RootUse([]parserlock.ActionRef{bySHA, byTag})
+	got, ok := use(parserlock.Pin{Owner: "old", Repo: "action", Ref: "v1"}, "sha1-"+sha)
+	assert.True(t, ok)
+	assert.Equal(t, byTag, got, "the use naming the key wins over one naming the commit")
+	got, ok = use(parserlock.Pin{Owner: "old", Repo: "action", Ref: "v2"}, "sha1-"+sha)
+	assert.True(t, ok)
+	assert.Equal(t, bySHA, got)
+}
