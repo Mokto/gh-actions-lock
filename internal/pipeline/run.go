@@ -143,6 +143,9 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			}
 		}
 	}
+	if !opts.Verify && opts.Store != nil {
+		refuseAmbiguousSpellings(parsed, opts.Store, report)
+	}
 	endDiag()
 
 	// Phase 4: Parity.

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -851,30 +852,47 @@ func TestRun_WorkflowSHASpellingReachesRecordedEntry(t *testing.T) {
 	}
 }
 
-// TestRun_AmbiguousSHASpellingRefusesWrite: when a workflow's SHA matches
-// several recorded spellings and none exactly, their refs and edges may
-// differ and no rule picks one, so nothing is written.
+// TestRun_AmbiguousSHASpellingRefusesWrite: when a full SHA the workflow
+// reaches is recorded under several spellings, their refs and edges may
+// differ and no rule picks one, so no write mode writes the workflow, even
+// when one spelling matches exactly: a blocking finding names them all.
 func TestRun_AmbiguousSHASpellingRefusesWrite(t *testing.T) {
 	const child = "abcdef0123456789abcdef0123456789abcdef01"
 	upper := strings.ToUpper(child)
-	path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/child@AbCdEf0123456789abcdef0123456789abcdef01\n")
-	shaSpellingLock(t, path, child, upper)
-	before := readTempLockfilePins(t)
-	transport := &graphTransport{childSHA: child, childOnMain: true}
+	for _, tt := range []struct {
+		name     string
+		spelling string
+		args     []string
+	}{
+		{name: "no exact spelling", spelling: "AbCdEf0123456789abcdef0123456789abcdef01"},
+		{name: "exact spelling", spelling: child},
+		{name: "accept-moved", spelling: child, args: []string{"--accept-moved"}},
+		// A partial scan can't rewrite the workflows that keep the other
+		// spelling, so --relock can't collapse it.
+		{name: "relock of some workflows", spelling: child, args: []string{"--relock"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempWorkflow(t, graphWorkflow+"      - uses: acme/child@"+tt.spelling+"\n")
+			shaSpellingLock(t, path, child, upper)
+			before := readTempLockfilePins(t)
+			wfBefore := snapshotWorkflows(t)
 
-	_, stderr, err := runCommandWithHTTP(t, transport, "--no-narrow", path)
-	require.Error(t, err)
-	assert.Contains(t, stderr, "acme/child@"+child)
-	assert.Contains(t, stderr, "acme/child@"+upper)
-	assert.Equal(t, before, readTempLockfilePins(t))
-
-	// --relock rebuilds from the workflow's own spelling, so nothing is
-	// ambiguous.
-	_, stderr, err = runCommandWithHTTP(t, transport, "--no-narrow", "--relock", path)
-	require.NoError(t, err, stderr)
-	file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
-	require.NoError(t, err)
-	assert.Equal(t, []string{"acme/child@AbCdEf0123456789abcdef0123456789abcdef01", "acme/parent@v1.0.0"}, file.Workflows[".github/workflows/"+filepath.Base(path)])
+			p, err := runParity(t, &graphTransport{childSHA: child, childOnMain: true}, append(tt.args, "--no-narrow", path)...)
+			require.ErrorIs(t, err, errSilent)
+			var ambiguous []format.Finding
+			for _, f := range p.Findings {
+				if f.Severity == "error" && strings.Contains(f.Detail, "several spellings") {
+					ambiguous = append(ambiguous, f)
+				}
+			}
+			require.Len(t, ambiguous, 1, "%+v", p.Findings)
+			assert.Contains(t, ambiguous[0].Detail, "acme/child@"+child)
+			assert.Contains(t, ambiguous[0].Detail, "acme/child@"+upper)
+			assert.NotContains(t, ambiguous[0].Remediation, "--relock")
+			assert.Equal(t, before, readTempLockfilePins(t))
+			assert.Equal(t, wfBefore, snapshotWorkflows(t))
+		})
+	}
 }
 
 // TestRun_VerifyChecksEveryAmbiguousSHASpelling: when a workflow's SHA
