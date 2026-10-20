@@ -209,7 +209,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				}
 				continue
 			}
-			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
+			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
 			if verdict != verdictKeep {
 				wr.Deferred = append(wr.Deferred, checks.Deferred{
 					Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,

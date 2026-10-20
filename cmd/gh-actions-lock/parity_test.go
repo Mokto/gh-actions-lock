@@ -1943,6 +1943,60 @@ jobs:
 	assert.Contains(t, after, "            - '"+cache+"'\n")
 }
 
+// TestSHARecordedRef_InconclusiveIdentityBlocks: an own-SHA entry's parity
+// check confirms only its repository and commit, so if that check can't
+// finish the run fails closed, as for a pin it resolved itself, even when
+// a tag for the commit is found.
+func TestSHARecordedRef_InconclusiveIdentityBlocks(t *testing.T) {
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	reg := &httpmock.Registry{}
+	// Parity answers for checkout but leaves the own-SHA cache entry out.
+	for range 3 {
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+			var body struct {
+				Variables map[string]any `json:"variables"`
+			}
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			data := map[string]any{}
+			for i := 0; ; i++ {
+				owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+				if !ok {
+					break
+				}
+				name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+				if name == "cache" {
+					continue
+				}
+				oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+				data[fmt.Sprintf("a%d", i)] = map[string]any{
+					"nameWithOwner": owner + "/" + name, "databaseId": 1,
+					"commit": oid, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+				}
+			}
+			return httpmock.JSONResponse(map[string]any{"data": data})(req)
+		})
+	}
+	for range 4 {
+		reg.Register(httpmock.REST("GET", `repos/actions/cache$`),
+			httpmock.JSONResponse(map[string]any{"full_name": "actions/cache", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/git/ref/heads/main`),
+			httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v4.2.0", parityTestSHA)))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/releases`), httpmock.JSONResponse([]map[string]any{}))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+		reg.Register(httpmock.REST("GET", `repos/actions/cache/compare/`),
+			httpmock.JSONResponse(map[string]any{"status": "behind", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+	}
+	httpmock.NoTagsNamed(reg, "actions", "cache")
+	isolateRunLogs(t)
+	wf, lock := writeOwnSHAChildLock(t, true)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", wf)
+	require.ErrorIs(t, err, errSilent, stderr)
+	assert.Contains(t, stderr, "could not verify locked actions/cache")
+	assert.Equal(t, lock, readTempLockfilePins(t))
+}
+
 // TestSHARecordedRef_ScopedFixWarns: a fix run given workflow paths warns
 // about an own-SHA entry of a workflow it didn't select, names the entry and
 // the full-scan repair, never claims every workflow is valid, still writes
