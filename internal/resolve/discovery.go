@@ -243,9 +243,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 		for i := range deps {
 			yml := actionYMLs[i]
 			if yml == "" {
-				callee := strings.HasPrefix(deps[i].Path, ".github/workflows/") &&
-					(strings.HasSuffix(deps[i].Path, ".yml") || strings.HasSuffix(deps[i].Path, ".yaml"))
-				if locked != nil && !callee {
+				if locked != nil && !isWorkflowCallee(deps[i].Path) {
 					resolveErr = errors.Join(resolveErr, fmt.Errorf("action manifest is missing at locked commit for %s", deps[i].Key()))
 				}
 				continue
@@ -465,7 +463,9 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 			var errs []error
 			for j, idx := range b.idxs {
 				ref := refs[idx].ref
-				if j < len(res) && res[j].Err == nil {
+				if j < len(res) && res[j].Err == nil && res[j].ActionYML == "" && !isWorkflowCallee(res[j].Path) {
+					errs = append(errs, fmt.Errorf("%s@%s: action manifest is missing at %s", ref.NWO(), ref.Ref, res[j].CommitOID))
+				} else if j < len(res) && res[j].Err == nil {
 					d := dep.Dependency{
 						Hostname: res[j].Hostname,
 						NWO:      res[j].Owner + "/" + res[j].Repo,
@@ -504,6 +504,13 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 
 	deps, ymls := flatten()
 	return deps, ymls, poolErr
+}
+
+// isWorkflowCallee reports whether path names a reusable workflow, which has
+// no action manifest.
+func isWorkflowCallee(path string) bool {
+	return strings.HasPrefix(path, ".github/workflows/") &&
+		(strings.HasSuffix(path, ".yml") || strings.HasSuffix(path, ".yaml"))
 }
 
 // selectLatestTag returns the highest semver tag from a list of tag names.

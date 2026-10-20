@@ -132,7 +132,10 @@ func TestResolveRecursiveRejectsMalformedManifest(t *testing.T) {
 	}
 }
 
-func TestResolveLockedRecursiveMissingManifest(t *testing.T) {
+// TestResolveRecursiveMissingManifest: live resolution and --verify agree
+// that a commit without an action manifest can't establish coverage, so a
+// refresh can't write a graph that --verify then rejects.
+func TestResolveRecursiveMissingManifest(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		path    string
@@ -141,27 +144,46 @@ func TestResolveLockedRecursiveMissingManifest(t *testing.T) {
 		{name: "missing action cannot establish coverage", path: "action", wantErr: true},
 		{name: "callee workflow owns its own lockfile", path: ".github/workflows/callee.yml"},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			reg := &httpmock.Registry{}
-			defer reg.Verify(t)
-			reg.Register(httpmock.GraphQL(`file: file\(path`), httpmock.JSONResponse(map[string]any{
-				"data": map[string]any{"a0": map[string]any{
-					"nameWithOwner": "o/root", "object": map[string]any{"oid": sha},
-				}},
-			}))
-			r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
-			require.NoError(t, err)
-			_, parents, err := r.ResolveLockedRecursive(context.Background(),
-				[]parserlock.ActionRef{{Owner: "o", Repo: "root", Path: tt.path, Ref: "v1"}},
-				[]dep.Dependency{{NWO: "o/root", Ref: "v1", SHA: sha}})
-			if tt.wantErr {
-				require.ErrorContains(t, err, "manifest is missing")
-			} else {
+		for mode, locked := range map[string]bool{"live refs": false, "locked commits": true} {
+			t.Run(tt.name+"/"+mode, func(t *testing.T) {
+				const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+				reg := &httpmock.Registry{}
+				defer reg.Verify(t)
+				fetches := 1
+				if tt.wantErr && !locked {
+					fetches = 2
+				}
+				for range fetches {
+					reg.Register(httpmock.GraphQL(`file: file\(path`), httpmock.JSONResponse(map[string]any{
+						"data": map[string]any{"a0": map[string]any{
+							"nameWithOwner": "o/root", "object": map[string]any{"oid": sha},
+						}},
+					}))
+				}
+				r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
 				require.NoError(t, err)
-			}
-			assert.Empty(t, parents)
-		})
+				refs := []parserlock.ActionRef{{Owner: "o", Repo: "root", Path: tt.path, Ref: "v1"}}
+				var deps []dep.Dependency
+				var parents dep.ParentMap
+				if locked {
+					deps, parents, err = r.ResolveLockedRecursive(context.Background(), refs,
+						[]dep.Dependency{{NWO: "o/root", Ref: "v1", SHA: sha}})
+				} else {
+					deps, parents, err = r.ResolveAllRecursive(context.Background(), refs)
+				}
+				assert.Empty(t, parents)
+				if !tt.wantErr {
+					require.NoError(t, err)
+					return
+				}
+				require.ErrorContains(t, err, "manifest is missing")
+				if !locked {
+					assert.Empty(t, deps, "a live commit without a manifest is not resolved")
+					_, _, err = r.ResolveAllRecursive(context.Background(), refs)
+					require.ErrorContains(t, err, "manifest is missing", "the failure is not cached as a leaf")
+				}
+			})
+		}
 	}
 }
 
