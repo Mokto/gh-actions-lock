@@ -1,15 +1,27 @@
 package ghapi
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/cli/go-gh/v2/pkg/api"
 )
 
-// Brief formats err for one terminal line: an HTTP failure as its status
-// alone, without the request URL. The run log and --json keep the full error.
+// Brief omits HTTP request URLs and keeps authorization guidance, shortening
+// other HTTP failures to their status. The run log and --json keep the full error.
 func Brief(err error) string {
+	var ssoErr *SSORateLimitedError
+	if errors.As(err, &ssoErr) {
+		return ssoErr.Error()
+	}
 	if code, ok := StatusCode(err); ok {
-		return fmt.Sprintf("GitHub returned %d %s", code, http.StatusText(code))
+		msg := fmt.Sprintf("GitHub returned %d %s", code, http.StatusText(code))
+		var httpErr *api.HTTPError
+		if IsSAMLEnforcement(err) && errors.As(err, &httpErr) {
+			msg += ": " + httpErr.Message
+		}
+		return msg
 	}
 	return err.Error()
 }
