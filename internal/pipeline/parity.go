@@ -102,12 +102,13 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		}
 		closure := store.Closure(workflowfile.KeyFromPath(pw.Path), live)
 		root := closureRoots(closure)
+		pinnedBy := compositeEdges(closure)
 		for _, lp := range closure {
 			ref := direct[strings.ToLower(lp.Pin.Owner+"/"+lp.Pin.Repo)+"@"+lp.Pin.Ref]
 			if lp.Parent != "" {
 				ref = parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref}
 			}
-			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref, replaced: freshRoots[root[lp.Pin.String()]]})
+			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref, replaced: freshRoots[root[lp.Pin.String()]], pinnedBy: pinnedBy[lp.Pin.String()]})
 		}
 		for _, o := range freshOwners {
 			o.report = ri
@@ -163,7 +164,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if !ok && mode.verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
 			}
-			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, replaced: o.replaced, head: pins[i].Head, inconclusive: st.Err != nil}) {
+			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, replaced: o.replaced, pinnedBy: o.pinnedBy, head: pins[i].Head, inconclusive: st.Err != nil}) {
 				continue
 			}
 			wr := &report.Workflows[o.report]
@@ -190,6 +191,27 @@ type parityOwner struct {
 	fresh  bool
 	// replaced marks a recorded pin under a root this run re-resolved.
 	replaced bool
+	// pinnedBy is a composite (NWO@ref) whose recorded `uses:` also lists
+	// this entry, though Closure reports it as the workflow's own pin.
+	pinnedBy string
+}
+
+// compositeEdges maps each pin a composite in the recorded closure lists in
+// its `uses:` to one such composite, as NWO@ref. Keys are Pin.String.
+func compositeEdges(closure []lockfile.LockedPin) map[string]string {
+	out := map[string]string{}
+	for _, lp := range closure {
+		for _, child := range lp.Action.Uses {
+			p, ok := parserlock.ParsePin(child)
+			if !ok {
+				continue
+			}
+			if _, seen := out[p.String()]; !seen {
+				out[p.String()] = lp.Pin.NWO + "@" + lp.Pin.Ref
+			}
+		}
+	}
+	return out
 }
 
 // closureRoots maps each pin of a recorded closure to the workflow's direct

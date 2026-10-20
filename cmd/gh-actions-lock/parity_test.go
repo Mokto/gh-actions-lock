@@ -1771,6 +1771,95 @@ jobs:
 	assert.Equal(t, lock, string(after), "nothing is written")
 }
 
+// TestParity_AcceptMovedKeepsSharedFullSHAPinBlocking: a full-SHA pin the
+// workflow uses directly, and a composite also pins, is one lock entry.
+// --accept-moved repairs the direct use, but planning doesn't rebuild an
+// unchanged composite's dependencies, so the entry would keep its gone ref
+// and the next --verify would reject it. It must keep blocking.
+func TestParity_AcceptMovedKeepsSharedFullSHAPinBlocking(t *testing.T) {
+	const parentSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	const head = "dddddddddddddddddddddddddddddddddddddddd"
+	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@" + parityTestSHA + "\n"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			repo := map[string]any{
+				"nameWithOwner": body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string),
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": v},
+			}
+			if v == parentSHA {
+				repo["tag"], repo["tagRef"] = map[string]any{"oid": parentSHA}, map[string]any{}
+			}
+			data["a"+i] = repo
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	// Both direct refs resolve in one batch.
+	repos := map[string]map[string]any{
+		"octo/composite":   testRepoResponse("octo/composite", parentSHA, composite),
+		"actions/checkout": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML),
+	}
+	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			if i, ok := strings.CutPrefix(k, "owner"); ok {
+				data["a"+i] = repos[v.(string)+"/"+body.Variables["name"+i].(string)]
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout$`),
+		httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+		httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": head, "type": "commit"}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse()))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", head)))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "behind", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/composite@v1
+      - uses: actions/checkout@`+parityTestSHA+`
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/composite@v1':\n    ref: 'v1'\n    commit: 'sha1-" + parentSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@" + parityTestSHA + "'\n" +
+		"  'actions/checkout@" + parityTestSHA + "':\n    ref: 'v4-gone'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/composite@v1'\n    - 'actions/checkout@" + parityTestSHA + "'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path)
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	require.ErrorIs(t, err, errSilent, "%s\n%s", stderr, after)
+	assert.Contains(t, stderr, "ref v4-gone is not a tag or branch of actions/checkout")
+	assert.Contains(t, stderr, "upgrade or replace octo/composite@v1 with a version whose pin of actions/checkout can be verified, or stop using it")
+	assert.NotContains(t, stderr, "--accept-moved", "an override that can't repair it is never suggested")
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
 // refusalDetail is the finding detail for a `uses:` ref parity refuses.
 func refusalDetail(ref string) string {
 	if ghapi.DescribeName(ref) {

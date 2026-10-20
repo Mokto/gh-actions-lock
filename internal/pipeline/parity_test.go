@@ -271,3 +271,18 @@ func TestClosureRoots(t *testing.T) {
 	assert.Equal(t, "octo/composite@v1", roots["actions/cache@v3"], "a grandchild traces to the workflow's pin")
 	assert.Equal(t, "actions/setup-go@v5", roots["actions/setup-go@v5"])
 }
+
+func TestCompositeEdges(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	pin := func(k string) parserlock.Pin {
+		p, ok := parserlock.ParsePin(k)
+		require.True(t, ok)
+		return p
+	}
+	closure := []lockfile.LockedPin{
+		{Pin: pin("octo/composite@v1"), Action: parserlock.Action{Uses: []string{"actions/checkout@" + sha}}},
+		{Pin: pin("actions/checkout@" + sha)},
+	}
+	edges := compositeEdges(closure)
+	assert.Equal(t, map[string]string{"actions/checkout@" + sha: "octo/composite@v1"}, edges, "a direct pin a composite also lists keeps that edge")
+}

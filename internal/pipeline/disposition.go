@@ -23,6 +23,10 @@ type paritySubject struct {
 	// replaced marks a recorded pin under a root this run re-resolved, so
 	// the entry will be rewritten from the fresh resolution.
 	replaced bool
+	// pinnedBy is a composite (NWO@ref) that also pins a recorded direct
+	// entry. Planning doesn't rebuild an unchanged composite's
+	// dependencies, so the entry stays as recorded.
+	pinnedBy string
 	// head is the ref the commit was traced to; "" for an entry without one.
 	head string
 	// inconclusive marks a check that couldn't finish.
@@ -45,7 +49,8 @@ type paritySubject struct {
 // longer vouches for it: the finding becomes a warning, and planning records
 // a tag or branch that contains the commit, or fails. A transitive one stays
 // blocking: planning doesn't rebuild an unchanged composite's dependencies,
-// so nothing would replace its entry.
+// so nothing would replace its entry. That holds too for a direct pin that a
+// composite also pins: both share one entry.
 func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 	if s.fresh {
 		if s.inconclusive {
@@ -55,6 +60,10 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 		return true
 	}
 	fullSHA := parserlock.IsFullSha(s.pin.Ref)
+	shared := s.pinnedBy != "" && f.Category == checks.UnreachablePin && fullSHA && !f.RefMissing
+	if shared && f.Dependency != nil {
+		f.Remediation = shaPinRemediation(s.pinnedBy, f.Dependency.NWO, s.pin)
+	}
 	relock := m.relock && s.replaced
 	// A history check fails closed: the commit is otherwise unproven.
 	if s.inconclusive && s.head != "" && (!relock || fullSHA) {
@@ -66,7 +75,7 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 		return true
 	}
 	c := f.Category
-	if m.acceptMoved && c == checks.UnreachablePin && fullSHA && !f.RefMissing && f.ParentNWO == "" {
+	if m.acceptMoved && c == checks.UnreachablePin && fullSHA && !f.RefMissing && f.ParentNWO == "" && !shared {
 		f.Severity = checks.SeverityWarning
 		f.Remediation = "accepted: --accept-moved records a tag or branch that contains this commit"
 		return true
