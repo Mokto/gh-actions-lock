@@ -112,6 +112,12 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/repos/acme/") {
 		switch req.URL.Path {
+		case "/repos/acme/parent/tags":
+			return httpmock.JSONResponse(httpmock.TagListResponse("v1.0.0", graphParentSHA))(req)
+		case "/repos/acme/parent/git/ref/tags/main":
+			return httpmock.StatusResponse(http.StatusNotFound)(req)
+		case "/repos/acme/parent/branches":
+			return httpmock.JSONResponse(httpmock.BranchListResponse("main", graphParentSHA))(req)
 		case "/repos/acme/parent", "/repos/acme/child", "/repos/acme/leaf":
 			return httpmock.JSONResponse(map[string]any{
 				"id": 1, "owner": map[string]any{"id": 1}, "default_branch": "main",
@@ -323,27 +329,36 @@ func TestCompleteness_ScopedRelockCannotAdvanceSharedChild(t *testing.T) {
 }
 
 func TestCompleteness_RelockCannotAcceptUnreachableTransitivePin(t *testing.T) {
-	path, _ := generateGraph(t)
-	before := snapshotWorkflows(t)
-	transport := &graphTransport{movedChild: true, unreachableChild: true}
-	p, err := runParity(t, transport, "--relock", "--no-narrow", path)
-	require.ErrorIs(t, err, errSilent)
-	assert.False(t, p.Valid)
-	found := false
-	for _, f := range p.Findings {
-		if f.Category == "unreachable-pin" {
-			found = true
-			assert.Equal(t, "acme/parent@v1.0.0", f.RequiredBy)
-		}
-	}
-	assert.True(t, found, "%+v", p.Findings)
-	assert.Equal(t, before, snapshotWorkflows(t))
+	for name, root := range map[string]string{
+		"tag root": "acme/parent@v1.0.0",
+		// The recorded closure hangs off acme/parent@v1.0.0, not the SHA.
+		"full-SHA root": "acme/parent@" + graphParentSHA + " # v1.0.0",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path, _ := generateGraph(t)
+			require.NoError(t, os.WriteFile(path, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", root, 1)), 0o600))
+			before := snapshotWorkflows(t)
+			transport := &graphTransport{movedChild: true, unreachableChild: true}
+			p, err := runParity(t, transport, "--relock", "--no-narrow", path)
+			require.ErrorIs(t, err, errSilent)
+			assert.False(t, p.Valid)
+			found := false
+			for _, f := range p.Findings {
+				if f.Category == "unreachable-pin" {
+					found = true
+					assert.Equal(t, "acme/parent@v1.0.0", f.RequiredBy)
+				}
+			}
+			assert.True(t, found, "%+v", p.Findings)
+			assert.Equal(t, before, snapshotWorkflows(t))
 
-	_, stderr, err := runCommandWithHTTP(t, transport, "--accept-moved", "--no-narrow", path)
-	require.NoError(t, err, stderr)
-	file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
-	require.NoError(t, err)
-	assert.Equal(t, "sha1-"+graphLeafSHA, file.Dependencies["acme/child@v2"].Commit)
+			_, stderr, err := runCommandWithHTTP(t, transport, "--accept-moved", "--no-narrow", path)
+			require.NoError(t, err, stderr)
+			file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+			require.NoError(t, err)
+			assert.Equal(t, "sha1-"+graphLeafSHA, file.Dependencies["acme/child@v2"].Commit)
+		})
+	}
 }
 
 func TestCompleteness_SHARootRetainsCoverageChecks(t *testing.T) {

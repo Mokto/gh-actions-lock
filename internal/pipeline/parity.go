@@ -90,6 +90,20 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		for _, r := range recorded {
 			direct[strings.ToLower(r.Owner+"/"+r.Repo)+"@"+r.Ref] = r
 		}
+		// A full-SHA `uses:` can be recorded under the tag or branch it pins;
+		// its recorded closure hangs off that key.
+		for _, d := range pw.RecordedDeps(recorded) {
+			key := strings.ToLower(d.NWO) + "@" + d.Ref
+			if _, ok := direct[key]; ok {
+				continue
+			}
+			for _, r := range recorded {
+				if parserlock.IsFullSha(r.Ref) && strings.EqualFold(r.NWO(), d.NWO) && strings.EqualFold(r.Ref, d.SHA) {
+					direct[key] = r
+					break
+				}
+			}
+		}
 		live := func(p parserlock.Pin) bool {
 			_, ok := direct[strings.ToLower(p.Owner+"/"+p.Repo)+"@"+p.Ref]
 			return ok
