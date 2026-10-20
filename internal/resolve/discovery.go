@@ -322,6 +322,9 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 	if err := g.conflictingCommits(); err != nil {
 		resolveErr = errors.Join(resolveErr, err)
 	}
+	if c := g.cycle(); c != nil {
+		resolveErr = errors.Join(resolveErr, c)
+	}
 	return g, resolveErr
 }
 

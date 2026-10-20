@@ -82,6 +82,61 @@ func (g *Graph) conflictingCommits() error {
 	return nil
 }
 
+// UsesCycleError reports a composite action that reaches itself, through
+// other repositories or its own sub-actions.
+type UsesCycleError struct {
+	Path []string
+}
+
+func (e *UsesCycleError) Error() string {
+	return "composite action reaches itself: " + strings.Join(e.Path, " → ")
+}
+
+func (e *UsesCycleError) Unwrap() error { return dep.ErrUsesCycle }
+
+// cycle returns the first uses cycle among resolved nodes, or nil. It runs
+// before Flatten, which merges sub-actions and would hide a cycle among them.
+func (g *Graph) cycle() *UsesCycleError {
+	const (
+		active = 1
+		done   = 2
+	)
+	state := make(map[ghapi.ActionRef]int, len(g.nodes))
+	var stack []ghapi.ActionRef
+	var found []ghapi.ActionRef
+	var visit func(ghapi.ActionRef) bool
+	visit = func(key ghapi.ActionRef) bool {
+		switch state[key] {
+		case active:
+			found = append(stack[slices.Index(stack, key):], key)
+			return true
+		case done:
+			return false
+		}
+		state[key] = active
+		stack = append(stack, key)
+		for _, c := range g.nodes[key].children {
+			if visit(c) {
+				return true
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[key] = done
+		return false
+	}
+	for _, key := range g.order {
+		if visit(key) {
+			path := make([]string, len(found))
+			for i, k := range found {
+				ref := g.nodes[k].ref
+				path[i] = ref.FullName() + "@" + ref.Ref
+			}
+			return &UsesCycleError{Path: path}
+		}
+	}
+	return nil
+}
+
 // Flatten returns one dependency per owner/repo@ref, in resolution order,
 // and the edges between them as child key → parent keys. An edge to an
 // action that didn't resolve keeps the name its parent's manifest uses.

@@ -40,6 +40,9 @@ type graphTransport struct {
 	unreachableChild bool
 	// leafUsesParent closes the graph into a parent → child → leaf → parent cycle.
 	leafUsesParent bool
+	// parentUsesOwnSub makes acme/parent and its sub-actions use $/sub, so
+	// acme/parent/sub calls itself.
+	parentUsesOwnSub bool
 }
 
 func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -62,6 +65,9 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			case "parent":
 				sha = graphParentSHA
 				yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/child@v2\n"
+				if g.parentUsesOwnSub {
+					yml = "runs:\n  using: composite\n  steps:\n    - uses: $/sub\n"
+				}
 				if g.movedParent && ref == "v1.0.0" {
 					sha, yml = graphLeafSHA, nodeActionYAML
 				}
@@ -454,16 +460,27 @@ jobs:
 	assert.Contains(t, err.Error(), "could not verify locked dependency manifests")
 }
 
-// TestCompleteness_UsesCycleWritesNothing: the lockfile can't record a
-// composite that reaches itself, so onboarding one fails without writing a
-// lockfile that every later run would refuse to read.
+// TestCompleteness_UsesCycleWritesNothing: a composite that reaches itself
+// can't run or be recorded, through other repositories or its own
+// sub-actions, so onboarding it blocks and writes nothing.
 func TestCompleteness_UsesCycleWritesNothing(t *testing.T) {
-	path := writeTempWorkflow(t, graphWorkflow)
-	before := snapshotWorkflows(t)
-	_, stderr, err := runCommandWithHTTP(t, &graphTransport{leafUsesParent: true}, path)
-	require.Error(t, err, stderr)
-	assert.ErrorContains(t, err, "uses cycle")
-	assert.Equal(t, before, snapshotWorkflows(t))
+	for name, transport := range map[string]*graphTransport{
+		"across repositories": {leafUsesParent: true},
+		"within a repository": {parentUsesOwnSub: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeTempWorkflow(t, graphWorkflow)
+			before := snapshotWorkflows(t)
+			p, err := runParity(t, transport, path)
+			require.ErrorIs(t, err, errSilent)
+			var details []string
+			for _, f := range p.Findings {
+				details = append(details, f.Detail)
+			}
+			assert.Contains(t, strings.Join(details, "\n"), "composite action reaches itself")
+			assert.Equal(t, before, snapshotWorkflows(t))
+		})
+	}
 }
 
 // TestCompleteness_RelockWorkflowWithoutActionsReleasesSharedPins: a workflow

@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -254,8 +255,8 @@ func TestResolveAllRecursiveDeepNestedComposites(t *testing.T) {
 }
 
 // TestResolveAllRecursiveSkipsSelfReference verifies that a composite action
-// whose `uses:` names its own host repo+ref (a same-tarball routing concern)
-// is not recorded as its own transitive dependency.
+// whose `uses:` names itself is reported as a cycle (it can't run) and is not
+// recorded as its own transitive dependency.
 func TestResolveAllRecursiveSkipsSelfReference(t *testing.T) {
 	r := seedCache(&Resolver{
 		MaxRecursionDepth: DefaultMaxRecursionDepth,
@@ -268,8 +269,8 @@ func TestResolveAllRecursiveSkipsSelfReference(t *testing.T) {
 	})
 
 	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "repo", Ref: "main"}})
-	if err != nil {
-		t.Fatalf("ResolveAllRecursive returned error: %v", err)
+	if !errors.Is(err, dep.ErrUsesCycle) {
+		t.Fatalf("ResolveAllRecursive error = %v, want a uses cycle", err)
 	}
 	if len(deps) != 1 {
 		t.Fatalf("expected single dep (no self-loop expansion), got %d: %+v", len(deps), deps)
@@ -686,8 +687,8 @@ func TestResolveAllRecursiveCrossRefTransitive(t *testing.T) {
 }
 
 // TestResolveAllRecursiveTerminatesOnCycle verifies that a mutual A→B→A cycle
-// is handled gracefully: the BFS terminates via the seen set, both nodes are
-// resolved, and the parentMap reflects the edges without infinite recursion.
+// terminates via the seen set and is reported, with both nodes resolved and
+// both edges kept.
 func TestResolveAllRecursiveTerminatesOnCycle(t *testing.T) {
 	r := seedCache(&Resolver{
 		MaxRecursionDepth: DefaultMaxRecursionDepth,
@@ -703,8 +704,8 @@ func TestResolveAllRecursiveTerminatesOnCycle(t *testing.T) {
 	})
 
 	deps, parentMapForTest, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{{Owner: "owner", Repo: "a", Ref: "v1"}})
-	if err != nil {
-		t.Fatalf("ResolveAllRecursive returned error: %v", err)
+	if !errors.Is(err, dep.ErrUsesCycle) {
+		t.Fatalf("ResolveAllRecursive error = %v, want a uses cycle", err)
 	}
 	if len(deps) != 2 {
 		t.Fatalf("expected 2 deps (cycle terminates without duplication), got %d: %+v", len(deps), deps)
@@ -716,9 +717,7 @@ func TestResolveAllRecursiveTerminatesOnCycle(t *testing.T) {
 		t.Errorf("expected owner/b@v1 parent = [owner/a@v1], got %v", got)
 	}
 	// B→A edge: B uses A, but A was already resolved at depth 0. The
-	// parentMap edge is recorded before the seen-filter discards the
-	// re-enqueue, so the back-edge exists. This is safe because Save()'s
-	// GC walk uses its own visited set to handle cycles.
+	// back-edge is still recorded.
 	if got := pm["owner/a@v1"]; len(got) != 1 || got[0] != "owner/b@v1" {
 		t.Errorf("expected owner/a@v1 parent = [owner/b@v1] (back-edge), got %v", got)
 	}

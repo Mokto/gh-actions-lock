@@ -87,7 +87,11 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 				wr.SkipCommit = true
 			}
 		}
-		if err != nil && !(wr.SkipCommit && onlyUnlockedRefs(err)) {
+		if cycle := (*resolve.UsesCycleError)(nil); errors.As(err, &cycle) {
+			wr.Findings = append(dropValid(wr.Findings), usesCycleFinding(pw.Path, cycle))
+			wr.SkipCommit = true
+		}
+		if err != nil && !(wr.SkipCommit && onlyExplained(err)) {
 			wr.Findings = append(dropValid(wr.Findings), checks.Finding{
 				WorkflowPath: pw.Path,
 				Category:     checks.ReachabilityUnknown,
@@ -104,23 +108,39 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 	return nil
 }
 
-func onlyUnlockedRefs(err error) bool {
+// onlyExplained reports whether every error in err already has a finding:
+// an unlocked child is named by its missing edge, a cycle by its own.
+func onlyExplained(err error) bool {
 	if err == nil {
 		return true
 	}
-	if _, ok := err.(*resolve.UnlockedRefError); ok {
+	switch err.(type) {
+	case *resolve.UnlockedRefError, *resolve.UsesCycleError:
 		return true
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		for _, inner := range joined.Unwrap() {
-			if !onlyUnlockedRefs(inner) {
+			if !onlyExplained(inner) {
 				return false
 			}
 		}
 		return true
 	}
 	if inner := errors.Unwrap(err); inner != nil {
-		return onlyUnlockedRefs(inner)
+		return onlyExplained(inner)
 	}
 	return false
+}
+
+// usesCycleFinding blocks a workflow whose composite actions reach
+// themselves: the action can't run, and the lockfile can't record it.
+func usesCycleFinding(path string, cycle *resolve.UsesCycleError) checks.Finding {
+	return checks.Finding{
+		WorkflowPath: path,
+		Category:     checks.NotPinned,
+		Severity:     checks.SeverityError,
+		Confidence:   checks.ConfidenceHigh,
+		Detail:       cycle.Error(),
+		Remediation:  "stop using that version; an action that uses itself can't run",
+	}
 }

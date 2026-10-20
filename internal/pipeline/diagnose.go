@@ -101,6 +101,10 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 				})
 				blockingResolverError = true
 			}
+			if cycle := (*resolve.UsesCycleError)(nil); errors.As(resolveErr, &cycle) {
+				wr.Findings = append(wr.Findings, usesCycleFinding(pw.Path, cycle))
+				blockingResolverError = true
+			}
 			for _, malformed := range malformedNestedRefs(resolveErr) {
 				wr.Findings = append(wr.Findings, checks.Finding{
 					WorkflowPath: pw.Path,
