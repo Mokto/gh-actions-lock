@@ -71,18 +71,26 @@ func (c refCandidates) tagsAt(ctx context.Context, sha string, exhaustive bool) 
 	if err != nil {
 		return nil, err
 	}
+	recordable := func(names []string) []string {
+		return slices.DeleteFunc(names, func(n string) bool { return !ghapi.RecordableRefName(n) })
+	}
 	var names []string
 	for _, t := range first {
 		if strings.EqualFold(t.SHA, sha) {
 			names = append(names, t.Name)
 		}
 	}
+	// Filter before deciding to read more: an unrecordable tag on the first
+	// page must not stop the search for a recordable one.
+	names = recordable(names)
 	if exhaustive && len(names) == 0 && len(first) >= 100 {
-		if names, err = c.r.gh.TagsAtCommit(ctx, c.owner, c.repo, sha); err != nil {
+		all, err := c.r.gh.TagsAtCommit(ctx, c.owner, c.repo, sha)
+		if err != nil {
 			return nil, err
 		}
+		names = recordable(all)
 	}
-	return slices.DeleteFunc(names, func(n string) bool { return !ghapi.AcceptedRefName(n) }), nil
+	return names, nil
 }
 
 // BranchAtCommit returns branch when it can be recorded for sha and names
@@ -127,7 +135,7 @@ func (r *Resolver) searchContainingBranch(ctx context.Context, owner, repo, sha,
 	without := func(cands []ghapi.BranchHead) []ghapi.BranchHead {
 		out := cands[:0:0]
 		for _, b := range cands {
-			if !skip[b.Name] && ghapi.AcceptedRefName(b.Name) {
+			if !skip[b.Name] && ghapi.RecordableRefName(b.Name) {
 				out = append(out, b)
 			}
 		}

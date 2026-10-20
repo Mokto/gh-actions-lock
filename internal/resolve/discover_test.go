@@ -602,3 +602,31 @@ func TestDiscoverContaining_RefsOnLaterPages(t *testing.T) {
 		})
 	}
 }
+
+// TestDiscoverContaining_NamePolicyBeforePagination: a first-page tag the
+// lockfile can't record doesn't stop the search for a recordable one on a
+// later page, and branches the lockfile can't record are never chosen.
+func TestDiscoverContaining_NamePolicyBeforePagination(t *testing.T) {
+	var first []string
+	for i := range 99 {
+		first = append(first, fmt.Sprintf("v%03d", i), "zzz")
+	}
+	first = append(first, "release-g1234", "abc")
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.RESTWithQuery("GET", `repos/o/r/branches`, "&page=1"),
+		httpmock.JSONResponse(httpmock.BranchListResponse("refs/x", "abc", strings.Repeat("a", 40), "abc", "main", "zzz")))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/o/r/compare/abc\.\.\.zzz`), httpmock.StatusResponse(http.StatusNotFound))
+	reg.RegisterReusable(httpmock.RESTWithQuery("GET", `repos/o/r/tags`, "&page=2"), httpmock.JSONResponse(httpmock.TagListResponse("twin", "abc")))
+	reg.RegisterReusable(httpmock.RESTWithQuery("GET", `repos/o/r/tags`, "per_page=100"), httpmock.JSONResponse(httpmock.TagListResponse(first...)))
+	httpmock.NoTagsNamed(reg, "o", "r")
+	reg.RegisterReusable(httpmock.REST("GET", `repos/o/r/git/ref/heads/`), httpmock.StatusResponse(http.StatusNotFound))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/o/r/git/matching-refs/`), httpmock.JSONResponse([]any{}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/o/r$`), httpmock.JSONResponse(map[string]any{"default_branch": "main"}))
+
+	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+	require.NoError(t, err)
+	tag, branch, err := r.DiscoverContaining(context.Background(), "o", "r", "abc", "abc")
+	require.NoError(t, err)
+	assert.Equal(t, "twin", tag)
+	assert.Empty(t, branch, "neither refs/x nor a SHA-shaped branch can be recorded")
+}
