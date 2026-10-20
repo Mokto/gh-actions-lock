@@ -94,17 +94,22 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			_, ok := direct[strings.ToLower(p.Owner+"/"+p.Repo)+"@"+p.Ref]
 			return ok
 		}
-		for _, lp := range store.Closure(workflowfile.KeyFromPath(pw.Path), live) {
+		// A recorded entry is replaced only if this run resolved its root.
+		var freshOwners []parityOwner
+		var freshRoots map[string]bool
+		if !pw.Resolved {
+			freshOwners, freshRoots = fresh(pw, recordedKeys)
+		}
+		closure := store.Closure(workflowfile.KeyFromPath(pw.Path), live)
+		root := closureRoots(closure)
+		for _, lp := range closure {
 			ref := direct[strings.ToLower(lp.Pin.Owner+"/"+lp.Pin.Repo)+"@"+lp.Pin.Ref]
 			if lp.Parent != "" {
 				ref = parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref}
 			}
-			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref})
+			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref, replaced: freshRoots[root[lp.Pin.String()]]})
 		}
-		if pw.Resolved {
-			continue
-		}
-		for _, o := range fresh(pw, recordedKeys) {
+		for _, o := range freshOwners {
 			o.report = ri
 			add(o)
 		}
@@ -158,7 +163,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if !ok && mode.verify && tagMoved[i] {
 				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
 			}
-			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, head: pins[i].Head, inconclusive: st.Err != nil}) {
+			if !ok || !disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, replaced: o.replaced, head: pins[i].Head, inconclusive: st.Err != nil}) {
 				continue
 			}
 			wr := &report.Workflows[o.report]
@@ -183,12 +188,39 @@ type parityOwner struct {
 	lp     lockfile.LockedPin
 	ref    parserlock.ActionRef
 	fresh  bool
+	// replaced marks a recorded pin under a root this run re-resolved.
+	replaced bool
+}
+
+// closureRoots maps each pin of a recorded closure to the workflow's direct
+// pin that pulls it in. Keys are Pin.String.
+func closureRoots(closure []lockfile.LockedPin) map[string]string {
+	parent := make(map[string]string, len(closure))
+	for _, lp := range closure {
+		if p, ok := parserlock.ParsePin(lp.Parent); ok {
+			parent[lp.Pin.String()] = p.String()
+		}
+	}
+	roots := make(map[string]string, len(closure))
+	for _, lp := range closure {
+		k := lp.Pin.String()
+		for i := 0; i < len(closure); i++ {
+			p, ok := parent[k]
+			if !ok {
+				break
+			}
+			k = p
+		}
+		roots[lp.Pin.String()] = k
+	}
+	return roots
 }
 
 // freshClosure returns a function yielding the closure of a workflow's
 // unrecorded refs from this run's single resolve, so no further requests
-// are made per workflow.
-func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(checks.ParsedWorkflow, map[string]bool) []parityOwner {
+// are made per workflow, and the set of those refs that resolved, keyed by
+// Pin.String.
+func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(checks.ParsedWorkflow, map[string]bool) ([]parityOwner, map[string]bool) {
 	children := map[string][]dep.Dependency{}
 	byKey := map[string][]dep.Dependency{}
 	for _, d := range resolved {
@@ -206,8 +238,9 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 			}
 		}
 	}
-	return func(pw checks.ParsedWorkflow, recordedKeys map[string]bool) []parityOwner {
+	return func(pw checks.ParsedWorkflow, recordedKeys map[string]bool) ([]parityOwner, map[string]bool) {
 		var out []parityOwner
+		roots := map[string]bool{}
 		seen := map[string]bool{}
 		var walk func(d dep.Dependency, ref parserlock.ActionRef, parent string)
 		walk = func(d dep.Dependency, ref parserlock.ActionRef, parent string) {
@@ -234,10 +267,11 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 				continue
 			}
 			for _, d := range byKey[key] {
+				roots[parserlock.Pin{Owner: ref.Owner, Repo: ref.Repo, Ref: ref.Ref}.String()] = true
 				walk(d, ref, "")
 			}
 		}
-		return out
+		return out, roots
 	}
 }
 

@@ -635,6 +635,13 @@ func (p parityDown) RoundTrip(req *http.Request) (*http.Response, error) {
 	return p.inner.RoundTrip(req)
 }
 
+// outage fails every request with a server error.
+type outage struct{}
+
+func (outage) RoundTrip(req *http.Request) (*http.Response, error) {
+	return httpmock.StatusResponse(http.StatusServiceUnavailable)(req)
+}
+
 func countGraphQL(ct *countingTransport) int {
 	n := 0
 	for _, u := range ct.urls {
@@ -1530,6 +1537,38 @@ jobs:
 	}
 	assert.Contains(t, categories, "unreachable-pin")
 	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
+}
+
+// TestParity_RelockOutageKeepsRecordedPinBlocking: --relock ignores a
+// recorded pin's findings only because a fresh pin replaces it. When
+// resolution fails too, nothing replaces the entry, so a parity check that
+// couldn't finish must still block.
+func TestParity_RelockOutageKeepsRecordedPinBlocking(t *testing.T) {
+	rt := outage{}
+	useDefaultTransport(t, rt)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.1
+`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+	lockBefore := readTempLockfilePins(t)
+
+	p, err := runParity(t, rt, "--relock", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent, "%+v", p.Findings)
+	assert.False(t, p.Valid)
+	var blocking []string
+	for _, f := range p.Findings {
+		if f.Severity == "error" {
+			blocking = append(blocking, f.Detail)
+		}
+	}
+	require.Len(t, blocking, 1, "%+v", p.Findings)
+	assert.Contains(t, blocking[0], "could not verify locked actions/checkout")
+	assert.Equal(t, lockBefore, readTempLockfilePins(t))
 }
 
 // TestParity_AcceptMovedRepairsGoneRecordedRef: the recorded tag of a

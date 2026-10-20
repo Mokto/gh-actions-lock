@@ -132,11 +132,28 @@ func TestFreshClosure_EntryRef(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pw := checks.ParsedWorkflow{Path: ".github/workflows/ci.yml", Refs: []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: tt.d.Ref}}}
-			got := freshClosure([]dep.Dependency{tt.d}, nil)(pw, nil)
+			got, _ := freshClosure([]dep.Dependency{tt.d}, nil)(pw, nil)
 			require.Len(t, got, 1)
 			assert.Equal(t, tt.want, got[0].lp.Action.Ref)
 		})
 	}
+}
+
+// TestFreshClosure_Roots: every workflow ref that resolved is a root, also
+// one a composite walked first already reached as its child.
+func TestFreshClosure_Roots(t *testing.T) {
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	composite := dep.Dependency{NWO: "octo/composite", Ref: "v1", SHA: sha}
+	child := dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha}
+	parents := map[string][]string{child.Key(): {composite.Key()}}
+	pw := checks.ParsedWorkflow{Refs: []parserlock.ActionRef{
+		{Owner: "octo", Repo: "composite", Ref: "v1"},
+		{Owner: "actions", Repo: "checkout", Ref: sha},
+		{Owner: "actions", Repo: "cache", Ref: "v4"},
+	}}
+
+	_, roots := freshClosure([]dep.Dependency{composite, child}, parents)(pw, nil)
+	assert.Equal(t, map[string]bool{"octo/composite@v1": true, "actions/checkout@" + sha: true}, roots)
 }
 
 // TestParityFinding_FullSHAKey covers the verdicts for a full-SHA key
@@ -234,4 +251,23 @@ func TestMovedTagFinding(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClosureRoots(t *testing.T) {
+	pin := func(k string) parserlock.Pin {
+		p, ok := parserlock.ParsePin(k)
+		require.True(t, ok)
+		return p
+	}
+	closure := []lockfile.LockedPin{
+		{Pin: pin("Octo/Composite@v1")},
+		{Pin: pin("actions/checkout@v4"), Parent: "Octo/Composite@v1"},
+		{Pin: pin("actions/cache@v3"), Parent: "actions/checkout@v4"},
+		{Pin: pin("actions/setup-go@v5")},
+	}
+	roots := closureRoots(closure)
+	assert.Equal(t, "octo/composite@v1", roots["octo/composite@v1"], "a direct pin is its own root")
+	assert.Equal(t, "octo/composite@v1", roots["actions/checkout@v4"])
+	assert.Equal(t, "octo/composite@v1", roots["actions/cache@v3"], "a grandchild traces to the workflow's pin")
+	assert.Equal(t, "actions/setup-go@v5", roots["actions/setup-go@v5"])
 }

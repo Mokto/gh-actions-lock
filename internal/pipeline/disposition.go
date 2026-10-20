@@ -20,6 +20,9 @@ type paritySubject struct {
 	pin parserlock.Pin
 	// fresh marks a pin resolved in this run: it is what the run would write.
 	fresh bool
+	// replaced marks a recorded pin under a root this run re-resolved, so
+	// the entry will be rewritten from the fresh resolution.
+	replaced bool
 	// head is the ref the commit was traced to; "" for an entry without one.
 	head string
 	// inconclusive marks a check that couldn't finish.
@@ -31,10 +34,12 @@ type paritySubject struct {
 // that weighs a finding against the mode, so every mode agrees on what a
 // pin's state means.
 //
-// Under --relock a recorded entry is about to be replaced, so only what
-// re-resolving can't fix matters: repository identity, a full-SHA key's
-// commit, which no relock moves, and a ref that is not a tag or branch,
-// which resolution would still accept by rev-parse rules.
+// Under --relock a recorded entry whose root resolved afresh is about to be
+// replaced, so only what re-resolving can't fix matters: repository
+// identity, a full-SHA key's commit, which no relock moves, and a ref that
+// is not a tag or branch, which resolution would still accept by rev-parse
+// rules. An entry whose root didn't resolve stays as recorded, so it is
+// judged as on a plain run.
 //
 // --accept-moved also accepts a direct full-SHA key whose recorded ref no
 // longer vouches for it: the finding becomes a warning, and planning records
@@ -50,13 +55,14 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) bool {
 		return true
 	}
 	fullSHA := parserlock.IsFullSha(s.pin.Ref)
+	relock := m.relock && s.replaced
 	// A history check fails closed: the commit is otherwise unproven.
-	if s.inconclusive && s.head != "" && (!m.relock || fullSHA) {
+	if s.inconclusive && s.head != "" && (!relock || fullSHA) {
 		f.Severity = checks.SeverityError
 		f.Remediation = "retry; a pin is accepted only once its commit is traced to its tag or branch"
 		return true
 	}
-	if !m.relock {
+	if !relock {
 		return true
 	}
 	c := f.Category
