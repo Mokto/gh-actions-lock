@@ -712,3 +712,26 @@ func TestRenderPinSummary_HousekeepingBeforeSummary(t *testing.T) {
 		assert.Less(t, i, pinned, "%q should precede the summary:\n%s", line, out)
 	}
 }
+
+// TestRenderPinSummary_NamesRefOnlyRepair: --accept-moved keeps a full-SHA
+// key and its commit (e.g. under --no-narrow), so the entry is Verified,
+// but its recorded ref changed and the summary must say so.
+func TestRenderPinSummary_NamesRefOnlyRepair(t *testing.T) {
+	const sha = "11bd71901bbe5b1630ceea73d27597364c9af683"
+	record := &pin.Record{Entries: []pin.Entry{{
+		NWO: "actions/checkout", Ref: sha, SHA: sha, OnBranch: "main",
+		Resolution: pin.Verified, Workflows: []string{".github/workflows/ci.yml"}, Direct: true,
+	}}}
+	report := &checks.Report{Workflows: []checks.WorkflowReport{{
+		Path: ".github/workflows/ci.yml",
+		Findings: []checks.Finding{{
+			Category: checks.UnreachablePin, Severity: checks.SeverityWarning, RecordedRef: "v4-gone",
+			Dependency: &dep.Dependency{NWO: "actions/checkout", Ref: sha, SHA: sha},
+		}},
+	}}}
+
+	var buf bytes.Buffer
+	err := renderPinSummary(context.Background(), ui.NewPlain(&buf), record, report, nil, nil, true, true, "", nil)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "actions/checkout: recorded ref v4-gone no longer contains 11bd71901bbe; re-recorded as main (--accept-moved)")
+}

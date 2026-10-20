@@ -139,7 +139,8 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 		renderNarrowedEntries(console, narrowed)
 	}
 	if acceptMoved {
-		renderAcceptedOverrides(console, report, pinned)
+		// A ref-only repair keeps the key and commit, so it is Verified.
+		renderAcceptedOverrides(console, report, append(slices.Clone(pinned), record.Verified()...))
 	}
 
 	renderFullScanWarnings(console, pinned)
