@@ -17,7 +17,7 @@ import (
 )
 
 // checkParity re-checks every locked pin in each workflow's recorded closure
-// the way the runner does at job start: same repository identity, commit
+// the way the Actions backend resolver does: same repository identity, commit
 // still present, and the lock entry's ref (a tag, else a branch) still
 // vouching for it: the commit must be in the ref's history, since a
 // fork-network commit resolves under the upstream name, so existence alone
@@ -32,8 +32,8 @@ import (
 // transitive closure from this run's resolve) join the same batch. Any
 // blocking finding keeps its workflow out of the write.
 //
-// Identity follows the runner: only the repo ID counts. A rename or
-// transfer redirect to the same repo ID is a warning, also inside a
+// Identity follows the Actions backend resolver: only the repo ID counts.
+// A rename or transfer redirect to the same repo ID is a warning, also inside a
 // remote composite; a different ID or a name that doesn't resolve blocks.
 // Every pin fails closed when verification is inconclusive.
 //
@@ -59,12 +59,8 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				o.lp.Action.RepoID = store.RecordedRepoID(o.ref.Owner, o.ref.Repo)
 			}
 		}
-		// Pin.String folds owner/repo only: refs are case-sensitive, as
-		// the runner keys them.
-		// A recorded and a fresh owner of one pin can have different targets
-		// (the recorded ref, and what this run will write), so the target is
-		// part of the key. The lockfile parser has already rejected an entry
-		// ref the Actions backend resolver would not accept.
+		// Pin.String folds only owner/repo. Include the target so a fresh
+		// pin cannot reuse the recorded ref's check.
 		key := o.lp.Pin.String() + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + o.lp.Action.Ref
 		i, seen := pinIdx[key]
 		if !seen {
@@ -359,7 +355,7 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 	case st.NameWithOwner != "" && !strings.EqualFold(st.NameWithOwner, nwo):
 		f.Category = checks.RepoRenamed
 		f.Severity = checks.SeverityWarning
-		f.Detail = fmt.Sprintf("%s was renamed or transferred to %s%s; the runner follows the redirect while the repo ID matches", nwo, st.NameWithOwner, via)
+		f.Detail = fmt.Sprintf("%s was renamed or transferred to %s%s; the Actions backend follows the redirect while the repo ID matches", nwo, st.NameWithOwner, via)
 		uses := st.NameWithOwner
 		if ref.Path != "" {
 			uses += "/" + ref.Path

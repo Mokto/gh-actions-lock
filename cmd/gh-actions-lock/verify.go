@@ -2,7 +2,7 @@ package main
 
 // Verification modes for gh actions-lock:
 //
-//   --verify       Frozen check: the default checks, including runner parity
+//   --verify       Frozen check: the default checks, including backend parity
 //                  for every locked pin, without writing. Requires auth.
 //                  With -R or an OWNER/REPO argument it reads the repository
 //                  through the API instead of the working tree.

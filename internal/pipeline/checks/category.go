@@ -34,13 +34,13 @@ const (
 	// fails closed without asserting an attack.
 	UnreachablePin Category = "unreachable-pin"
 	// RepoRenamed means a locked dependency's repository was renamed or
-	// transferred but kept its repo ID. The runner follows the redirect;
-	// fix mode rewrites `uses:` to the new name and keeps the locked commit.
+	// transferred but kept its repo ID. The Actions backend follows the redirect.
+	// Fix mode rewrites `uses:` to the new name and keeps the locked commit.
 	// Inside a remote composite the pin keeps the name the composite uses.
 	RepoRenamed Category = "repo-renamed"
 	// RepoReplaced means a locked dependency's name resolves to a different
-	// repo ID. The runner rejects the pin, and re-locking under the old name
-	// cannot fix it.
+	// repo ID. The Actions backend rejects the pin, and re-locking under the old
+	// name cannot fix it.
 	RepoReplaced Category = "repo-replaced"
 	// RepoUnavailable means a locked dependency's repository returned 404.
 	// That covers both deleted repositories and ones the token can't see.

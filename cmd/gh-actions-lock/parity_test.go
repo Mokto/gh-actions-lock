@@ -85,7 +85,7 @@ func transferParity(repoID int) httpmock.Responder {
 }
 
 // TestParity_TransferredRepoWarns is the #110 case under --verify: the
-// locked repository was transferred and kept its repo ID, so the runner
+// locked repository was transferred and kept its repo ID, so the Actions backend
 // follows the redirect. The CLI warns with the replacement `uses:` line.
 func TestParity_TransferredRepoWarns(t *testing.T) {
 	reg := &httpmock.Registry{}
@@ -548,9 +548,8 @@ func TestParity_FirstRunTransferRewrites(t *testing.T) {
 	assert.Contains(t, readTempLockfilePins(t), "repo_id: 502427408")
 }
 
-// TestParity_RemoteCompositeTransferBlocks: a redirect inside a composite
 // TestParity_RemoteCompositeRenameKeepsName: a redirect inside a remote
-// composite can't be rewritten and the runner follows it while the repo ID
+// composite can't be rewritten and the Actions backend follows it while the repo ID
 // matches, so the child stays keyed as written and only --verify warns.
 func TestParity_RemoteCompositeRenameKeepsName(t *testing.T) {
 	reg := &httpmock.Registry{}

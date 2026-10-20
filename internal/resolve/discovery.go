@@ -217,8 +217,8 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 		deps, actionYMLs, err = r.resolveWithActionYMLParallel(ctx, toResolve, depth, &resolveDone, &resolveTotal, locked != nil)
 		if depth > 0 || ghapi.DependabotProxy() || locked != nil {
 			// A remote composite's `uses:` can't be rewritten here, and the
-			// runner looks it up as written, so keep the name it uses. Nor
-			// can Dependabot's, which reads back only actions.lock.
+			// Actions backend resolver looks it up as written, so keep its name.
+			// Dependabot also reads back only actions.lock.
 			for i := range deps {
 				if len(deps[i].OriginalRefs) > 0 {
 					deps[i].NWO = deps[i].OriginalRefs[0].NWO()
