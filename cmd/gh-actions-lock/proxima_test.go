@@ -266,7 +266,7 @@ jobs:
 
 // TestOwnSHAEntryKeepsRecordedHost: an entry recording its own SHA as its
 // ref is re-resolved, but its recorded host still binds the repository
-// before any lookup: a dotcom pin never reaches a tenant namesake, and a
+// before any lookup: a github.com pin never reaches a tenant namesake, and a
 // pin to another host fails as it would for any other entry.
 func TestOwnSHAEntryKeepsRecordedHost(t *testing.T) {
 	writeLock := func(t *testing.T, version, hostname string) string {
@@ -286,12 +286,12 @@ jobs:
 		return path
 	}
 
-	t.Run("dotcom pin on a tenant", func(t *testing.T) {
+	t.Run("github.com pin on a tenant", func(t *testing.T) {
 		path := writeLock(t, "v0.0.3", "github.com")
 		base := proximaFixture(t, 200)
 		transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
 			assert.False(t, req.URL.Host == "api.tenant.ghe.com" && strings.Contains(req.URL.Path, "actions/public"),
-				"a recorded dotcom pin must bypass tenant namesakes: %s", req.URL)
+				"a recorded github.com pin must bypass tenant namesakes: %s", req.URL)
 			if req.URL.Host == "api.tenant.ghe.com" && req.URL.Path == "/graphql" {
 				return parityRepoID(req, 200, 222)
 			}
