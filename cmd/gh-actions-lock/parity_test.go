@@ -1725,6 +1725,8 @@ jobs:
 	_, stderr, err := runCommandWithHTTP(t, reg, "--accept-moved", "--no-narrow", "--no-interactive", path)
 	require.ErrorIs(t, err, errSilent, stderr)
 	assert.Contains(t, stderr, "ref v4-gone is not a tag or branch of actions/checkout")
+	assert.Contains(t, stderr, "upgrade or replace octo/composite@v1 with a version whose pin of actions/checkout can be verified, or stop using it")
+	assert.NotContains(t, stderr, "--accept-moved", "an override that can't repair it is never suggested")
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
 	assert.Equal(t, lock, string(after), "nothing is written")
