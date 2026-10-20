@@ -45,7 +45,11 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 	if err := updateLockfile(ctx, rec, rec.Workflows, store); err != nil {
 		return err
 	}
-	if err := store.Validate(); err != nil {
+	committed := make([]string, len(rec.Workflows))
+	for i, wp := range rec.Workflows {
+		committed[i] = workflowfile.KeyFromPath(wp.Path)
+	}
+	if err := store.Validate(committed...); err != nil {
 		return err
 	}
 

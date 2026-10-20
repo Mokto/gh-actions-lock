@@ -468,3 +468,36 @@ func TestRetainUnresolvablePinsKeepsRefCasing(t *testing.T) {
 	}
 	assert.Equal(t, []string{"o/a@Main", "o/a@main"}, keys)
 }
+
+// TestCommitRejectsIncompleteClosure: a workflow that shares a recorded
+// entry inherits its edges, so a missing descendant must fail the commit
+// before any file is rewritten, not the next --verify-local.
+func TestCommitRejectsIncompleteClosure(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(".github", "workflows", "ci.yml")
+	oldUses := "o/root@" + strings.Repeat("a", 40)
+	content := []byte("on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: " + oldUses + "\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, filepath.Dir(workflowPath)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, workflowPath), content, 0o644))
+	t.Chdir(dir)
+
+	store, err := lockfile.LoadState(dir, fakeMeta{})
+	require.NoError(t, err)
+	root := dep.Dependency{NWO: "o/root", Ref: "v1", Branch: "main", SHA: strings.Repeat("a", 40), HashAlgo: "sha1"}
+	child := dep.Dependency{NWO: "o/child", Ref: "v1", Branch: "main", SHA: strings.Repeat("b", 40), HashAlgo: "sha1"}
+	grandchild := dep.Dependency{NWO: "o/grandchild", Ref: "v1", Branch: "main", SHA: strings.Repeat("c", 40), HashAlgo: "sha1"}
+	require.NoError(t, store.Set(context.Background(), ".github/workflows/other.yml", []dep.Dependency{root, child, grandchild},
+		dep.ParentMap{child.Key(): {root.Key()}, grandchild.Key(): {child.Key()}}, map[string]bool{root.Key(): true}))
+	delete(store.File().Dependencies, "o/grandchild@v1")
+
+	rec := &Record{
+		Entries:   []Entry{{NWO: "o/root", Ref: "v1", SHA: root.SHA, Resolution: Pinned, Direct: true, OnBranch: "main", Workflows: []string{workflowPath}}},
+		Workflows: []WorkflowPlan{{Path: workflowPath, Rewrites: map[string]string{oldUses: "o/root@v1"}}},
+	}
+	err = Commit(context.Background(), rec, store, nil)
+	require.ErrorIs(t, err, lockfile.ErrIncompleteGraph)
+	assert.ErrorContains(t, err, "o/grandchild@v1")
+	after, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, after)
+}

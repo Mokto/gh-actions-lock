@@ -936,14 +936,34 @@ func (s *State) Save() error {
 // a composite action reaches itself.
 var ErrUsesCycle = dep.ErrUsesCycle
 
+// ErrIncompleteGraph reports a workflow whose recorded closure would name
+// an entry the lockfile doesn't have.
+var ErrIncompleteGraph = errors.New("lockfile graph is incomplete")
+
 // Validate reports whether Save would write a lockfile that the lockfile
-// parser accepts. Callers run it before touching workflow files so a graph
-// that can't be recorded, such as a uses cycle, fails without partial writes.
-func (s *State) Validate() error {
+// parser accepts and in which each of workflows has a complete closure, as
+// --verify-local checks it. Callers run it before touching workflow files so
+// a graph that can't be recorded fails without partial writes. A workflow
+// inherits the edges of entries it shares, so this covers descendants the
+// run never resolved.
+func (s *State) Validate(workflows ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.render()
-	return err
+	if _, err := s.render(); err != nil {
+		return err
+	}
+	for _, wf := range workflows {
+		_, missing := InspectClosure(s.file, wf, func(parserlock.Pin, parserlock.Action) bool { return true })
+		if len(missing) == 0 {
+			continue
+		}
+		m := missing[0]
+		if m.Parent == "" {
+			return fmt.Errorf("%w: %s uses %s, which has no entry", ErrIncompleteGraph, wf, m.Key)
+		}
+		return fmt.Errorf("%w: %s reaches %s through %s, which has no entry; refresh the workflows that share it", ErrIncompleteGraph, wf, m.Key, m.Parent)
+	}
+	return nil
 }
 
 // render garbage-collects orphans and returns the bytes Save writes, or nil
