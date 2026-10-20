@@ -106,6 +106,17 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	investigated := record.Investigated()
 	narrowed := record.Narrowed()
 
+	// Housekeeping goes before the summary it would otherwise trail.
+	if len(report.Workflows) > 0 {
+		if n := len(prunedWorkflows); n > 0 {
+			console.TermDetail("Pruned %d deleted %s from the lockfile", n, ui.Pluralize(n, "workflow", "workflows"))
+		}
+		// The on-disk schema differs from the binary's (e.g. v0.0.1 → v0.0.2).
+		if originalVersion != "" && originalVersion != parserlock.Version {
+			console.TermDetail("Upgraded lockfile schema %s → %s", originalVersion, parserlock.Version)
+		}
+	}
+
 	for _, wp := range record.Workflows {
 		for _, oldUse := range slices.Sorted(maps.Keys(wp.RequiredRewrites)) {
 			where := strings.Join(wp.RewrittenIn[oldUse], ", ")
@@ -152,16 +163,6 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	if total == 0 {
 		console.TermNeutral("No workflows to check")
 		return nil
-	}
-
-	if n := len(prunedWorkflows); n > 0 {
-		console.TermDetail("Pruned %d deleted %s from the lockfile", n, ui.Pluralize(n, "workflow", "workflows"))
-	}
-
-	// Surface lockfile schema upgrade when the on-disk version differs from
-	// the current binary's version (e.g. v0.0.1 → v0.0.2).
-	if originalVersion != "" && originalVersion != parserlock.Version {
-		console.TermDetail("Upgraded lockfile schema %s → %s", originalVersion, parserlock.Version)
 	}
 
 	onboardingRefused := len(refusedLabels)

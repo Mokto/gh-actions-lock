@@ -13,6 +13,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/github/gh-actions-lock/internal/ui"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // A workflow shared between two different actions must still be listed under
@@ -686,5 +687,28 @@ func TestRenderAcceptedOverrides_NamesReRecordedRef(t *testing.T) {
 			renderAcceptedOverrides(ui.NewPlain(&buf), report, pinned)
 			assert.Contains(t, buf.String(), "actions/checkout: recorded ref v4-gone no longer contains 11bd71901bbe; re-recorded as v4.2.2 (--accept-moved)")
 		})
+	}
+}
+
+// TestRenderPinSummary_HousekeepingBeforeSummary: the schema upgrade and
+// pruning notes print before the pinned summary, not after it.
+func TestRenderPinSummary_HousekeepingBeforeSummary(t *testing.T) {
+	record := &pin.Record{Entries: []pin.Entry{{
+		NWO: "actions/checkout", Ref: "v4.2.2", SHA: "11bd71901bbe5b1630ceea73d27597364c9af683",
+		Resolution: pin.Pinned, Workflows: []string{".github/workflows/ci.yml"}, Direct: true,
+	}}}
+	report := &checks.Report{Workflows: []checks.WorkflowReport{{Path: ".github/workflows/ci.yml"}}}
+
+	var buf bytes.Buffer
+	err := renderPinSummary(context.Background(), ui.NewPlain(&buf), record, report, nil, nil, true, false, "v0.0.2", []string{".github/workflows/old.yml"})
+	require.NoError(t, err)
+	out := buf.String()
+
+	pinned := strings.Index(out, "Pinned 1 action")
+	require.NotEqual(t, -1, pinned, out)
+	for _, line := range []string{"Upgraded lockfile schema v0.0.2", "Pruned 1 deleted workflow"} {
+		i := strings.Index(out, line)
+		require.NotEqual(t, -1, i, out)
+		assert.Less(t, i, pinned, "%q should precede the summary:\n%s", line, out)
 	}
 }
