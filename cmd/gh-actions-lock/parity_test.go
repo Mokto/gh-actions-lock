@@ -1740,6 +1740,38 @@ func refusalDetail(ref string) string {
 	return "ref " + ref + " is not a tag or branch of actions/checkout"
 }
 
+// TestParity_AcceptMovedReadOnlyStillBlocks: read-only runs never plan, so
+// --accept-moved can't repair anything there and must not downgrade the
+// failure of a full-SHA pin whose recorded ref is gone.
+func TestParity_AcceptMovedReadOnlyStillBlocks(t *testing.T) {
+	for _, mode := range []string{"--verify", "--no-fix"} {
+		t.Run(mode, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": map[string]any{
+					"nameWithOwner": "actions/checkout",
+					"databaseId":    1,
+					"commit":        map[string]any{"oid": parityTestSHA},
+				}},
+			}))
+			reg.RegisterReusable(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+			}))
+			path := writeFullSHAWorkflow(t, "v6.1.0")
+
+			p, err := runParity(t, reg, mode, "--accept-moved", path)
+			require.ErrorIs(t, err, errSilent)
+			var blocking []string
+			for _, f := range p.Findings {
+				if f.Severity == "error" {
+					blocking = append(blocking, f.Category)
+				}
+			}
+			assert.Contains(t, blocking, "unreachable-pin")
+		})
+	}
+}
+
 // writeFullSHAWorkflow writes a workflow using actions/checkout at
 // parityTestSHA, locked to that commit with the given recorded ref.
 func writeFullSHAWorkflow(t *testing.T, ref string) string {
