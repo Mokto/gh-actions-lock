@@ -322,12 +322,10 @@ func TestState_DiamondTransitiveDepEmittedCorrectly(t *testing.T) {
 	}
 }
 
-// TestState_SaveGCHandlesCyclicUses verifies that Save()'s garbage collection
-// walk (which follows uses: edges) terminates when the uses: graph contains a
-// cycle (A uses B, B uses A). Both entries should be retained in the write.
-// The new parser rejects cycles on reload, so we verify Save doesn't hang
-// and the cycle is caught on re-parse.
-func TestState_SaveGCHandlesCyclicUses(t *testing.T) {
+// TestState_SaveRejectsCyclicUses: the lockfile parser rejects a uses cycle,
+// so Save must refuse one (terminating despite the cycle) and write nothing
+// rather than produce a lockfile every later run fails to read.
+func TestState_SaveRejectsCyclicUses(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
 		t.Fatal(err)
@@ -354,18 +352,15 @@ func TestState_SaveGCHandlesCyclicUses(t *testing.T) {
 	if err := store.Set(context.Background(), ".github/workflows/ci.yml", deps, parentMap, directKeys); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	// Save should not hang (GC walk terminates despite cycle).
-	if err := store.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
+	err = store.Save()
+	if !errors.Is(err, ErrUsesCycle) {
+		t.Fatalf("Save error = %v, want ErrUsesCycle", err)
 	}
-
-	// The new parser rejects cycles on reload.
-	_, err = LoadState(dir, fakeMetadataResolver{})
-	if err == nil {
-		t.Fatal("expected parser to reject cyclic uses on reload")
+	if err := store.Validate(); !errors.Is(err, ErrUsesCycle) {
+		t.Errorf("Validate error = %v, want ErrUsesCycle", err)
 	}
-	if !strings.Contains(err.Error(), "cycle") {
-		t.Errorf("expected cycle error, got: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, parserlock.Path)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("lockfile written despite cycle: %v", err)
 	}
 }
 
