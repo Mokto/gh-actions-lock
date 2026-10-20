@@ -32,6 +32,7 @@ func planEntryRepairs(ctx context.Context, rec *Record, report *checks.Report, o
 	// dropped, and a stale root a kept entry uses is reached as its child.
 	stale := staleRoots(report, opts)
 	workflows := map[string][]string{}
+	parents := map[string][]string{}
 	for _, wr := range report.Workflows {
 		wfKey := workflowfile.KeyFromPath(wr.Path)
 		live := func(p parserlock.Pin, _ parserlock.Action) bool { return !stale[wfKey][p.String()] }
@@ -42,6 +43,9 @@ func planEntryRepairs(ctx context.Context, rec *Record, report *checks.Report, o
 			key := lp.Pin.String()
 			if !slices.Contains(workflows[key], wr.Path) {
 				workflows[key] = append(workflows[key], wr.Path)
+			}
+			if !slices.Contains(parents[key], lp.Parent) {
+				parents[key] = append(parents[key], lp.Parent)
 			}
 		}
 	}
@@ -61,6 +65,7 @@ func planEntryRepairs(ctx context.Context, rec *Record, report *checks.Report, o
 				Issue:      "reverse-lookup",
 				Reason:     "this commit has no exact tag and is not on any branch. Update the action that uses it to a version pinning a current upstream tag or branch, then rerun",
 				Workflows:  workflows[key],
+				RequiredBy: slices.Sorted(slices.Values(parents[key])),
 			})
 			continue
 		}

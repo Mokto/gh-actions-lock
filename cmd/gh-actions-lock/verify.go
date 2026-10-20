@@ -111,8 +111,12 @@ func appendOwnSHAEntryFindings(report *checks.Report, store *lockfile.State, sca
 		f := ownSHAEntryFinding(e)
 		f.Severity = checks.SeverityError
 		f.Remediation = "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from"
-		if len(e.Workflows) == 0 && len(e.Parents) == 0 {
+		switch {
+		case len(e.Workflows) == 0 && len(e.Parents) == 0:
 			f.Remediation = "run `gh actions-lock` to drop it"
+		case len(e.Workflows) == 0:
+			// Only the composite can change a pin it holds.
+			f.Remediation += "; if none contains it, upgrade or replace " + e.Parents[0]
 		}
 		report.RepoFindings = append(report.RepoFindings, f)
 	}

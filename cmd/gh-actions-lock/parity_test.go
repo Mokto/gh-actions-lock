@@ -1488,7 +1488,7 @@ func TestSHARecordedRef_ChildReadOnlyBlocks(t *testing.T) {
 				require.Len(t, blocking, 1, "findings: %+v", p.Findings)
 				where, fix := "used by no workflow", "run `gh actions-lock` to drop it"
 				if transitive {
-					where, fix = "used by actions/checkout@v6.1.0", "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from"
+					where, fix = "used by actions/checkout@v6.1.0", "run `gh actions-lock` without workflow paths to record the tag or branch this commit came from; if none contains it, upgrade or replace actions/checkout@v6.1.0"
 				}
 				assert.Contains(t, blocking[0].Detail, "lock entry for actions/cache@"+parityTestSHA+", "+where+", records ref "+parserlock.ShortSHA(parityTestSHA))
 				assert.Equal(t, fix, blocking[0].Remediation)
@@ -1560,7 +1560,8 @@ func TestSHARecordedRef_ChildFixRepairs(t *testing.T) {
 				lock := readTempLockfilePins(t)
 				if tt.transitive && tt.want == "" {
 					require.ErrorIs(t, err, errSilent, stderr)
-					assert.Contains(t, stderr, "is not on any tag or branch of actions/cache")
+					assert.Contains(t, stderr, "is not on any tag or branch of actions/cache: it may be a fork or impostor commit served under the upstream name (used by actions/checkout@v6.1.0)")
+					assert.Contains(t, stderr, "upgrade or replace actions/checkout@v6.1.0 with a version whose pin of actions/cache can be verified, or stop using it")
 					assert.Equal(t, lockBefore, lock)
 					return
 				}

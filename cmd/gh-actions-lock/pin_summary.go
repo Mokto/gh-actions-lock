@@ -866,7 +866,7 @@ func replaceOffHistoryFindings(report *checks.Report, unresolved []pin.Entry) []
 					}
 					kept = append(kept, f)
 				}
-				wr.Findings = append(kept, checks.Finding{
+				f := checks.Finding{
 					WorkflowPath: wf,
 					Category:     checks.UnreachablePin,
 					Severity:     checks.SeverityError,
@@ -874,7 +874,14 @@ func replaceOffHistoryFindings(report *checks.Report, unresolved []pin.Entry) []
 					Dependency:   &dep.Dependency{NWO: e.NWO, Ref: e.Ref, SHA: e.SHA},
 					Detail:       fmt.Sprintf("commit %s is not on any tag or branch of %s: it may be a fork or impostor commit served under the upstream name", parserlock.ShortSHA(e.SHA), e.NWO),
 					Remediation:  "use a current upstream tag instead",
-				})
+				}
+				// A composite's pin: only the composite can change it.
+				if len(e.RequiredBy) > 0 {
+					f.ParentNWO = e.RequiredBy[0]
+					f.Detail += fmt.Sprintf(" (used by %s)", f.ParentNWO)
+					f.Remediation = fmt.Sprintf("upgrade or replace %s with a version whose pin of %s can be verified, or stop using it", f.ParentNWO, e.NWO)
+				}
+				wr.Findings = append(kept, f)
 			}
 		}
 	}
