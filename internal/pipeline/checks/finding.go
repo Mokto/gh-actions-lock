@@ -118,6 +118,9 @@ type WorkflowReport struct {
 // NeedsAttention returns true if this workflow has any non-OK findings.
 func (r *WorkflowReport) NeedsAttention() bool {
 	for _, f := range r.Findings {
+		if f.Severity == SeverityError {
+			return true
+		}
 		if f.Category.IsInconclusive() {
 			continue
 		}
@@ -166,7 +169,7 @@ func (f *Finding) IsWarning() bool {
 	case f.Category == LocalAction, f.Category == RepoRenamed:
 		return true
 	case f.Category.IsInconclusive():
-		return true
+		return f.Severity != SeverityError
 	case f.Category == NotPinned && f.ActionRef == nil:
 		return true
 	default:
