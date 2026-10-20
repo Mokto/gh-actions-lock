@@ -228,7 +228,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if err := store.SetHostname(r.Hostname()); err != nil {
 		return err
 	}
-	if err := r.SeedHosts(store.AllDeps()); err != nil {
+	if err := r.SeedHosts(store.RecordedHosts()); err != nil {
 		return err
 	}
 	scope := make([]string, len(paths))
