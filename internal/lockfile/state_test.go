@@ -3,12 +3,15 @@ package lockfile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/cli/go-gh/v2/pkg/api"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -1262,5 +1265,378 @@ func TestPrepareRefreshRejectsIncompleteOrConflictingPlans(t *testing.T) {
 			assert.Equal(t, []string{child.Key()}, store.File().Dependencies[root.Key()].Uses,
 				"invalid plans must be rejected before clearing recorded edges")
 		})
+	}
+}
+
+const entryRefSHA = "9ddf35b71a482be7d8922b28e8d00df16b77e315"
+
+// TestLoadState_InvalidEntryRefIsCorrupt: an entry whose ref the Actions
+// backend resolver would reject is a parse error, never a finding a fix run
+// could launder.
+func TestLoadState_InvalidEntryRefIsCorrupt(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		ref  string
+	}{
+		{"full-SHA key records the SHA", entryRefSHA, entryRefSHA},
+		{"qualified tag", entryRefSHA, "refs/tags/v6.1.0"},
+		{"qualified pull request ref", entryRefSHA, "refs/pull/1/head"},
+		{"tag key records a branch", "v4", "main"},
+		{"revision expression", entryRefSHA, "main~1"},
+		{"describe name", entryRefSHA, "v6.1.0-1-g373d742f768e"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeEntryRefLock(t, tt.key, tt.ref)
+			_, err := LoadState(dir, fakeMetadataResolver{})
+			require.ErrorIs(t, err, ErrCorruptLockfile)
+			assert.Contains(t, err.Error(), "actions/checkout@"+tt.key)
+		})
+	}
+}
+
+func TestLoadState_ValidEntryRefLoads(t *testing.T) {
+	for _, tt := range []struct{ key, ref string }{
+		{"v4", "v4"},
+		{entryRefSHA, "v6.1.0"},
+		// Well-formed; parity rejects it as not a tag or branch.
+		{entryRefSHA, "pull/1/head"},
+	} {
+		dir := writeEntryRefLock(t, tt.key, tt.ref)
+		_, err := LoadState(dir, fakeMetadataResolver{})
+		require.NoError(t, err, "%s@%s", tt.key, tt.ref)
+	}
+}
+
+func writeEntryRefLock(t *testing.T, key, ref string) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	pin := "actions/checkout@" + key
+	body := strings.Join([]string{
+		"version: '" + parserlock.Version + "'",
+		"dependencies:",
+		"  '" + pin + "':",
+		"    ref: '" + ref + "'",
+		"    commit: 'sha1-" + entryRefSHA + "'",
+		"    owner_id: 1",
+		"    repo_id: 1",
+		"workflows:",
+		"  '.github/workflows/ci.yml':",
+		"    - '" + pin + "'",
+		"",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, parserlock.Path), []byte(body), 0o600))
+	return dir
+}
+
+// TestLoadState_ContentErrorNamesProblem: an invalid lockfile is reported by
+// what's wrong with it, never as "unreadable", and still matches
+// ErrCorruptLockfile.
+func TestLoadState_ContentErrorNamesProblem(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	sha := "9ddf35b71a482be7d8922b28e8d00df16b77e315"
+	lock := "version: 'v0.0.3'\ndependencies:\n  'actions/checkout@" + sha + "':\n    ref: 'main~1'\n    commit: 'sha1-" + sha + "'\n    owner_id: 1\n    repo_id: 1\nworkflows:\n  '.github/workflows/ci.yml':\n    - 'actions/checkout@" + sha + "'\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+	_, err := LoadState(dir, fakeMetadataResolver{})
+	require.ErrorIs(t, err, ErrCorruptLockfile)
+	assert.Equal(t, `.github/workflows/actions.lock: line 3: entry for actions/checkout@`+sha+` records ref "main~1", which isn't a tag or branch name the Actions backend accepts`, err.Error())
+	assert.NotContains(t, err.Error(), "unreadable")
+}
+
+type hostMetadata struct{}
+
+func TestDotcomSaveOmitsHostname(t *testing.T) {
+	for _, version := range []string{"", "v0.0.2", "v0.0.3"} {
+		t.Run("input version="+version, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, parserlock.Path)
+			sha := strings.Repeat("a", 40)
+			if version != "" {
+				hostname := ""
+				if version == "v0.0.3" {
+					hostname = "    hostname: github.com\n"
+				}
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+				body := fmt.Sprintf("version: %s\nworkflows:\n  .github/workflows/ci.yml:\n    - o/r@v1\ndependencies:\n  o/r@v1:\n%s    ref: v1\n    commit: sha1-%s\n    owner_id: 1\n    repo_id: 2\n", version, hostname, sha)
+				require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+			}
+			store, err := LoadState(dir, hostMetadata{})
+			require.NoError(t, err)
+			require.NoError(t, store.SetHostname("github.com"))
+			if version == "" {
+				require.NoError(t, store.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{
+					{Hostname: "github.com", NWO: "o/r", Ref: "v1", SHA: sha},
+				}, nil, nil))
+			}
+			require.NoError(t, store.Save())
+			raw, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Contains(t, string(raw), "version: 'v0.0.3'")
+			assert.NotContains(t, string(raw), "hostname:")
+			reloaded, err := LoadState(dir, nil)
+			require.NoError(t, err)
+			require.Len(t, reloaded.AllDeps(), 1)
+			assert.Equal(t, "github.com", reloaded.AllDeps()[0].Hostname)
+			assert.Equal(t, sha, reloaded.AllDeps()[0].SHA)
+			assert.EqualValues(t, 2, reloaded.File().Dependencies["o/r@v1"].RepoID)
+			require.NoError(t, reloaded.Save())
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, raw, after)
+		})
+	}
+}
+
+func (hostMetadata) RepoIDs(_ context.Context, host, _, _ string) (int64, int64, error) {
+	if host == "tenant.ghe.com" {
+		return 10, 20, nil
+	}
+	return 1, 2, nil
+}
+
+func TestHostScopedMetadataAndPinCollisions(t *testing.T) {
+	dir := t.TempDir()
+	store, err := LoadState(dir, hostMetadata{})
+	require.NoError(t, err)
+	require.NoError(t, store.SetHostname("tenant.ghe.com"))
+	sha := strings.Repeat("a", 40)
+	tenant := dep.Dependency{Hostname: "tenant.ghe.com", NWO: "o/r", Ref: "tenant", SHA: sha}
+	public := dep.Dependency{Hostname: "github.com", NWO: "o/r", Ref: "public", SHA: sha}
+	require.NoError(t, store.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{tenant, public}, nil, nil))
+	require.NoError(t, store.Save())
+	reloaded, err := LoadState(dir, nil)
+	require.NoError(t, err)
+	require.NoError(t, reloaded.SetHostname("tenant.ghe.com"))
+	file := reloaded.File()
+	assert.Empty(t, file.Dependencies["o/r@tenant"].Hostname)
+	assert.EqualValues(t, 20, file.Dependencies["o/r@tenant"].RepoID)
+	assert.Equal(t, "github.com", file.Dependencies["o/r@public"].Hostname)
+	assert.EqualValues(t, 2, file.Dependencies["o/r@public"].RepoID)
+	deps, err := reloaded.Get(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"github.com", "tenant.ghe.com"}, []string{deps[0].Hostname, deps[1].Hostname})
+	require.NoError(t, reloaded.Set(context.Background(), ".github/workflows/ci.yml", deps, nil, nil))
+	assert.EqualValues(t, 20, reloaded.File().Dependencies["o/r@tenant"].RepoID)
+	assert.EqualValues(t, 2, reloaded.File().Dependencies["o/r@public"].RepoID)
+
+	public.Ref = tenant.Ref
+	require.ErrorContains(t, store.Set(context.Background(), ".github/workflows/other.yml", []dep.Dependency{public}, nil, nil), "conflicting hosts")
+	fresh, err := LoadState(t.TempDir(), hostMetadata{})
+	require.NoError(t, err)
+	require.ErrorContains(t, fresh.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{tenant, public}, nil, nil), "conflicting hosts")
+}
+
+func TestLegacyAndOmittedHostnames(t *testing.T) {
+	for _, version := range []string{"v0.0.1", "v0.0.2", "v0.0.3"} {
+		t.Run(version, func(t *testing.T) {
+			key := "o/r@v1"
+			ref := "ref: v1"
+			if version == "v0.0.1" {
+				key += ":sha1-" + strings.Repeat("a", 40)
+				ref = "tag: v1"
+			}
+			path := filepath.Join(t.TempDir(), "actions.lock")
+			host := "github.com"
+			ownerID, repoID := 1, 2
+			if version == "v0.0.3" {
+				host = "tenant.ghe.com"
+				ownerID, repoID = 10, 20
+			}
+			body := fmt.Sprintf("version: %s\nworkflows:\n  .github/workflows/ci.yml:\n    - %s\ndependencies:\n  %s:\n    %s\n    commit: sha1-%s\n    owner_id: %d\n    repo_id: %d\n", version, key, key, ref, strings.Repeat("a", 40), ownerID, repoID)
+			require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+			store, err := LoadStateAt(path, nil)
+			require.NoError(t, err)
+			require.NoError(t, store.SetHostname("tenant.ghe.com"))
+			deps := store.AllDeps()
+			require.Len(t, deps, 1)
+			assert.Equal(t, host, deps[0].Hostname)
+			assert.Equal(t, strings.Repeat("a", 40), deps[0].SHA)
+			store.SetMetadataResolver(hostMetadata{})
+			require.NoError(t, store.VerifyHosts(context.Background(), []string{".github/workflows/ci.yml"}))
+			require.NoError(t, store.Save())
+			raw, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Contains(t, string(raw), "version: 'v0.0.3'")
+			if version == "v0.0.3" {
+				assert.NotContains(t, string(raw), "hostname:")
+			} else {
+				assert.Contains(t, string(raw), "hostname: 'github.com'")
+			}
+			t.Run("leaves changed IDs to parity", func(t *testing.T) {
+				changed := store.file.Dependencies["o/r@v1"]
+				changed.OwnerID, changed.RepoID = 200, 200
+				store.file.Dependencies["o/r@v1"] = changed
+				require.NoError(t, store.VerifyHosts(context.Background(), []string{".github/workflows/ci.yml"}))
+			})
+			t.Run("fails on inconclusive lookups in scope only", func(t *testing.T) {
+				store.SetMetadataResolver(failingMetadata{})
+				err := store.VerifyHosts(context.Background(), []string{".github/workflows/ci.yml"})
+				require.ErrorContains(t, err, "HTTP 503")
+				require.NoError(t, store.VerifyHosts(context.Background(), []string{".github/workflows/other.yml"}))
+			})
+		})
+	}
+}
+
+type failingMetadata struct{}
+
+func (failingMetadata) RepoIDs(context.Context, string, string, string) (int64, int64, error) {
+	return 0, 0, &api.HTTPError{StatusCode: 503}
+}
+
+func TestSaveRejectsForeignTenant(t *testing.T) {
+	store, err := LoadState(t.TempDir(), hostMetadata{})
+	require.NoError(t, err)
+	require.NoError(t, store.SetHostname("tenant.ghe.com"))
+	require.NoError(t, store.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{
+		{Hostname: "other.ghe.com", NWO: "o/r", Ref: "v1", SHA: strings.Repeat("a", 40)},
+	}, nil, nil))
+	require.ErrorContains(t, store.Save(), "not the home host")
+	_, err = os.Stat(store.lockPath)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestGHESKeepsHostLocalFormat(t *testing.T) {
+	dir := t.TempDir()
+	store, err := LoadState(dir, hostMetadata{})
+	require.NoError(t, err)
+	require.NoError(t, store.SetHostname("github.example.com"))
+	require.NoError(t, store.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{
+		{Hostname: "github.example.com", NWO: "o/r", Ref: "v1", SHA: strings.Repeat("a", 40)},
+	}, nil, nil))
+	require.NoError(t, store.Save())
+	raw, err := os.ReadFile(filepath.Join(dir, parserlock.Path))
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "version: 'v0.0.2'")
+	assert.NotContains(t, string(raw), "hostname:")
+	_, err = parserlock.Parse(raw)
+	require.NoError(t, err)
+
+	reloaded, err := LoadState(dir, nil)
+	require.NoError(t, err)
+	require.NoError(t, reloaded.SetHostname("github.example.com"))
+	assert.Equal(t, "github.example.com", reloaded.AllDeps()[0].Hostname)
+	require.NoError(t, reloaded.Save())
+	after, err := os.ReadFile(filepath.Join(dir, parserlock.Path))
+	require.NoError(t, err)
+	assert.Equal(t, raw, after)
+}
+
+func checkoutDep() dep.Dependency {
+	return dep.Dependency{
+		NWO:      "actions/checkout",
+		Ref:      "v4.2.1",
+		Tag:      "v4.2.1",
+		SHA:      "abc123abc123abc123abc123abc123abc123abc1",
+		HashAlgo: "sha1",
+	}
+}
+
+func setupGoDep() dep.Dependency {
+	return dep.Dependency{
+		NWO:      "actions/setup-go",
+		Ref:      "v5.0.0",
+		Tag:      "v5.0.0",
+		SHA:      "def456def456def456def456def456def456def4",
+		HashAlgo: "sha1",
+	}
+}
+
+func newStoreWithWorkflows(t *testing.T, dir string) *State {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := LoadState(dir, fakeMetadataResolver{})
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	return store
+}
+
+func TestPruneWorkflows_RemovesStaleEntryAndOrphanedDeps(t *testing.T) {
+	dir := t.TempDir()
+	store := newStoreWithWorkflows(t, dir)
+
+	if err := store.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{checkoutDep()}, nil, nil); err != nil {
+		t.Fatalf("Set ci: %v", err)
+	}
+	if err := store.Set(context.Background(), ".github/workflows/release.yml", []dep.Dependency{setupGoDep()}, nil, nil); err != nil {
+		t.Fatalf("Set release: %v", err)
+	}
+
+	removed := store.PruneWorkflows(map[string]bool{".github/workflows/ci.yml": true})
+	if len(removed) != 1 || removed[0] != ".github/workflows/release.yml" {
+		t.Fatalf("removed = %v, want [.github/workflows/release.yml]", removed)
+	}
+
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, parserlock.Path))
+	if err != nil {
+		t.Fatalf("reading lockfile: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, "ci.yml") || !strings.Contains(got, "actions/checkout") {
+		t.Errorf("live workflow/dep missing after prune:\n%s", got)
+	}
+	if strings.Contains(got, "release.yml") {
+		t.Errorf("stale workflow still present after prune:\n%s", got)
+	}
+	if strings.Contains(got, "actions/setup-go") {
+		t.Errorf("orphaned dep not garbage-collected after prune:\n%s", got)
+	}
+}
+
+func TestPruneWorkflows_KeepsDepStillReferenced(t *testing.T) {
+	dir := t.TempDir()
+	store := newStoreWithWorkflows(t, dir)
+
+	// Both workflows use actions/checkout.
+	if err := store.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{checkoutDep()}, nil, nil); err != nil {
+		t.Fatalf("Set ci: %v", err)
+	}
+	if err := store.Set(context.Background(), ".github/workflows/release.yml", []dep.Dependency{checkoutDep()}, nil, nil); err != nil {
+		t.Fatalf("Set release: %v", err)
+	}
+
+	store.PruneWorkflows(map[string]bool{".github/workflows/ci.yml": true})
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, parserlock.Path))
+	if err != nil {
+		t.Fatalf("reading lockfile: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, "actions/checkout") {
+		t.Errorf("shared dep dropped even though a live workflow still uses it:\n%s", got)
+	}
+	if strings.Contains(got, "release.yml") {
+		t.Errorf("stale workflow still present after prune:\n%s", got)
+	}
+}
+
+func TestPruneWorkflows_NoStaleIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	store := newStoreWithWorkflows(t, dir)
+
+	if err := store.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{checkoutDep()}, nil, nil); err != nil {
+		t.Fatalf("Set ci: %v", err)
+	}
+
+	removed := store.PruneWorkflows(map[string]bool{".github/workflows/ci.yml": true})
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want none", removed)
+	}
+	if keys := store.WorkflowKeys(); len(keys) != 1 || keys[0] != ".github/workflows/ci.yml" {
+		t.Fatalf("WorkflowKeys = %v, want [.github/workflows/ci.yml]", keys)
 	}
 }

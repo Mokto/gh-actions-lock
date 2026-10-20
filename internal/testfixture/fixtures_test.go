@@ -89,19 +89,6 @@ var orphanTestFiles = map[string]bool{
 	"cmd/gh-actions-lock/reporoot_test.go":          true,
 	"cmd/gh-actions-lock/resolve_cooldown_test.go":  true,
 	"cmd/gh-actions-lock/selfrepository_test.go":    true,
-	"internal/config/file_test.go":                  true,
-	"internal/ghapi/repos_dedup_test.go":            true,
-	"internal/lockfile/entryref_test.go":            true,
-	"internal/lockfile/hosts_test.go":               true,
-	"internal/lockfile/prune_test.go":               true,
-	"internal/pin/imprecise_test.go":                true,
-	"internal/pin/normalization_test.go":            true,
-	"internal/pin/relock_test.go":                   true,
-	"internal/pin/retain_impostor_test.go":          true,
-	"internal/pipeline/diagnose_helpers_test.go":    true,
-	"internal/resolve/discover_test.go":             true,
-	"internal/tag/pure_test.go":                     true,
-	"internal/tag/tags_keys_test.go":                true,
 }
 
 // TestEveryTestFileHasSource enforces that x_test.go sits beside x.go, so a

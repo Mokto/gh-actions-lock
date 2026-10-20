@@ -2,7 +2,12 @@ package pin
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/github/gh-actions-lock/internal/pipeline"
+	"github.com/github/gh-actions-lock/internal/workflowfile"
 
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
@@ -1153,4 +1158,396 @@ func keys(m map[string]Entry) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// A composite's imprecise transitive pin is the composite author's choice and
+// is never narrowed, so it must not veto narrowing direct uses of that action.
+func TestPlan_impreciseTransitivePinDoesNotBlockDirectNarrowing(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	wfPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
+	wfKey := workflowfile.KeyFromPath(wfPath)
+
+	store, err := lockfile.LoadState(dir, fakeMeta{})
+	require.NoError(t, err)
+
+	deps := []dep.Dependency{
+		{NWO: "github/go-linter", Ref: "v2.2.3", Tag: "v2.2.3", Branch: "main", SHA: "1111111111111111111111111111111111111111", HashAlgo: "sha1"},
+		// Transitive: pulled in by go-linter, imprecise, not a direct pin.
+		{NWO: "actions/checkout", Ref: "v6", Tag: "v6", Branch: "main", SHA: "2222222222222222222222222222222222222222", HashAlgo: "sha1"},
+		// Direct and imprecise: this one narrowing must still be allowed to fix.
+		{NWO: "actions/setup-go", Ref: "v5", Tag: "v5", Branch: "main", SHA: "3333333333333333333333333333333333333333", HashAlgo: "sha1"},
+	}
+	parents := map[string][]string{"actions/checkout@v6": {"github/go-linter@v2.2.3"}}
+	directKeys := map[string]bool{"github/go-linter@v2.2.3": true, "actions/setup-go@v5": true}
+	require.NoError(t, store.Set(context.Background(), wfKey, deps, parents, directKeys))
+	require.NoError(t, store.Save())
+
+	imprecise := impreciseDirectNWOs(store)
+
+	assert.False(t, imprecise["actions/checkout"], "transitive-only imprecise pin must not block narrowing")
+	assert.True(t, imprecise["actions/setup-go"], "a direct imprecise pin still records the user's precision choice")
+}
+
+func TestPlanNormalizationPrunesStaleTargetsInOneRun(t *testing.T) {
+	const (
+		oldSHA  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		headSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	for _, tt := range []struct {
+		name      string
+		tag       string
+		recorded  bool
+		workflows []string
+	}{
+		{name: "fresh branch head"},
+		{name: "recorded branch head", recorded: true},
+		{name: "fresh exact tag", tag: "v1.0.0"},
+		{name: "recorded exact tag", tag: "v1.0.0", recorded: true},
+		{
+			name:      "stale in every workflow",
+			workflows: []string{".github/workflows/ci.yml", ".github/workflows/release.yml"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			t.Chdir(dir)
+			paths := tt.workflows
+			if len(paths) == 0 {
+				paths = []string{".github/workflows/ci.yml"}
+			}
+			store, err := lockfile.LoadState(dir, fakeMeta{})
+			require.NoError(t, err)
+			wantRef := "main"
+			if tt.tag != "" {
+				wantRef = tt.tag
+			}
+			for _, path := range paths {
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+				require.NoError(t, os.WriteFile(path, []byte("name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: owner/action@"+headSHA+"\n"), 0o644))
+				locked := []dep.Dependency{{Hostname: "github.com", NWO: "owner/action", Ref: wantRef, SHA: oldSHA, Branch: "main", Tag: tt.tag}}
+				if tt.recorded {
+					locked = append(locked, dep.Dependency{Hostname: "github.com", NWO: "owner/action", Ref: headSHA, SHA: headSHA, Branch: "main", Tag: tt.tag})
+				}
+				require.NoError(t, store.Set(ctx, path, locked, nil, nil))
+			}
+			require.NoError(t, store.Save())
+
+			reg := &httpmock.Registry{}
+			httpmock.NoTagsNamed(reg, "owner", "action")
+			defer reg.Verify(t)
+			// A recorded tag is lock data, not proof (#174): repair re-peels it.
+			if tt.recorded && tt.tag != "" {
+				reg.Register(httpmock.REST("GET", `repos/owner/action/tags`),
+					httpmock.JSONResponse(httpmock.TagListResponse(tt.tag, headSHA)))
+			}
+			if !tt.recorded {
+				reg.Register(httpmock.REST("GET", `repos/owner/action$`),
+					httpmock.JSONResponse(map[string]any{"default_branch": "main"}))
+				tags := httpmock.TagListResponse()
+				if tt.tag != "" {
+					tags = httpmock.TagListResponse(tt.tag, headSHA)
+				}
+				reg.Register(httpmock.REST("GET", `repos/owner/action/tags`), httpmock.JSONResponse(tags))
+			}
+			// Branch normalization requires the branch head to equal the pin,
+			// even when the lockfile already records the containing branch.
+			if !tt.recorded || tt.tag == "" {
+				reg.Register(httpmock.REST("GET", `repos/owner/action/git/ref/heads/main`),
+					httpmock.JSONResponse(map[string]any{
+						"ref": "refs/heads/main", "object": map[string]any{"sha": headSHA, "type": "commit"},
+					}))
+			}
+			pool := pinpool.New(2, nil)
+			resolver, err := resolve.New("github.com", pool, resolve.WithTransport(reg))
+			require.NoError(t, err)
+			resolver.SeedFromLockfile([]dep.Dependency{{Hostname: "github.com", NWO: "owner/action", Ref: headSHA, SHA: headSHA}})
+
+			firstFiles := make(map[string][]byte)
+			files := append([]string{parserlock.Path}, paths...)
+			for pass := range 2 {
+				store, err := lockfile.LoadState(dir, fakeMeta{})
+				require.NoError(t, err)
+				report := pipeline.DiagnoseParsed(ctx, pipeline.ParseAll(paths, store), nil, store, pool)
+				record, err := Plan(ctx, report, PlanOptions{
+					Resolver: resolver, Tagger: tag.NewListerForTest(t, reg), Store: store, Pool: pool,
+				})
+				require.NoError(t, err)
+				require.Len(t, record.Entries, len(paths))
+				for _, entry := range record.Entries {
+					assert.Equal(t, wantRef, entry.Ref)
+					assert.Equal(t, headSHA, entry.SHA)
+				}
+				require.NoError(t, Commit(ctx, record, store, nil))
+				assert.True(t, pipeline.VerifyLocalCoverage(pipeline.ParseAll(paths, store), store).IsValid())
+				for _, path := range files {
+					content, err := os.ReadFile(path)
+					require.NoError(t, err)
+					if pass == 0 {
+						firstFiles[path] = content
+					} else {
+						assert.Equal(t, string(firstFiles[path]), string(content), "%s changed on an unchanged run", path)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPlanNormalizationRetainsSharedTargets(t *testing.T) {
+	const (
+		oldSHA  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		headSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	for _, tt := range []struct {
+		name       string
+		unscanned  bool
+		transitive bool
+		blocked    string
+	}{
+		{name: "used by another scanned workflow"},
+		{name: "used by an unscanned workflow", unscanned: true},
+		{name: "used by a scanned composite", transitive: true},
+		{name: "used by an unscanned composite", transitive: true, unscanned: true},
+		{name: "stale in a skipped workflow", blocked: "skip"},
+		{name: "stale in a workflow with a resolver error", blocked: "resolver"},
+		{name: "stale in a workflow with an invalid self ref", blocked: "self"},
+		{name: "stale in a workflow with a blocked relock", blocked: "relock"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := lockfile.LoadState(t.TempDir(), fakeMeta{})
+			require.NoError(t, err)
+			locked := dep.Dependency{Hostname: "github.com", NWO: "owner/action", Ref: "main", SHA: oldSHA}
+			changed := checks.WorkflowReport{
+				Path:       ".github/workflows/changed.yml",
+				ActionRefs: []parserlock.ActionRef{{Owner: "owner", Repo: "action", Ref: headSHA}},
+				Inventory:  []checks.InventoryEntry{{Dep: locked, Direct: true}},
+				Findings: []checks.Finding{
+					{Category: checks.Stale, Dependency: &locked},
+					{Category: checks.NotPinned, Severity: checks.SeverityError},
+				},
+			}
+			require.NoError(t, store.Set(ctx, changed.Path, []dep.Dependency{locked}, nil, nil))
+			protected := checks.WorkflowReport{Path: ".github/workflows/protected.yml"}
+			root := locked
+			deps := []dep.Dependency{locked}
+			var parents dep.ParentMap
+			if tt.transitive {
+				root = dep.Dependency{Hostname: "github.com", NWO: "owner/composite", Ref: "v1.0.0", SHA: "cccccccccccccccccccccccccccccccccccccccc"}
+				deps = append(deps, root)
+				parents = dep.ParentMap{locked.Key(): {root.Key()}}
+			}
+			require.NoError(t, store.Set(ctx, protected.Path, deps, parents, nil))
+			protected.Inventory = []checks.InventoryEntry{{Dep: root, Direct: true}}
+			if tt.blocked != "" {
+				protected.Findings = []checks.Finding{{Category: checks.Stale, Dependency: &locked}}
+			}
+			switch tt.blocked {
+			case "skip":
+				protected.SkipCommit = true
+			case "resolver":
+				protected.BlockingResolverError = true
+			case "self":
+				protected.Findings = append(protected.Findings, checks.Finding{Category: checks.InvalidSelfRepositoryRef})
+			case "relock":
+				protected.Findings = append(protected.Findings,
+					checks.Finding{Category: checks.RefMoved, Dependency: &locked},
+					checks.Finding{Category: checks.UnreachablePin},
+				)
+			}
+			report := &checks.Report{Workflows: []checks.WorkflowReport{changed}}
+			if !tt.unscanned {
+				report.Workflows = append(report.Workflows, protected)
+			}
+
+			reg := &httpmock.Registry{}
+			httpmock.NoTagsNamed(reg, "owner", "action")
+			defer reg.Verify(t)
+			reg.Register(httpmock.REST("GET", `repos/owner/action$`),
+				httpmock.JSONResponse(map[string]any{"default_branch": "main"}))
+			reg.Register(httpmock.REST("GET", `repos/owner/action/tags`), httpmock.JSONResponse(httpmock.TagListResponse()))
+			reg.Register(httpmock.REST("GET", `repos/owner/action/git/ref/heads/main`),
+				httpmock.JSONResponse(map[string]any{
+					"ref": "refs/heads/main", "object": map[string]any{"sha": headSHA, "type": "commit"},
+				}))
+			pool := pinpool.New(2, nil)
+			resolver, err := resolve.New("github.com", pool, resolve.WithTransport(reg))
+			require.NoError(t, err)
+			resolver.SeedFromLockfile([]dep.Dependency{{Hostname: "github.com", NWO: "owner/action", Ref: headSHA, SHA: headSHA}})
+			record, err := Plan(ctx, report, PlanOptions{
+				Resolver: resolver, Tagger: tag.NewListerForTest(t, reg), Store: store, Pool: pool,
+				PartialScan: tt.unscanned, Relock: tt.blocked == "relock",
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, record.Entries)
+			assert.Equal(t, []string{changed.Path}, record.Entries[0].Workflows)
+			assert.Equal(t, headSHA, record.Entries[0].Ref)
+			assert.Equal(t, headSHA, record.Entries[0].SHA)
+			require.NotEmpty(t, record.Workflows)
+			assert.Empty(t, record.Workflows[0].Rewrites)
+		})
+	}
+}
+
+func inv(nwo, ref, sha string) checks.InventoryEntry {
+	return checks.InventoryEntry{Dep: dep.Dependency{NWO: nwo, Ref: ref, SHA: sha}}
+}
+
+func movedFinding(cat checks.Category, nwo, ref, sha string) checks.Finding {
+	return checks.Finding{
+		Category:   cat,
+		Dependency: &dep.Dependency{NWO: nwo, Ref: ref, SHA: sha},
+	}
+}
+
+func hasDep(inventory []checks.InventoryEntry, nwo string) bool {
+	for _, e := range inventory {
+		if e.Dep.NWO == nwo {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPruneStaleInventory_Relock(t *testing.T) {
+	inventory := []checks.InventoryEntry{
+		inv("octo/branch", "main", "aaaa"),
+		inv("octo/unreach", "v1", "bbbb"),
+		inv("octo/keep", "v2", "cccc"),
+	}
+	findings := []checks.Finding{
+		movedFinding(checks.RefMoved, "octo/branch", "main", "aaaa"),
+		movedFinding(checks.UnreachablePin, "octo/unreach", "v1", "bbbb"),
+	}
+
+	tests := []struct {
+		name          string
+		acceptMoved   bool
+		relock        bool
+		wantPrunedRef bool // octo/branch (ref-moved) pruned
+		wantPrunedUnr bool // octo/unreach (unreachable-pin) pruned
+	}{
+		{name: "no flags prunes neither"},
+		{name: "relock prunes ref-moved only", relock: true, wantPrunedRef: true},
+		{name: "accept-moved prunes both", acceptMoved: true, wantPrunedRef: true, wantPrunedUnr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pruneStaleInventory(inventory, findings, tt.acceptMoved, tt.relock)
+			if hasDep(got, "octo/branch") == tt.wantPrunedRef {
+				t.Errorf("ref-moved dep present=%v, want pruned=%v", hasDep(got, "octo/branch"), tt.wantPrunedRef)
+			}
+			if hasDep(got, "octo/unreach") == tt.wantPrunedUnr {
+				t.Errorf("unreachable-pin dep present=%v, want pruned=%v", hasDep(got, "octo/unreach"), tt.wantPrunedUnr)
+			}
+			if !hasDep(got, "octo/keep") {
+				t.Errorf("unrelated dep octo/keep must never be pruned")
+			}
+		})
+	}
+}
+
+// A moved *transitive* dep is pruned from inventory but is not a direct
+// ActionRef, so the per-dep trust fast path would silently keep its stale SHA.
+// Under --relock, planWorkflow must force the direct roots through recursive
+// resolution and bump the transitive to its current SHA. Covers the reviewer
+// request to exercise a moved transitive in a resolution test.
+func TestPlanWorkflow_Relock_BumpsMovedTransitive(t *testing.T) {
+	compSHA := "1111111111111111111111111111111111111111"
+	oldTransSHA := "2222222222222222222222222222222222222222"
+	newTransSHA := "3333333333333333333333333333333333333333"
+	resolver, pool, tagger := newTransitivePlanFixture(t, compSHA, newTransSHA)
+
+	wr := checks.WorkflowReport{
+		Path: ".github/workflows/test.yml",
+		ActionRefs: []parserlock.ActionRef{
+			{Owner: "comp", Repo: "action", Ref: "v1.0.0"},
+		},
+		Inventory: []checks.InventoryEntry{
+			{Dep: dep.Dependency{NWO: "comp/action", Ref: "v1.0.0", SHA: compSHA}, Direct: true},
+			{Dep: dep.Dependency{NWO: "trans/dep", Ref: "v2", SHA: oldTransSHA}, Parents: []string{"comp/action@v1.0.0"}},
+		},
+		Findings: []checks.Finding{
+			movedFinding(checks.RefMoved, "trans/dep", "v2", oldTransSHA),
+		},
+	}
+
+	opts := PlanOptions{
+		Resolver: resolver,
+		Pool:     pool,
+		Tagger:   tagger,
+		Relock:   true,
+	}
+
+	result, err := planWorkflow(context.Background(), wr, opts, func(string) {})
+	require.NoError(t, err)
+
+	byNWO := make(map[string]Entry, len(result.entries))
+	for _, e := range result.entries {
+		byNWO[e.NWO] = e
+	}
+
+	trans, ok := byNWO["trans/dep"]
+	require.True(t, ok, "transitive dep should be present")
+	assert.Equal(t, newTransSHA, trans.SHA, "moved transitive must be bumped to its live SHA under --relock")
+	assert.NotEqual(t, oldTransSHA, trans.SHA)
+}
+
+// Under --relock a workflow that still carries an unreachable-pin finding must
+// be left untouched: re-resolving a moved sibling would pull the tampered
+// (possibly transitive) pin through resolution and commit it at a live SHA
+// before the hard-error gate. The empty httpmock registry proves no resolution
+// happens — any network call would fail the test.
+func TestPlanWorkflow_Relock_LeavesUnreachablePinUntouched(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	movedSHA := "1111111111111111111111111111111111111111"
+	tamperedSHA := "2222222222222222222222222222222222222222"
+
+	pool := pinpool.New(2, nil)
+	resolver, err := resolve.New("github.com", pool, resolve.WithTransport(reg))
+	require.NoError(t, err)
+
+	wr := checks.WorkflowReport{
+		Path: ".github/workflows/test.yml",
+		ActionRefs: []parserlock.ActionRef{
+			{Owner: "octo", Repo: "app", Ref: "main"},
+			{Owner: "octo", Repo: "bad", Ref: "v1"},
+		},
+		Inventory: []checks.InventoryEntry{
+			{Dep: dep.Dependency{NWO: "octo/app", Ref: "main", SHA: movedSHA}, Direct: true},
+			{Dep: dep.Dependency{NWO: "octo/bad", Ref: "v1", SHA: tamperedSHA}, Direct: true},
+		},
+		Findings: []checks.Finding{
+			movedFinding(checks.RefMoved, "octo/app", "main", movedSHA),
+			movedFinding(checks.UnreachablePin, "octo/bad", "v1", tamperedSHA),
+		},
+	}
+
+	opts := PlanOptions{
+		Resolver: resolver,
+		Pool:     pool,
+		Tagger:   tag.NewListerForTest(t, reg),
+		Relock:   true,
+	}
+
+	result, err := planWorkflow(context.Background(), wr, opts, func(string) {})
+	require.NoError(t, err)
+
+	byNWO := make(map[string]Entry, len(result.entries))
+	for _, e := range result.entries {
+		byNWO[e.NWO] = e
+	}
+
+	bad, ok := byNWO["octo/bad"]
+	require.True(t, ok, "unreachable dep must be retained")
+	assert.Equal(t, tamperedSHA, bad.SHA, "unreachable pin must not be rewritten under --relock")
+
+	app, ok := byNWO["octo/app"]
+	require.True(t, ok, "moved dep must be retained")
+	assert.Equal(t, movedSHA, app.SHA, "moved ref must not be bumped while an unreachable pin blocks the run")
 }
