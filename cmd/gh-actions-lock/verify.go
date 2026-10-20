@@ -10,11 +10,13 @@ package main
 //                  pre-commit. Same-repo `./…` refs are reported, not migrated.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline"
@@ -40,11 +42,15 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 	}
 
 	// Load the lockfile without a resolver (no network).
-	var store *lockfile.State
+	lockPath := filepath.Join(".", parserlock.Path)
 	if workflowsDir != "" {
-		store, err = lockfile.LoadStateAt(filepath.Join(workflowsDir, "actions.lock"), nil)
-	} else {
-		store, err = lockfile.LoadState(".", nil)
+		lockPath = filepath.Join(workflowsDir, "actions.lock")
+	}
+	store, err := lockfile.LoadStateAt(lockPath, nil)
+	if errors.Is(err, lockfile.ErrCorruptLockfile) {
+		// Word it as the other modes do.
+		_, err = newLockRecovery()(lockPath, err)
+		return err
 	}
 	if err != nil {
 		return fmt.Errorf("opening lockfile: %w", err)

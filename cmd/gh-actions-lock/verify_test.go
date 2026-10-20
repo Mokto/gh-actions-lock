@@ -373,3 +373,18 @@ jobs:
 		})
 	}
 }
+
+// TestVerifyModes_SameLockfileError: --verify and --verify-local report an
+// invalid lockfile with the same words.
+func TestVerifyModes_SameLockfileError(t *testing.T) {
+	writeFullSHAWorkflow(t, "refs/heads/main")
+	var msgs []string
+	for _, mode := range []string{"--verify", "--verify-local"} {
+		_, _, err := runCommandWithHTTP(t, &httpmock.Registry{}, mode, "--no-interactive")
+		require.Error(t, err, mode)
+		assert.NotErrorIs(t, err, errSilent, mode)
+		msgs = append(msgs, err.Error())
+	}
+	assert.Equal(t, msgs[0], msgs[1])
+	assert.Contains(t, msgs[1], "restore it from version control")
+}
