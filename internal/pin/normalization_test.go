@@ -66,6 +66,11 @@ func TestPlanNormalizationPrunesStaleTargetsInOneRun(t *testing.T) {
 
 			reg := &httpmock.Registry{}
 			defer reg.Verify(t)
+			// A recorded tag is lock data, not proof (#174): repair re-peels it.
+			if tt.recorded && tt.tag != "" {
+				reg.Register(httpmock.REST("GET", `repos/owner/action/tags`),
+					httpmock.JSONResponse(httpmock.TagListResponse(tt.tag, headSHA)))
+			}
 			if !tt.recorded {
 				reg.Register(httpmock.REST("GET", `repos/owner/action$`),
 					httpmock.JSONResponse(map[string]any{"default_branch": "main"}))

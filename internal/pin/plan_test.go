@@ -718,7 +718,7 @@ func TestNarrowVerifiedEntries_SHARepairRequiresTagAtCommit(t *testing.T) {
 	}
 }
 
-func TestPlanRejectsConflictingSameRunRepairs(t *testing.T) {
+func TestPlanKeepsDistinctHistoricalPinsWithoutBranchHeadProof(t *testing.T) {
 	const firstSHA = "abc1230000000000000000000000000000000000"
 	const secondSHA = "def4560000000000000000000000000000000000"
 	report := func(path, sha string) checks.WorkflowReport {
@@ -735,7 +735,7 @@ func TestPlanRejectsConflictingSameRunRepairs(t *testing.T) {
 		}
 	}
 
-	_, err := Plan(context.Background(), &checks.Report{
+	record, err := Plan(context.Background(), &checks.Report{
 		Workflows: []checks.WorkflowReport{
 			report(".github/workflows/first.yml", firstSHA),
 			report(".github/workflows/second.yml", secondSHA),
@@ -745,7 +745,10 @@ func TestPlanRejectsConflictingSameRunRepairs(t *testing.T) {
 		Pool:   pinpool.New(2, nil),
 	})
 
-	require.ErrorContains(t, err, "conflicting planned target actions/checkout@releases/v4")
+	require.NoError(t, err)
+	require.Len(t, record.Entries, 2)
+	assert.Equal(t, firstSHA, record.Entries[0].Ref)
+	assert.Equal(t, secondSHA, record.Entries[1].Ref)
 }
 
 func TestPlanRejectsRepairConflictingWithSymbolicEntry(t *testing.T) {
