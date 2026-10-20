@@ -1,6 +1,10 @@
 package checks
 
-import "strings"
+import (
+	"strings"
+
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+)
 
 // PruneEffect is what planning does with a recorded entry a finding prunes
 // from the workflow's inventory. Either way the recorded entry itself stays
@@ -46,7 +50,17 @@ func PrunesDependency(f Finding, acceptMoved, relock bool) bool {
 	return PruneEffectOf(f, acceptMoved, relock) != NotPruned
 }
 
-// PruneKey is the identity planning prunes a recorded entry by.
+// PruneKey is the identity planning prunes a recorded entry by: the
+// lockfile's canonical pin key, which folds owner/repo but keeps a ref's
+// case, since refs are case-sensitive, and the commit, folded. A full-SHA
+// ref names a commit, so it folds too.
 func PruneKey(nwo, ref, sha string) string {
-	return strings.ToLower(nwo + "@" + ref + ":" + sha)
+	if parserlock.IsFullSha(ref) {
+		ref = strings.ToLower(ref)
+	}
+	key := nwo + "@" + ref
+	if p, ok := parserlock.ParsePin(key); ok {
+		key = p.String()
+	}
+	return key + ":" + strings.ToLower(sha)
 }

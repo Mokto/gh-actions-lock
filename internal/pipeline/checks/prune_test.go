@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -54,5 +55,8 @@ func TestPruneEffectOf(t *testing.T) {
 }
 
 func TestPruneKey(t *testing.T) {
-	assert.Equal(t, PruneKey("Actions/Checkout", "V4", "ABC"), PruneKey("actions/checkout", "v4", "abc"), "planning's existing identity folds the whole key")
+	const sha = "373d742f768e37e4e68d84ada06be93fb2ce64d8"
+	assert.Equal(t, PruneKey("actions/checkout", "v4", "abc"), PruneKey("Actions/Checkout", "v4", "ABC"), "owner/repo and the commit fold")
+	assert.NotEqual(t, PruneKey("actions/checkout", "Release", "abc"), PruneKey("actions/checkout", "release", "abc"), "refs are case-sensitive")
+	assert.Equal(t, PruneKey("actions/checkout", sha, "abc"), PruneKey("actions/checkout", strings.ToUpper(sha), "abc"), "a full-SHA ref folds")
 }
