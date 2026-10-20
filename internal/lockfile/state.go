@@ -568,18 +568,18 @@ func (s *State) PrepareRefresh(workflows []string, deps []dep.Dependency, parent
 	for _, wf := range workflows {
 		selected[wf] = true
 	}
-	refresh := map[string]bool{}
-	protected := map[string]bool{}
-	for wf := range s.file.Workflows {
-		pins, _ := InspectClosure(s.file, wf, func(parserlock.Pin, parserlock.Action) bool { return true })
-		for _, lp := range pins {
-			if selected[wf] {
-				refresh[lp.Pin.String()] = true
-			} else {
-				protected[lp.Pin.String()] = true
-			}
+	// Two walks over the recorded graph, not one per workflow: pins the
+	// refreshed workflows reach, and pins any other workflow reaches.
+	var refreshRoots, otherRoots []string
+	for wf, roots := range s.file.Workflows {
+		if selected[wf] {
+			refreshRoots = append(refreshRoots, roots...)
+		} else {
+			otherRoots = append(otherRoots, roots...)
 		}
 	}
+	refresh := reachable(s.file, refreshRoots)
+	protected := reachable(s.file, otherRoots)
 	keyToPin := map[string]string{}
 	commits := map[string]string{}
 	for _, d := range deps {
@@ -645,6 +645,26 @@ func (s *State) PrepareRefresh(workflows []string, deps []dep.Dependency, parent
 		}
 	}
 	return nil
+}
+
+// reachable returns the recorded entries reachable from roots.
+func reachable(file parserlock.File, roots []string) map[string]bool {
+	seen := make(map[string]bool)
+	var walk func(string)
+	walk = func(key string) {
+		action, ok := file.Dependencies[key]
+		if !ok || seen[key] {
+			return
+		}
+		seen[key] = true
+		for _, child := range action.Uses {
+			walk(child)
+		}
+	}
+	for _, key := range roots {
+		walk(key)
+	}
+	return seen
 }
 
 // AllDeps returns every action entry in the lockfile as a Dependency,
