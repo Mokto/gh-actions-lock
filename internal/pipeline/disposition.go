@@ -78,7 +78,7 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) (parityVerd
 	fullSHA := parserlock.IsFullSha(s.pin.Ref)
 	c := f.Category
 	if c == checks.UnreachablePin && !f.RefMissing && f.Dependency != nil {
-		f.Remediation = unreachableRemediation(s.heldBy, f.Dependency.NWO)
+		f.Remediation = checks.UnreachableRemediation(s.heldBy, f.Dependency.NWO)
 	}
 	// pin.Audit holds an accepted or excused finding to the write the run
 	// plans, so a mutable entry is deferred to it whoever holds it. A
