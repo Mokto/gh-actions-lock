@@ -399,7 +399,7 @@ jobs:
 		require.ErrorIs(t, err, errSilent, stderr)
 		assert.Contains(t, stderr, "✗ reachability unknown actions/checkout@v4.2.1")
 		assert.NotContains(t, stderr, "actions/checkout@v4.2.1: could not verify", "an error must not also print as a warning")
-		assert.Contains(t, stderr, "could not verify locked actions/checkout@9ddf35b71a48: GitHub returned 502 Bad Gateway")
+		assert.Contains(t, stderr, "could not verify locked actions/checkout@v4.2.1 (commit 9ddf35b71a48): verification inconclusive: GitHub returned 502 Bad Gateway")
 		assert.NotContains(t, stderr, "api.github.com", "the request URL stays out of the terminal")
 	})
 	t.Run("moved exact tag warns", func(t *testing.T) {
