@@ -354,3 +354,36 @@ func TestCommitRejectedEntryRefWritesNothing(t *testing.T) {
 	assert.Equal(t, string(content), string(after), "the workflow is not rewritten")
 	assert.NoFileExists(t, filepath.Join(dir, ".github", "workflows", "actions.lock"))
 }
+
+// TestUpdateLockfileRepairsOnlyForWriters: an entry repair applies only when
+// a workflow it was planned for is written, so a preview without that
+// workflow (Audit dropping a writer) leaves the entry as recorded.
+func TestUpdateLockfileRepairsOnlyForWriters(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	key := "actions/cache@" + sha
+	for _, written := range []bool{true, false} {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+		lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/a.yml':\n        - 'actions/checkout@v4'\n" +
+			"dependencies:\n    '" + key + "':\n        ref: '" + sha + "'\n        commit: 'sha1-" + sha + "'\n        owner_id: 1\n        repo_id: 1\n" +
+			"    'actions/checkout@v4':\n        ref: 'v4'\n        commit: 'sha1-" + sha + "'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - '" + key + "'\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+		store, err := lockfile.LoadState(dir, fakeMeta{})
+		require.NoError(t, err)
+		wf := filepath.Join(".github", "workflows", "a.yml")
+		rec := &Record{EntryRepairs: []EntryRepair{{Key: key, Ref: "v4.2.0", Workflows: []string{wf}}}}
+		var writers []WorkflowPlan
+		if written {
+			writers = []WorkflowPlan{{Path: filepath.Join(".github", "workflows", "b.yml")}, {Path: wf}}
+		}
+		preview := store.Preview()
+		require.NoError(t, updateLockfile(context.Background(), rec, writers, preview))
+		a, ok := preview.Entry(key)
+		require.True(t, ok)
+		want := sha
+		if written {
+			want = "v4.2.0"
+		}
+		assert.Equal(t, want, a.Ref, "written=%v", written)
+	}
+}

@@ -18,6 +18,9 @@ import (
 type EntryRepair struct {
 	Key string
 	Ref string
+	// Workflows are the written workflows that reach the entry; the repair
+	// applies only while one of them is written.
+	Workflows []string
 }
 
 // PlanEntryRepairs finds the tag at the commit, else a branch containing
@@ -81,7 +84,7 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 			})
 			continue
 		}
-		rec.EntryRepairs = append(rec.EntryRepairs, EntryRepair{Key: key, Ref: ref})
+		rec.EntryRepairs = append(rec.EntryRepairs, EntryRepair{Key: key, Ref: ref, Workflows: workflows[key]})
 	}
 	return nil
 }
