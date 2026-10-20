@@ -67,9 +67,7 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 
 	parsed := pipeline.ParseAll(paths, store)
 	report := pipeline.VerifyLocalCoverage(parsed, store)
-	if len(opts.workflowPaths) > 0 {
-		appendUnscannedOwnSHAFindings(report, store, paths)
-	}
+	appendUnscannedOwnSHAFindings(report, store, paths)
 	valid := report.IsValid()
 
 	if opts.jsonFields != "" {
@@ -95,10 +93,11 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 	return nil
 }
 
-// appendUnscannedOwnSHAFindings reports, for a path-scoped read-only run,
-// each pin of a workflow it didn't scan whose entry records its own SHA as
-// its ref. The Actions backend rejects the pin, and only a full-scan fix run
-// may rewrite that workflow, so the run fails rather than passing.
+// appendUnscannedOwnSHAFindings reports, for a read-only run, each pin of a
+// workflow it didn't scan (not selected, or deleted) whose entry records its
+// own SHA as its ref. The Actions backend rejects the pin, and only a
+// full-scan fix run may rewrite or prune that workflow, so the run fails
+// rather than passing.
 func appendUnscannedOwnSHAFindings(report *checks.Report, store *lockfile.State, scanned []string) {
 	skip := map[string]bool{}
 	for _, p := range scanned {

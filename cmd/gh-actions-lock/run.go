@@ -349,7 +349,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	if opts.noFix && len(staleWorkflows) > 0 {
 		appendStaleWorkflowFindings(report, staleWorkflows, false)
 	}
-	if opts.noFix && !fullScan {
+	if opts.noFix {
 		appendUnscannedOwnSHAFindings(report, store, opts.workflowPaths)
 		valid = report.IsValid()
 	}
