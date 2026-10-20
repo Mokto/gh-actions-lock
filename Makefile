@@ -7,7 +7,7 @@ EXT_DIR := $(XDG_DATA_HOME)/gh/extensions/$(EXT_NAME)
 
 # End-to-end scenarios (test/scenarios/catalog.yml) against the built binary.
 # Live scenarios need GitHub auth (GH_TOKEN or gh auth login).
-E2E := go test -count=1 -timeout 30m ./test/e2e
+E2E := go test -count=1 -shuffle=on -timeout 30m ./test/e2e
 
 .PHONY: build test test-release vet fmt fmt-check test-integration test-live test-smoke test-stub test-real test-fixtures install reinstall uninstall
 

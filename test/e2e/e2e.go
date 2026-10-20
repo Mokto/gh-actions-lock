@@ -75,6 +75,8 @@ type Runner struct {
 	CoverDir string
 	// Update rewrites golden_json in the catalog instead of comparing.
 	Update bool
+	// Token authenticates live scenarios; they skip when it is empty.
+	Token string
 
 	mu sync.Mutex
 }
@@ -124,7 +126,7 @@ func (r *Runner) scenarioEnv(t *testing.T, sc scenarios.Scenario) (map[string]st
 		delete(env, k)
 	}
 	if sc.Live() {
-		token := liveToken()
+		token := r.Token
 		if token == "" {
 			t.Skip("no GH_TOKEN, GITHUB_TOKEN, or gh auth token")
 		}
@@ -181,13 +183,16 @@ func environ() map[string]string {
 	return env
 }
 
-var liveToken = sync.OnceValue(func() string {
+// LiveToken returns the credentials live scenarios use: GH_TOKEN,
+// GITHUB_TOKEN, or gh's stored token. TestMain resolves it once into
+// Runner.Token, so no test can change what later scenarios see.
+func LiveToken() string {
 	if t := cmp.Or(os.Getenv("GH_TOKEN"), os.Getenv("GITHUB_TOKEN")); t != "" {
 		return t
 	}
 	out, _ := exec.Command("gh", "auth", "token").Output()
 	return strings.TrimSpace(string(out))
-})
+}
 
 func writeRepo(t *testing.T, dir string, fx scenarios.Fixtures) {
 	files := map[string]string{}

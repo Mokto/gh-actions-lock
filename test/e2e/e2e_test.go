@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	runner = &Runner{Bin: bin, CoverDir: coverDir, Update: *update}
+	runner = &Runner{Bin: bin, CoverDir: coverDir, Update: *update, Token: LiveToken()}
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
@@ -178,8 +178,26 @@ func TestRemoteUses(t *testing.T) {
 func TestScenarioEnvDropsAmbientHost(t *testing.T) {
 	t.Setenv("GH_HOST", "example.ghe.com")
 	t.Setenv("GH_ENTERPRISE_TOKEN", "ambient")
-	t.Setenv("GH_TOKEN", "live-token")
-	env, _ := runner.scenarioEnv(t, scenarios.Scenario{Name: "live", NeedsToken: true})
+	r := &Runner{Bin: runner.Bin, Token: "live-token"}
+	env, _ := r.scenarioEnv(t, scenarios.Scenario{Name: "live", NeedsToken: true})
 	assert.NotContains(t, env, "GH_HOST")
 	assert.NotContains(t, env, "GH_ENTERPRISE_TOKEN")
+	assert.Equal(t, "live-token", env["GH_TOKEN"])
+}
+
+// TestScenarioEnvTokenComesFromRunner: a live scenario's token is the one
+// resolved at startup, not whatever an earlier test left in the
+// environment, so test order (go test -shuffle=on) cannot change it.
+func TestScenarioEnvTokenComesFromRunner(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ambient")
+	t.Setenv("GITHUB_TOKEN", "ambient")
+	r := &Runner{Bin: runner.Bin, Token: "resolved"}
+	env, _ := r.scenarioEnv(t, scenarios.Scenario{Name: "live", NeedsToken: true})
+	assert.Equal(t, "resolved", env["GH_TOKEN"])
+
+	r.Token = ""
+	t.Run("no token skips", func(t *testing.T) {
+		r.scenarioEnv(t, scenarios.Scenario{Name: "live", NeedsToken: true})
+		t.Error("a live scenario without a token must skip")
+	})
 }
