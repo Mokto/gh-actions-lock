@@ -68,10 +68,10 @@ func describeImage(f *Finding) {
 	case img.Kind == uses.ImageExpression:
 		f.Remediation = "use a literal image pinned by digest where possible, or pin each value of the matrix or input by digest"
 	case img.Kind == uses.ImageBuild:
-		f.Remediation = fmt.Sprintf("only the maintainer of %s can pin its base image by digest", img.Action)
+		f.Remediation = fmt.Sprintf("ask the maintainer of %s to pin its base image by digest", img.Action)
 	case repoOwned:
 		f.Remediation = fmt.Sprintf("the lockfile pins action commits, not container images; pin it as %s@sha256:…", img.Name)
 	default:
-		f.Remediation = fmt.Sprintf("the lockfile pins action commits, not container images; only the maintainer of %s can pin it by digest", strings.Join(actions, ", "))
+		f.Remediation = fmt.Sprintf("the lockfile pins action commits, not container images; ask the maintainer of %s to pin it by digest", strings.Join(actions, ", "))
 	}
 }
