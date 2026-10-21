@@ -16,16 +16,15 @@ import (
 	"github.com/github/gh-actions-lock/internal/resolve"
 )
 
-func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, resolved []dep.Dependency, resolvedParents dep.ParentMap, resolvedGraph *resolve.Graph) error {
-	// Only a writable refresh replaces the recorded graph instead of retaining it.
-	if opts.Resolver == nil || opts.Store == nil || opts.Relock && !opts.ReadOnly {
+func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, resolvedGraph *resolve.Graph, replaced checks.ReplacementProof, inspected map[int]map[string]bool) error {
+	if opts.Resolver == nil || opts.Store == nil {
 		return nil
 	}
 	r := opts.Resolver
 	file := opts.Store.File()
 	deps := opts.Store.AllDeps()
 	refs := lockfile.NewRefIndex(file)
-	inspections, owners := lockedManifestInspections(opts, parsed, report, resolvedGraph)
+	inspections, owners := lockedManifestInspections(opts, parsed, report, resolvedGraph, replaced, inspected)
 	var roots []parserlock.ActionRef
 	for _, owner := range owners {
 		roots = append(roots, owner.roots...)
@@ -109,7 +108,7 @@ type manifestOwner struct {
 	keys  map[string]bool
 }
 
-func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, fresh *resolve.Graph) ([]lockedInspection, []manifestOwner) {
+func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, fresh *resolve.Graph, replaced checks.ReplacementProof, inspected map[int]map[string]bool) ([]lockedInspection, []manifestOwner) {
 	file := opts.Store.File()
 	if opts.RecordedWorkflows != nil {
 		file.Workflows = opts.RecordedWorkflows
@@ -132,6 +131,7 @@ func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, 
 		for _, ref := range recorded {
 			add(ref)
 		}
+		var manifestErr error
 		if fresh != nil {
 			var roots []parserlock.ActionRef
 			for _, root := range fresh.Roots() {
@@ -150,13 +150,35 @@ func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, 
 				}
 				roots = append(roots, root)
 			}
-			manifests, manifestErr := fresh.Manifests(roots)
+			manifests, err := fresh.Manifests(roots)
+			manifestErr = err
 			for _, manifest := range manifests {
 				add(manifest.Ref)
 			}
-			if manifestErr != nil && len(inspection.keys) > 0 {
-				appendLockedManifestFindings(pw.Path, wr, file, refs, nil, manifestErr)
+		}
+		if replaced != nil {
+			for key := range inspection.keys {
+				action := file.Dependencies[key]
+				_, sha, _ := strings.Cut(action.Commit, "-")
+				if replaced(checks.Deferred{
+					Key: key, Ref: action.Ref, Commit: sha,
+					Finding: checks.Finding{IncompleteLockfile: true},
+				}) {
+					delete(inspection.keys, key)
+				}
 			}
+		}
+		if manifestErr != nil && len(inspection.keys) > 0 {
+			appendLockedManifestFindings(pw.Path, wr, file, refs, nil, manifestErr)
+		}
+		if previous, ok := inspected[i]; ok && maps.Equal(previous, inspection.keys) {
+			continue
+		}
+		if inspected != nil {
+			// Audit may drop writers and retry. Unchanged retained inputs
+			// already have immutable coverage; only newly retained keys need
+			// another traversal.
+			inspected[i] = maps.Clone(inspection.keys)
 		}
 		inspections = append(inspections, inspection)
 	}

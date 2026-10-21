@@ -47,6 +47,9 @@ type RunOptions struct {
 type RunResult struct {
 	Report *checks.Report
 	Valid  bool
+	// InspectRetained checks writable refreshes against the actual write
+	// preview. Other modes finish this check during Run.
+	InspectRetained func(context.Context, checks.ReplacementProof) error
 }
 
 // Run executes the full diagnostic pipeline: parse → resolve unlocked refs →
@@ -180,7 +183,17 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
-	if err := checkLockedManifests(ctx, opts, parsed, report, resolved, parents, resolvedGraph); err != nil {
+	if opts.Relock && !opts.ReadOnly && opts.Resolver != nil && opts.Store != nil {
+		inspected := map[int]map[string]bool{}
+		return &RunResult{
+			Report: report,
+			Valid:  report.IsValid(),
+			InspectRetained: func(ctx context.Context, replaced checks.ReplacementProof) error {
+				return checkLockedManifests(ctx, opts, parsed, report, resolvedGraph, replaced, inspected)
+			},
+		}, nil
+	}
+	if err := checkLockedManifests(ctx, opts, parsed, report, resolvedGraph, nil, nil); err != nil {
 		return nil, err
 	}
 	return &RunResult{Report: report, Valid: report.IsValid()}, nil

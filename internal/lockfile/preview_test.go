@@ -98,6 +98,7 @@ func TestPreviewProjectsRealSet(t *testing.T) {
 		for k, a := range f.Dependencies {
 			out[k] = [3]string{a.Ref, a.Commit, strings.Join(a.Uses, ",")}
 		}
+
 		return out, f.Workflows
 	}
 	wantDeps, wantWorkflows := project(store)
@@ -105,4 +106,51 @@ func TestPreviewProjectsRealSet(t *testing.T) {
 	assert.Equal(t, wantDeps, gotDeps)
 	assert.Equal(t, wantWorkflows, gotWorkflows)
 	assert.NotContains(t, gotDeps, "o/orphan@v1", "GC drops what no workflow reaches, as Save does")
+}
+
+func TestGraphRebuiltRequiresActualPreviewChanges(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		preview       bool
+		shared        bool
+		changedCommit bool
+		wantError     bool
+		wantRebuilt   bool
+	}{
+		{name: "exclusive preview graph", preview: true, wantRebuilt: true},
+		{name: "shared graph stays retained", preview: true, shared: true},
+		{name: "failed preparation proves nothing", preview: true, shared: true, changedCommit: true, wantError: true},
+		{name: "active state does not produce preview evidence"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := LoadState(t.TempDir(), fixedIDs{})
+			require.NoError(t, err)
+			root := dep.Dependency{NWO: "o/root", Ref: "Main", SHA: strings.Repeat("a", 40)}
+			child := dep.Dependency{NWO: "o/child", Ref: "v1", SHA: root.SHA}
+			require.NoError(t, store.Set(context.Background(), "ci.yml", []dep.Dependency{root, child},
+				dep.ParentMap{child.ID(): {root.Key()}}, map[dep.Key]bool{root.ID(): true}))
+			if tt.shared {
+				require.NoError(t, store.Set(context.Background(), "other.yml", []dep.Dependency{root},
+					nil, map[dep.Key]bool{root.ID(): true}))
+			}
+			target := store
+			if tt.preview {
+				target = store.Preview()
+			}
+			assert.False(t, target.GraphRebuilt(root.Key()), "creating a preview does not rebuild a graph")
+			if tt.changedCommit {
+				root.SHA = strings.Repeat("b", 40)
+			}
+			err = target.PrepareRefresh([]string{"ci.yml"}, []dep.Dependency{root}, nil)
+			if tt.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantRebuilt, target.GraphRebuilt(root.Key()))
+			assert.False(t, target.GraphRebuilt("o/unknown@v1"))
+			assert.False(t, store.GraphRebuilt(root.Key()), "preview evidence never changes the active store")
+			assert.False(t, target.Preview().GraphRebuilt(root.Key()), "a fresh preview must prove its own write")
+		})
+	}
 }

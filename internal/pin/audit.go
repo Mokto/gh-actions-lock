@@ -19,12 +19,14 @@ import (
 // longer written, so Audit runs again without that workflow's write: a
 // finding that held only because of it goes back too. It stops once a pass
 // blocks no further workflow.
-func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *checks.Report, copts *CommitOptions) error {
+// If inspect is non-nil, it checks retained manifests against that same
+// preview. Writers it blocks are removed before the next pass.
+func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *checks.Report, copts *CommitOptions, inspect func(context.Context, checks.ReplacementProof) error) error {
 	deferred := false
 	for _, wr := range report.Workflows {
 		deferred = deferred || len(wr.Deferred) > 0
 	}
-	if !deferred {
+	if !deferred && inspect == nil {
 		return nil
 	}
 	for {
@@ -47,6 +49,24 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 				wr.Restore(j)
 				blocked = blocked || wr.SkipCommit && !was
 			}
+		}
+		if blocked {
+			continue
+		}
+		if inspect == nil {
+			return nil
+		}
+		wasBlocked := make([]bool, len(report.Workflows))
+		for i, wr := range report.Workflows {
+			wasBlocked[i] = wr.SkipCommit || wr.BlockingResolverError
+		}
+		if err := inspect(ctx, func(d checks.Deferred) bool {
+			return written(preview, verified, d)
+		}); err != nil {
+			return err
+		}
+		for i, wr := range report.Workflows {
+			blocked = blocked || !wasBlocked[i] && (wr.SkipCommit || wr.BlockingResolverError)
 		}
 		if !blocked {
 			return nil
@@ -140,6 +160,9 @@ func written(preview *lockfile.State, verified map[string]bool, d checks.Deferre
 	_, sha, _ := strings.Cut(a.Commit, "-")
 	if !dep.SameRef(sha, d.Commit) {
 		return verified[checks.VerifiedKey(d.Key, sha)]
+	}
+	if d.Finding.IncompleteLockfile {
+		return preview.GraphRebuilt(d.Key) && verified[checks.VerifiedKey(d.Key, sha)]
 	}
 	// Planning re-records a full-SHA key's ref only once that ref names the
 	// commit (RefNamesCommit), so a new ref is a repair.

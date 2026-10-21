@@ -53,6 +53,9 @@ type State struct {
 	hostname        string
 	// preview marks a copy from Preview, which Save refuses.
 	preview bool
+	// graphRebuilt records stored keys whose retained edges this preview
+	// cleared through PrepareRefresh.
+	graphRebuilt map[string]bool
 }
 
 // ErrCorruptLockfile reports that a lockfile exists on disk but its contents
@@ -713,6 +716,12 @@ func (s *State) PrepareRefresh(workflows []string, deps []dep.Dependency, parent
 		if action, ok := s.file.Dependencies[key]; ok && !protected[key] {
 			action.Uses = nil
 			s.file.Dependencies[key] = action
+			if s.preview {
+				if s.graphRebuilt == nil {
+					s.graphRebuilt = map[string]bool{}
+				}
+				s.graphRebuilt[key] = true
+			}
 		}
 	}
 	return nil

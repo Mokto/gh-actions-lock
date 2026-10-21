@@ -982,6 +982,51 @@ func TestCompleteness_NewPathPreservesRetainedPathCoverage(t *testing.T) {
 	}
 }
 
+func TestCompleteness_RefreshPreservesUnselectedManifestPaths(t *testing.T) {
+	for _, refresh := range []string{"--relock", "--accept-moved"} {
+		for _, damaged := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/damaged=%v", refresh, damaged), func(t *testing.T) {
+				path := writeTempWorkflow(t, strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/tools/lint@v1", 1))
+				transport := &graphTransport{manifests: map[string]string{
+					"acme/tools/lint@v1":              "runs:\n  using: composite\n  steps:\n    - uses: acme/eslint@v1\n",
+					"acme/tools/lint@" + graphLeafSHA: "runs:\n  using: composite\n  steps:\n    - uses: acme/eslint@v1\n",
+					"acme/tools/test@v1":              "runs:\n  using: composite\n  steps:\n    - uses: acme/jest@v1\n",
+					"acme/tools/test@" + graphLeafSHA: "runs:\n  using: composite\n  steps:\n    - uses: acme/jest@v1\n",
+				}}
+				_, stderr, err := runCommandWithHTTP(t, transport, "--no-narrow", path)
+				require.NoError(t, err, stderr)
+				file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+				require.NoError(t, err)
+				if damaged {
+					action := file.Dependencies["acme/tools@v1"]
+					action.Uses = nil
+					file.Dependencies["acme/tools@v1"] = action
+					writeGraph(t, file)
+				}
+				const fresh = ".github/workflows/new.yml"
+				require.NoError(t, os.WriteFile(fresh, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/tools/test@v1", 1)), 0o600))
+				before := snapshotWorkflows(t)
+				p, err := runParity(t, transport, refresh, "--no-narrow", fresh)
+				if damaged {
+					require.ErrorIs(t, err, errSilent)
+					assert.False(t, p.Valid)
+					assert.True(t, slices.ContainsFunc(p.Findings, func(f format.Finding) bool {
+						return f.Category == "not-pinned" && f.Severity == "error" &&
+							f.Dependency == "acme/eslint@v1" && f.RequiredBy == "acme/tools@v1"
+					}), "%+v", p.Findings)
+					assert.Equal(t, before, snapshotWorkflows(t))
+				} else {
+					require.NoError(t, err, "%+v", p.Findings)
+					after, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+					require.NoError(t, err)
+					assert.ElementsMatch(t, []string{"acme/eslint@v1", "acme/jest@v1"}, after.Dependencies["acme/tools@v1"].Uses)
+					assert.Equal(t, file.Workflows[path], after.Workflows[path])
+				}
+			})
+		}
+	}
+}
+
 func TestCompleteness_UnprovenOwnerCannotAuthorizeNewPath(t *testing.T) {
 	for _, source := range []string{"intact", "missing", "changed", "changed-path", "malformed"} {
 		for _, mode := range []string{"--no-narrow", "--verify"} {

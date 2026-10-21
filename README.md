@@ -80,8 +80,10 @@ workflow paths leaves another workflow's such entry as it is, warns about it
 Every online run that retains recorded pins also reads their action manifests
 at the locked commits to check that the recorded transitive graph covers their
 dependencies, without advancing to current upstream commits. This includes pins
-reused from another workflow and read-only runs with refresh flags; only a
-writable refresh rebuilds the graph instead.
+reused from another workflow and read-only runs with refresh flags. Writable
+refreshes bypass those reads only for entries the planned write actually
+replaces or removes. Shared entries retained for unselected workflows are
+still checked.
 Selected workflows share batched manifest reads; failures remain attributed
 only to the workflows that reach them.
 Retained action paths are reconstructed from their owning workflows, including

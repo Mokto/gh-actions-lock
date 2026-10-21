@@ -22,6 +22,10 @@ type Deferred struct {
 	Restored bool
 }
 
+// ReplacementProof checks a recorded entry against the actual write preview.
+// IncompleteLockfile requires replacement of its graph, not just its ref field.
+type ReplacementProof func(Deferred) bool
+
 // Restore puts d's finding back on wr, replacing the warning that accepted
 // it, once.
 func (wr *WorkflowReport) Restore(i int) {

@@ -516,7 +516,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 
 	// Parity excused or accepted some findings on the strength of this
 	// write; any it doesn't bear out block it.
-	if err := pin.Audit(ctx, record, store, report, copts); err != nil {
+	if err := pin.Audit(ctx, record, store, report, copts, result.InspectRetained); err != nil {
 		console.StopProgress()
 		return fmt.Errorf("checking the planned write: %w", err)
 	}

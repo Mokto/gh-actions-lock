@@ -56,6 +56,14 @@ func (s *State) Entry(key string) (parserlock.Action, bool) {
 	return a, ok
 }
 
+// GraphRebuilt reports whether PrepareRefresh cleared key's retained edges
+// in this preview. Keys protected by an unselected workflow are not rebuilt.
+func (s *State) GraphRebuilt(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.preview && s.graphRebuilt[key]
+}
+
 // UsedBy returns the keys of the entries whose recorded `uses:` lists key,
 // sorted.
 func (s *State) UsedBy(key string) []string {
