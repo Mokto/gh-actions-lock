@@ -160,12 +160,17 @@ can change, so `gh actions-lock` cannot follow it, and never locks or rewrites
 it. That includes `./…` steps inside remote composite actions. A
 workspace-local action's own `uses:` dependencies are **outside lockfile coverage**.
 
-Every mode reports each workspace-local action as a `local-action` warning, in
-terminal and `--json` output, with a link to the
+When the action's `action.yml` is in the checkout and uses remote actions, the
+runner needs a lockfile pin for each one and fails the job without it. Every
+mode, including `--verify` and `--verify-local`, reports this as a blocking
+`local-action` error that names those actions. Fix it by writing the reference
+as `$/…`, which the CLI follows and locks, or pass `--ignore-local-actions` to
+report it as a warning and continue. `--no-migrate-local-actions` is an alias.
+
+A `./…` action the CLI can't read from the checkout, or one with only `run:`
+steps, is a non-blocking `local-action` warning. Both link to the
 [troubleshooting docs](https://docs.github.com/actions/reference/security/workflow-dependency-lockfile-troubleshooting#local-action).
-The warning never fails a run or makes it invalid. The workflow's other
-dependencies are locked and checked as usual. `--no-migrate-local-actions` is
-accepted for compatibility and has no effect.
+The workflow's other dependencies are locked and checked as usual.
 
 ## How it works
 

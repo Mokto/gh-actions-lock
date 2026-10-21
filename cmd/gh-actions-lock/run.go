@@ -70,9 +70,9 @@ type checkOptions struct {
 	// in scanned workflows must have a corresponding lockfile entry.
 	// No auth, no resolution, no reachability — ideal for pre-commit hooks.
 	verifyLocal bool
-	// noMigrateLocalActions is accepted for compatibility; local actions
-	// are never rewritten.
-	noMigrateLocalActions bool
+	// ignoreLocalActions keeps a `./…` action that uses remote actions a
+	// warning instead of a blocking error.
+	ignoreLocalActions bool
 }
 
 // bindCheckFlags registers the run flags on the root command.
@@ -96,7 +96,10 @@ func bindCheckFlags(cmd *cobra.Command, opts *checkOptions) {
 			"No network calls, no authentication, no file writes — ideal for pre-commit hooks.\n"+
 			"It does not check that the entries are trustworthy; use --verify in CI for that.")
 	cmd.Flags().StringVar(&opts.profileDir, "profile", "", "Enable profiling: write trace, CPU profile, and HTTP log to `dir`")
-	cmd.Flags().BoolVar(&opts.noMigrateLocalActions, "no-migrate-local-actions", false, "No effect: local `./…` actions are never rewritten")
+	cmd.Flags().BoolVar(&opts.ignoreLocalActions, "ignore-local-actions", false,
+		"Warn instead of failing when a local `./…` action uses remote actions the lockfile can't cover")
+	// Older releases spelled the opt-out this way; keep those commands working.
+	cmd.Flags().BoolVar(&opts.ignoreLocalActions, "no-migrate-local-actions", false, "Alias for --ignore-local-actions")
 	_ = cmd.Flags().MarkHidden("no-migrate-local-actions")
 }
 
@@ -319,6 +322,9 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 
 	report := result.Report
 	valid := result.Valid
+	if blockLocalActions(report, opts.ignoreLocalActions) {
+		valid = false
+	}
 	// A read-only run writes nothing, so a finding deferred on a write stands.
 	if opts.noFix {
 		report.RestoreDeferred()
@@ -631,4 +637,43 @@ func cliVersion() string {
 		return info.Main.Version
 	}
 	return "unknown"
+}
+
+// blockLocalActions turns each local-action warning whose composite uses
+// remote actions into a blocking error: the runner needs a pin for each, and
+// the lockfile can't record one for a `./…` action, so the job would fail
+// once the lockfile is enforced. It reports whether any finding was blocked.
+func blockLocalActions(report *checks.Report, ignore bool) bool {
+	if ignore {
+		return false
+	}
+	blocked := false
+	for i := range report.Workflows {
+		for j := range report.Workflows[i].Findings {
+			f := &report.Workflows[i].Findings[j]
+			if f.Category != checks.LocalAction || len(f.LocalRemoteUses) == 0 {
+				continue
+			}
+			subject := f.LocalPath
+			fix := "Pass --ignore-local-actions to continue."
+			if f.ParentNWO != "" {
+				subject += " (in " + f.ParentNWO + ")"
+			}
+			if f.ParentNWO == "" || strings.HasPrefix(f.ParentNWO, "$/") {
+				fix = fmt.Sprintf("Write it as $/%s, or pass --ignore-local-actions.", strings.TrimPrefix(f.LocalPath, "./"))
+			}
+			f.Severity = checks.SeverityError
+			f.Detail = fmt.Sprintf("%s uses %s, which the lockfile can't cover; the job will fail when the lockfile is enforced. %s",
+				subject, joinAnd(f.LocalRemoteUses), fix)
+			blocked = true
+		}
+	}
+	return blocked
+}
+
+func joinAnd(items []string) string {
+	if len(items) < 2 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }

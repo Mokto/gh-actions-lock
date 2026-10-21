@@ -14,6 +14,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/pinpool"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/resolve"
+	"github.com/github/gh-actions-lock/internal/workflowfile"
 )
 
 // DiagnoseParsed runs engine diagnostics for each pre-parsed workflow, assuming
@@ -335,25 +336,27 @@ func localActionFindings(pw checks.ParsedWorkflow) []checks.Finding {
 	var out []checks.Finding
 	for _, p := range pw.LocalPaths {
 		out = append(out, checks.Finding{
-			WorkflowPath: pw.Path,
-			Category:     checks.LocalAction,
-			Severity:     checks.SeverityWarning,
-			Confidence:   checks.ConfidenceHigh,
-			LocalPath:    p,
-			Detail:       "cannot follow workspace-local action " + p,
-			DocURL:       LocalActionDocURL,
+			WorkflowPath:    pw.Path,
+			Category:        checks.LocalAction,
+			Severity:        checks.SeverityWarning,
+			Confidence:      checks.ConfidenceHigh,
+			LocalPath:       p,
+			LocalRemoteUses: workflowfile.LocalActionRemoteUses(pw.Path, p),
+			Detail:          "cannot follow workspace-local action " + p,
+			DocURL:          LocalActionDocURL,
 		})
 	}
 	for _, lu := range pw.NestedLocalUses {
 		out = append(out, checks.Finding{
-			WorkflowPath: pw.Path,
-			Category:     checks.LocalAction,
-			Severity:     checks.SeverityWarning,
-			Confidence:   checks.ConfidenceHigh,
-			ParentNWO:    lu.Parent,
-			LocalPath:    lu.Path,
-			Detail:       fmt.Sprintf("cannot follow workspace-local action %s used by %s", lu.Path, lu.Parent),
-			DocURL:       LocalActionDocURL,
+			WorkflowPath:    pw.Path,
+			Category:        checks.LocalAction,
+			Severity:        checks.SeverityWarning,
+			Confidence:      checks.ConfidenceHigh,
+			ParentNWO:       lu.Parent,
+			LocalPath:       lu.Path,
+			LocalRemoteUses: workflowfile.LocalActionRemoteUses(pw.Path, lu.Path),
+			Detail:          fmt.Sprintf("cannot follow workspace-local action %s used by %s", lu.Path, lu.Parent),
+			DocURL:          LocalActionDocURL,
 		})
 	}
 	return out
@@ -371,14 +374,15 @@ func nestedLocalActionFindings(path string, local []*resolve.CompositeLocalPathE
 		}
 		seen[k] = true
 		out = append(out, checks.Finding{
-			WorkflowPath: path,
-			Category:     checks.LocalAction,
-			Severity:     checks.SeverityWarning,
-			Confidence:   checks.ConfidenceHigh,
-			ParentNWO:    l.Parent,
-			LocalPath:    l.LocalPath,
-			Detail:       fmt.Sprintf("cannot follow workspace-local action %s used by %s", l.LocalPath, l.Parent),
-			DocURL:       LocalActionDocURL,
+			WorkflowPath:    path,
+			Category:        checks.LocalAction,
+			Severity:        checks.SeverityWarning,
+			Confidence:      checks.ConfidenceHigh,
+			ParentNWO:       l.Parent,
+			LocalPath:       l.LocalPath,
+			LocalRemoteUses: workflowfile.LocalActionRemoteUses(path, l.LocalPath),
+			Detail:          fmt.Sprintf("cannot follow workspace-local action %s used by %s", l.LocalPath, l.Parent),
+			DocURL:          LocalActionDocURL,
 		})
 	}
 	return out

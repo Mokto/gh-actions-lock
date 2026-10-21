@@ -580,3 +580,33 @@ func TestValidateInRepo(t *testing.T) {
 	assert.NoError(t, ValidateInRepo(filepath.Join(dir, "missing.yml")), "nothing to escape yet")
 	assert.ErrorIs(t, ValidateInRepo(escape), errPathOutsideRoot)
 }
+
+func TestLocalActionRemoteUses(t *testing.T) {
+	repoRoot := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755))
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "ci.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(workflowPath), 0o755))
+	write := func(path, content string) {
+		p := filepath.Join(repoRoot, path, "action.yml")
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+	}
+	write("remote", "runs:\n  using: composite\n  steps:\n    - uses: actions/setup-node@v4\n    - uses: ./other\n    - uses: $/self\n    - uses: docker://alpine:3\n    - uses: actions/setup-node@v4\n    - uses: octo/tool/sub@v1\n")
+	write("runonly", "runs:\n  using: composite\n  steps:\n    - run: echo hi\n      shell: bash\n")
+	write("node", "runs:\n  using: node20\n  main: index.js\n")
+
+	for _, tc := range []struct {
+		name, path string
+		want       []string
+	}{
+		{"remote uses, deduplicated", "./remote", []string{"actions/setup-node@v4", "octo/tool/sub@v1"}},
+		{"run steps only", "./runonly", nil},
+		{"not a composite", "./node", nil},
+		{"missing from the checkout", "./generated", nil},
+		{"outside the checkout", "./../escape", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, LocalActionRemoteUses(workflowPath, tc.path))
+		})
+	}
+}

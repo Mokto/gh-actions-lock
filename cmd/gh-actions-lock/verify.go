@@ -65,6 +65,7 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 	parsed := pipeline.ParseAll(paths, store)
 	report := pipeline.VerifyLocalCoverage(parsed, store)
 	appendOwnSHAEntryFindings(report, store)
+	blockLocalActions(report, opts.ignoreLocalActions)
 	valid := report.IsValid()
 
 	if opts.jsonFields != "" {

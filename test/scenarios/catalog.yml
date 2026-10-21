@@ -505,9 +505,10 @@ scenarios:
 
   - name: local_actions_opaque
     category: workflow_parsing
-    description: "Real binary and lockfile writer: a fix run locks the remote ref beside a ./ action, never follows the local action file (its remote dependency is unknown to the stub) and rewrites neither file"
+    description: "Real binary and lockfile writer: with --ignore-local-actions a fix run locks the remote ref beside a ./ action that uses a remote action, never follows the local action file (its remote dependency is unknown to the stub) and rewrites neither file. Blocking without the flag is covered by Go command tests"
     needs_stub: true
     tags: [stub]
+    flags: ["--ignore-local-actions"]
     fixtures:
       workflows:
         ci.yml:

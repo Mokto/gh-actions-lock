@@ -15,6 +15,7 @@ import (
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pipeline"
+	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -813,4 +814,73 @@ func TestRun_SelfRepositoryLocalActionNamesItsParent(t *testing.T) {
 	_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--no-interactive")
 	require.NoError(t, err)
 	assert.Contains(t, stderr, "./helper (in $/actions/build), ./helper (in $/actions/test)")
+}
+
+// TestRun_LocalActionUsingRemoteActionsBlocks: a `./…` composite in the
+// checkout that uses remote actions fails every mode, since the runner would
+// reject its unlocked uses; --ignore-local-actions (or the old
+// --no-migrate-local-actions spelling) turns it back into a warning.
+func TestRun_LocalActionUsingRemoteActionsBlocks(t *testing.T) {
+	const want = "./.github/actions/setup uses actions/setup-node@v4 and octo/tool@v1, which the lockfile can't cover; " +
+		"the job will fail when the lockfile is enforced. Write it as $/.github/actions/setup, or pass --ignore-local-actions."
+	for _, tc := range []struct {
+		args    []string
+		blocked bool
+	}{
+		{nil, true},
+		{[]string{"--no-fix"}, true},
+		{[]string{"--verify"}, true},
+		{[]string{"--verify-local"}, true},
+		{[]string{"--ignore-local-actions"}, false},
+		{[]string{"--verify", "--ignore-local-actions"}, false},
+		{[]string{"--verify-local", "--ignore-local-actions"}, false},
+		{[]string{"--no-migrate-local-actions"}, false},
+	} {
+		t.Run(strings.Join(append([]string{"args"}, tc.args...), " "), func(t *testing.T) {
+			path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+
+				"      - uses: actions/checkout@v4.2.1\n      - uses: ./.github/actions/setup\n",
+				"actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+			require.NoError(t, os.Mkdir(".git", 0o755))
+			action := filepath.Join(".github", "actions", "setup", "action.yml")
+			require.NoError(t, os.MkdirAll(filepath.Dir(action), 0o755))
+			require.NoError(t, os.WriteFile(action, []byte("runs:\n  using: composite\n  steps:\n"+
+				"    - uses: actions/setup-node@v4\n    - uses: octo/tool@v1\n    - run: echo hi\n      shell: bash\n"), 0o600))
+			before := snapshotWorkflows(t)
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOK)
+
+			p, err := runParity(t, reg, append(tc.args, "--no-interactive", path)...)
+			local := localActionFindings(p.Findings)
+			require.Len(t, local, 1, "%+v", p.Findings)
+			assert.Equal(t, pipeline.LocalActionDocURL, local[0].DocURL)
+			if tc.blocked {
+				require.ErrorIs(t, err, errSilent)
+				assert.False(t, p.Valid)
+				assert.Equal(t, "error", local[0].Severity)
+				assert.Equal(t, want, local[0].Detail)
+				assert.Equal(t, before, snapshotWorkflows(t), "a blocked run writes nothing")
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, p.Valid)
+			assert.Equal(t, "warning", local[0].Severity)
+			assert.Equal(t, "cannot follow workspace-local action ./.github/actions/setup", local[0].Detail)
+		})
+	}
+}
+
+// TestRun_LocalActionErrorNamesTheFix: inside a `$/…` action the `$/` rewrite
+// still applies; inside a remote composite only the flag does.
+func TestRun_LocalActionErrorNamesTheFix(t *testing.T) {
+	for _, tc := range []struct{ parent, want string }{
+		{"", "./x uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Write it as $/x, or pass --ignore-local-actions."},
+		{"$/actions/build", "./x (in $/actions/build) uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Write it as $/x, or pass --ignore-local-actions."},
+		{"octo/tool@v2", "./x (in octo/tool@v2) uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Pass --ignore-local-actions to continue."},
+	} {
+		report := &checks.Report{Workflows: []checks.WorkflowReport{{Findings: []checks.Finding{{
+			Category: checks.LocalAction, Severity: checks.SeverityWarning, LocalPath: "./x", ParentNWO: tc.parent, LocalRemoteUses: []string{"a/b@v1"},
+		}}}}}
+		assert.True(t, blockLocalActions(report, false))
+		assert.Equal(t, tc.want, report.Workflows[0].Findings[0].Detail)
+	}
 }

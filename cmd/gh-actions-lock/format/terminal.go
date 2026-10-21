@@ -369,7 +369,7 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 	for _, cat := range []checks.Category{
 		checks.RepoReplaced, checks.RepoUnavailable, checks.RepoRenamed, checks.UnreachablePin, checks.TagCommitMismatch,
 		checks.RefChanged, checks.NotPinned, checks.OnboardingRequired,
-		checks.InvalidSelfRepositoryRef,
+		checks.LocalAction, checks.InvalidSelfRepositoryRef,
 		checks.Stale, checks.MisleadingSHA, checks.IncompleteLockfile,
 	} {
 		if n, ok := catCounts[cat]; ok {
@@ -447,6 +447,9 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 	for _, wr := range report.Workflows {
 		for _, f := range wr.Findings {
 			if f.Category == checks.LocalAction {
+				if f.Severity == checks.SeverityError {
+					continue
+				}
 				use := f.LocalPath
 				if f.ParentNWO != "" {
 					use += " (in " + f.ParentNWO + ")"
@@ -614,7 +617,7 @@ func IsAlertedCategory(c checks.Category) bool {
 // re-pins the finding without operator intervention. Only structural drift
 // qualifies: a missing, changed, or orphaned lock entry. Integrity failures
 // (unreachable-pin, misleading-sha) need investigation or --accept-moved, and
-// local-action warnings need no fix — so none of those should
+// a blocking local action needs a source change — so none of those should
 // trigger the "Re-run without --no-fix to apply fixes" hint.
 func IsAutoFixable(c checks.Category) bool {
 	switch c {
