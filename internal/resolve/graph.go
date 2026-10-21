@@ -90,6 +90,15 @@ func (g *Graph) Inspect(roots []parserlock.ActionRef) ([]dep.Dependency, dep.Par
 	return deps, parents, errors.Join(err, flatErr)
 }
 
+// Roots returns the declared traversal roots without dropping action paths.
+func (g *Graph) Roots() []parserlock.ActionRef {
+	refs := make([]parserlock.ActionRef, len(g.roots))
+	for i, key := range g.roots {
+		refs[i] = g.nodes[key].ref
+	}
+	return refs
+}
+
 // Manifest preserves an action file's path and its own dependency edges.
 type Manifest struct {
 	Ref     parserlock.ActionRef

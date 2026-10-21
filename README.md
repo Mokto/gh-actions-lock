@@ -84,6 +84,10 @@ reused from another workflow and read-only runs with refresh flags; only a
 writable refresh rebuilds the graph instead.
 Selected workflows share batched manifest reads; failures remain attributed
 only to the workflows that reach them.
+Retained action paths are reconstructed from their owning workflows, including
+owners outside a selected write scope. Missing or changed owner sources that
+cannot establish those paths block the run with restore and `--relock` guidance;
+adding a new sub-action path cannot repair damage to a retained path.
 
 `--verify-local` runs offline and never writes. It checks direct refs and all
 recorded transitive edges for missing dependency entries, but cannot discover an

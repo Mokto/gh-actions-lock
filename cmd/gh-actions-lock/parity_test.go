@@ -72,7 +72,11 @@ func nodeManifests(req *http.Request) (*http.Response, error) {
 }
 
 func registerLockedManifests(reg *httpmock.Registry, manifests map[string]string) {
-	reg.Register(httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`), func(req *http.Request) (*http.Response, error) {
+	reg.Register(httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`), lockedManifests(manifests))
+}
+
+func lockedManifests(manifests map[string]string) httpmock.Responder {
+	return func(req *http.Request) (*http.Response, error) {
 		var body struct {
 			Variables map[string]string `json:"variables"`
 		}
@@ -97,7 +101,7 @@ func registerLockedManifests(reg *httpmock.Registry, manifests map[string]string
 			)
 		}
 		return httpmock.JSONResponse(map[string]any{"data": data})(req)
-	})
+	}
 }
 
 // registerLockedCheckoutManifest serves actions/checkout's manifest at
@@ -219,6 +223,9 @@ func TestParity_MixedCaseRenameRewrites(t *testing.T) {
 func TestParity_RenameKeepsLockedCommit(t *testing.T) {
 	reg := &httpmock.Registry{}
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), renamedParity)
+	reg.RegisterReusable(httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`), lockedManifests(map[string]string{
+		"krzema12/github-actions-typing": "runs:\n  using: composite\n  steps:\n    - uses: actions/setup-node@v4\n",
+	}))
 	reg.Register(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
 		"data": map[string]any{"a0": testRepoResponse("typesafegithub/github-actions-typing", parityTestMoved, nodeActionYAML)},
 	}))
@@ -1632,7 +1639,13 @@ func TestSHARecordedRef_ChildReadOnlyBlocks(t *testing.T) {
 		for _, mode := range []string{"--verify", "--no-fix", "--verify-local"} {
 			t.Run(fmt.Sprintf("transitive=%v/%s", transitive, mode), func(t *testing.T) {
 				wf, lock := writeOwnSHAChildLock(t, transitive)
-				p, err := runParity(t, parityFallback{&httpmock.Registry{}}, mode, "--no-interactive", wf)
+				reg := &httpmock.Registry{}
+				if transitive {
+					reg.RegisterReusable(httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`), lockedManifests(map[string]string{
+						"actions/checkout": "runs:\n  using: composite\n  steps:\n    - uses: actions/cache@" + parityTestSHA + "\n",
+					}))
+				}
+				p, err := runParity(t, parityFallback{reg}, mode, "--no-interactive", wf)
 				require.ErrorIs(t, err, errSilent)
 				assert.False(t, p.Valid)
 				var blocking []format.Finding
@@ -1843,6 +1856,9 @@ func TestParity_RootUsedBySHAClosureChecked(t *testing.T) {
 	for _, deep := range []string{"replaced", "missing commit", "healthy"} {
 		t.Run(deep, func(t *testing.T) {
 			reg := &httpmock.Registry{}
+			reg.RegisterReusable(httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`), lockedManifests(map[string]string{
+				"actions/checkout": "runs:\n  using: composite\n  steps:\n    - uses: actions/cache@v1\n",
+			}))
 			reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
 				var body struct {
 					Variables map[string]any `json:"variables"`
@@ -1949,6 +1965,11 @@ func TestSHARecordedRef_StaleRootRepairs(t *testing.T) {
 				base = "cccccccccccccccccccccccccccccccccccccccc"
 			}
 			reg := &httpmock.Registry{}
+			if tt.want != "" {
+				reg.RegisterReusable(httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`), lockedManifests(map[string]string{
+					"actions/checkout": "runs:\n  using: composite\n  steps:\n    - uses: " + cache + "\n",
+				}))
+			}
 			for range 3 {
 				reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOKWithIDs(map[string]int{"checkout": 1, "cache": 1, "setup-go": 1}))
 			}
@@ -2034,6 +2055,9 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 				base, compare, tags = "cccccccccccccccccccccccccccccccccccccccc", "diverged", nil
 			}
 			reg := &httpmock.Registry{}
+			reg.RegisterReusable(httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`), lockedManifests(map[string]string{
+				"actions/checkout": "runs:\n  using: composite\n  steps:\n    - uses: actions/cache@" + parityTestSHA + "\n",
+			}))
 			candidateChecks := 0
 			for range 4 {
 				reg.Register(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
@@ -2136,7 +2160,9 @@ func TestSHARecordedRef_SameCommitTagAndSHA(t *testing.T) {
 	const head = "dddddddddddddddddddddddddddddddddddddddd"
 	reg := &httpmock.Registry{}
 	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), parityOKWithIDs(map[string]int{"checkout": 1, "cache": 1}))
-	reg.RegisterReusable(httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`), nodeManifests)
+	reg.RegisterReusable(httpmock.GraphQL(`expr0=[0-9a-fA-F]{40}\^\{commit\}`), lockedManifests(map[string]string{
+		"actions/checkout": "runs:\n  using: composite\n  steps:\n    - uses: actions/cache@" + parityTestSHA + "\n",
+	}))
 	// The parity stub goes first: a repo stub matches any query for the repo.
 	for range 3 {
 		registerParity(reg)
@@ -4907,7 +4933,9 @@ func TestParity_ScopedOnboardChecksSeededCompositeChildren(t *testing.T) {
 			})
 			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
 				httpmock.JSONResponse(map[string]any{"status": "diverged", "merge_base_commit": map[string]any{"sha": "cccccccccccccccccccccccccccccccccccccccc"}}))
-			reg.RegisterReusable(httpmock.GraphQL(`file: file\(path`), nodeManifests)
+			reg.RegisterReusable(httpmock.GraphQL(`file: file\(path`), lockedManifests(map[string]string{
+				"octo/root": "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n",
+			}))
 			useDefaultTransport(t, reg)
 			body := func(name string) string {
 				return "name: " + name + "\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/root@v1\n"

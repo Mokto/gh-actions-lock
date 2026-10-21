@@ -245,7 +245,7 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 	}{
 		{name: "inaccessible stale pin is removed"},
 		{name: "last deleted workflow is removed", last: true},
-		{name: "renamed workflow preserves its historical pin", renamed: true},
+		{name: "missing renamed owner blocks unproven retained paths", renamed: true},
 		{name: "stale foreign host does not bind the resolver", foreign: true},
 		{name: "stale namesake cannot seed identity caches", namesake: true},
 		{name: "stale namesake cannot bind a conflicting host", namesake: true, public: true},
@@ -320,6 +320,17 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 			args := append([]string{"--hostname", "tenant.ghe.com", "--no-interactive", "--no-narrow",
 				"--no-migrate-local-actions", "--json=valid,findings"}, tt.args...)
 			stdout, _, err := runCommandWithHTTP(t, transport, args...)
+			if tt.renamed {
+				require.ErrorIs(t, err, errSilent, stdout)
+				assert.Contains(t, stdout, "cannot prove retained manifest paths")
+				assert.Contains(t, stdout, ".github/workflows/old.yml")
+				assert.Contains(t, stdout, "--relock")
+				assert.Zero(t, staleCalls)
+				after, readErr := os.ReadFile(path)
+				require.NoError(t, readErr)
+				assert.Equal(t, before, string(after))
+				return
+			}
 			if tt.outOfScope {
 				require.NoError(t, err)
 				assert.Zero(t, staleCalls)

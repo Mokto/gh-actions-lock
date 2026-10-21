@@ -25,10 +25,10 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 	file := opts.Store.File()
 	deps := opts.Store.AllDeps()
 	refs := lockfile.NewRefIndex(file)
-	inspections := lockedManifestInspections(parsed, report, deps, freshClosure(resolved, resolvedParents))
+	inspections, owners := lockedManifestInspections(opts, parsed, report, resolvedGraph)
 	var roots []parserlock.ActionRef
-	for _, inspection := range inspections {
-		roots = append(roots, inspection.roots...)
+	for _, owner := range owners {
+		roots = append(roots, owner.roots...)
 	}
 	graph, err := r.ResolveLockedGraph(ctx, roots, deps)
 	if ctx.Err() != nil {
@@ -42,9 +42,56 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 	for _, inspection := range inspections {
 		pw := parsed[inspection.workflow]
 		wr := &report.Workflows[inspection.workflow]
-		_, parents, err := graph.Inspect(inspection.roots)
+		var retained []parserlock.ActionRef
+		var discoveryErr error
+		covered := map[string]bool{}
+		for _, owner := range owners {
+			for _, root := range owner.roots {
+				for _, key := range refs.Lookup(root.NWO(), root.Ref).Candidates {
+					if inspection.keys[key] {
+						retained = append(retained, root)
+						covered[key] = true
+					}
+				}
+			}
+			manifests, manifestErr := graph.Manifests(owner.roots)
+			for _, manifest := range manifests {
+				d := manifest.Entry.Dep
+				for _, key := range refs.Lookup(d.NWO, d.Ref).Candidates {
+					if inspection.keys[key] {
+						retained = append(retained, manifest.Ref)
+						covered[key] = true
+					}
+				}
+			}
+			if manifestErr != nil && slices.ContainsFunc(slices.Collect(maps.Keys(inspection.keys)), func(key string) bool {
+				return owner.keys[key] && !covered[key]
+			}) {
+				retained = append(retained, owner.roots...)
+				discoveryErr = errors.Join(discoveryErr, manifestErr)
+			}
+		}
+		_, parents, err := graph.Inspect(resolve.DedupRequests(retained))
+		err = errors.Join(discoveryErr, err)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		for _, key := range slices.Sorted(maps.Keys(inspection.keys)) {
+			if err != nil && !onlyExplained(err) {
+				continue
+			}
+			if !covered[key] {
+				appendUnprovenOwner(pw.Path, wr, key, inspection.owners[key])
+				continue
+			}
+			for _, child := range file.Dependencies[key].Uses {
+				if !slices.ContainsFunc(parents[dep.RefKeyOf(child)], func(parent string) bool {
+					return dep.RefKeyOf(parent) == dep.RefKeyOf(key)
+				}) {
+					appendUnprovenOwner(pw.Path, wr, key, inspection.owners[key])
+					break
+				}
+			}
 		}
 		appendLockedManifestFindings(pw.Path, wr, file, refs, parents, err)
 	}
@@ -53,10 +100,21 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 
 type lockedInspection struct {
 	workflow int
-	roots    []parserlock.ActionRef
+	keys     map[string]bool
+	owners   map[string][]string
 }
 
-func lockedManifestInspections(parsed []checks.ParsedWorkflow, report *checks.Report, deps []dep.Dependency, fresh func(checks.ParsedWorkflow, resolve.RefSet) []parityOwner) []lockedInspection {
+type manifestOwner struct {
+	roots []parserlock.ActionRef
+	keys  map[string]bool
+}
+
+func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, fresh *resolve.Graph) ([]lockedInspection, []manifestOwner) {
+	file := opts.Store.File()
+	if opts.RecordedWorkflows != nil {
+		file.Workflows = opts.RecordedWorkflows
+	}
+	refs := lockfile.NewRefIndex(file)
 	var inspections []lockedInspection
 	for i, pw := range parsed {
 		wr := &report.Workflows[i]
@@ -64,19 +122,139 @@ func lockedManifestInspections(parsed []checks.ParsedWorkflow, report *checks.Re
 		if isBlocked(pw) || wr.SkipCommit || wr.BlockingResolverError {
 			continue
 		}
-		// Seeds are shared across workflows, including descendants of fresh
-		// roots. Inspect the reached recorded pins, not just this workflow's
-		// previous lockfile ownership.
-		reached := pw
-		reached.Refs = slices.Clone(pw.Refs)
-		for _, o := range fresh(pw, resolve.RefSet{}) {
-			reached.Refs = append(reached.Refs, o.ref)
+		inspection := lockedInspection{workflow: i, keys: map[string]bool{}, owners: map[string][]string{}}
+		add := func(ref parserlock.ActionRef) {
+			for _, key := range refs.Lookup(ref.NWO(), ref.Ref).Candidates {
+				recordedManifestKeys(file, refs, key, inspection.keys)
+			}
 		}
-		reached.ExistingDeps = deps
-		recorded := lockedManifestRoots(reached)
-		inspections = append(inspections, lockedInspection{workflow: i, roots: recorded})
+		recorded := lockedManifestRoots(pw)
+		for _, ref := range recorded {
+			add(ref)
+		}
+		if fresh != nil {
+			var roots []parserlock.ActionRef
+			for _, root := range fresh.Roots() {
+				if !slices.ContainsFunc(pw.Refs, func(ref parserlock.ActionRef) bool {
+					return ref.Path == root.Path && dep.RefKey(ref.NWO(), ref.Ref) == dep.RefKey(root.NWO(), root.Ref)
+				}) {
+					continue
+				}
+				// A read-only refresh must not import the live replacement
+				// closure of a root the workflow already owns.
+				if opts.ReadOnly && opts.Relock && slices.ContainsFunc(recorded, func(ref parserlock.ActionRef) bool {
+					return ref.Path == root.Path && (dep.RefKey(ref.NWO(), ref.Ref) == dep.RefKey(root.NWO(), root.Ref) ||
+						parserlock.IsFullSha(root.Ref) && strings.EqualFold(ref.NWO(), root.NWO()))
+				}) {
+					continue
+				}
+				roots = append(roots, root)
+			}
+			manifests, manifestErr := fresh.Manifests(roots)
+			for _, manifest := range manifests {
+				add(manifest.Ref)
+			}
+			if manifestErr != nil && len(inspection.keys) > 0 {
+				appendLockedManifestFindings(pw.Path, wr, file, refs, nil, manifestErr)
+			}
+		}
+		inspections = append(inspections, inspection)
 	}
-	return inspections
+
+	var owners []manifestOwner
+	for _, path := range slices.Sorted(maps.Keys(file.Workflows)) {
+		rootKeys := map[string]map[string]bool{}
+		for _, key := range file.Workflows[path] {
+			if pin, ok := parserlock.ParsePin(key); ok {
+				for _, candidate := range refs.Lookup(pin.NWO, pin.Ref).Candidates {
+					keys := map[string]bool{}
+					recordedManifestKeys(file, refs, candidate, keys)
+					rootKeys[candidate] = keys
+				}
+			}
+		}
+		relevant := map[string]bool{}
+		for _, inspection := range inspections {
+			for root, keys := range rootKeys {
+				for key := range inspection.keys {
+					if keys[key] {
+						relevant[root] = true
+						if !slices.Contains(inspection.owners[key], path) {
+							inspection.owners[key] = append(inspection.owners[key], path)
+						}
+					}
+				}
+			}
+		}
+		if len(relevant) == 0 {
+			continue
+		}
+		owner := ParseAll([]string{path}, opts.Store)[0]
+		if owner.LoadErr != nil || owner.DepsErr != nil || isBlocked(owner) {
+			continue
+		}
+		use := lockfile.RootUse(owner.Refs)
+		var roots []parserlock.ActionRef
+		for _, key := range slices.Sorted(maps.Keys(relevant)) {
+			pin, ok := parserlock.ParsePin(key)
+			if !ok {
+				continue
+			}
+			action, ok := file.Dependencies[key]
+			if !ok {
+				continue
+			}
+			if _, ok := use(pin, action.Commit); !ok {
+				continue
+			}
+			// Keep every declared path that names this owned root. A full
+			// SHA use is inspected under its workflow-owned stored key.
+			for _, ref := range owner.Refs {
+				if _, ok := lockfile.RootUse([]parserlock.ActionRef{ref})(pin, action.Commit); ok {
+					ref.Ref = pin.Ref
+					roots = append(roots, ref)
+				}
+			}
+		}
+		keys := map[string]bool{}
+		for key := range relevant {
+			for reached := range rootKeys[key] {
+				keys[reached] = true
+			}
+		}
+		owners = append(owners, manifestOwner{roots: resolve.DedupRequests(roots), keys: keys})
+	}
+	return inspections, owners
+}
+
+func recordedManifestKeys(file parserlock.File, refs lockfile.RefIndex, key string, out map[string]bool) {
+	if pin, ok := parserlock.ParsePin(key); ok {
+		for _, candidate := range refs.Lookup(pin.NWO, pin.Ref).Candidates {
+			if out[candidate] {
+				continue
+			}
+			out[candidate] = true
+			for _, child := range file.Dependencies[candidate].Uses {
+				recordedManifestKeys(file, refs, child, out)
+			}
+		}
+	}
+}
+
+func appendUnprovenOwner(path string, wr *checks.WorkflowReport, key string, owners []string) {
+	pin, _ := parserlock.ParsePin(key)
+	wr.Findings = append(dropValid(wr.Findings), checks.Finding{
+		WorkflowPath:       path,
+		Dependency:         &dep.Dependency{NWO: pin.NWO, Ref: pin.Ref},
+		Category:           checks.NotPinned,
+		Severity:           checks.SeverityError,
+		Confidence:         checks.ConfidenceHigh,
+		IncompleteLockfile: true,
+		TrackedAction:      true,
+		Detail:             fmt.Sprintf("cannot prove retained manifest paths for %s from owning workflows %s", key, strings.Join(owners, ", ")),
+		Remediation:        "restore the owning workflow and graph from version control, or run `gh actions-lock --relock` over all owning workflows",
+	})
+	wr.SkipCommit = true
 }
 
 func appendLockedManifestFindings(path string, wr *checks.WorkflowReport, file parserlock.File, refs lockfile.RefIndex, parents dep.ParentMap, err error) {
@@ -98,10 +276,19 @@ func appendLockedManifestFindings(path string, wr *checks.WorkflowReport, file p
 					break
 				}
 			}
-			if found {
+			ref := parserlock.ParseActionRef(child)
+			missing := ref != nil && len(refs.Lookup(ref.NWO(), ref.Ref).Candidates) == 0
+			if found && !missing {
 				continue
 			}
-			ref := parserlock.ParseActionRef(child)
+			if slices.ContainsFunc(wr.Findings, func(f checks.Finding) bool {
+				return f.Category == checks.NotPinned && f.Severity == checks.SeverityError &&
+					f.Dependency != nil && dep.RefKey(f.Dependency.NWO, f.Dependency.Ref) == dep.RefKeyOf(child) &&
+					dep.RefKeyOf(f.ParentNWO) == dep.RefKeyOf(parent)
+			}) {
+				wr.SkipCommit = true
+				continue
+			}
 			f := checks.Finding{
 				WorkflowPath:       path,
 				Category:           checks.NotPinned,
@@ -115,6 +302,9 @@ func appendLockedManifestFindings(path string, wr *checks.WorkflowReport, file p
 			}
 			if ref != nil {
 				f.Dependency = &dep.Dependency{NWO: ref.NWO(), Ref: ref.Ref}
+			}
+			if missing && found {
+				f.Detail = fmt.Sprintf("locked manifest for %s uses %s but its lockfile entry is missing", parent, child)
 			}
 			wr.Findings = append(dropValid(wr.Findings), f)
 			wr.SkipCommit = true

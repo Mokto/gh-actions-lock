@@ -18,7 +18,7 @@ type requestCountingTransport struct {
 	calls atomic.Int64
 	// parity answers parity queries without counting them.
 	parity    bool
-	manifests bool
+	manifests map[string]string
 	// tags, when set, answers tag and release listings and exact ref lookups
 	// (tag name to commit) without
 	// counting them: a SHA repair must prove its tag peels to the commit.
@@ -26,10 +26,8 @@ type requestCountingTransport struct {
 }
 
 func (t *requestCountingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.manifests && httpmock.GraphQL(`file: file\(path`)(req) {
-		reg := &httpmock.Registry{}
-		registerNodeManifests(reg)
-		return reg.RoundTrip(req)
+	if t.manifests != nil && httpmock.GraphQL(`file: file\(path`)(req) {
+		return lockedManifests(t.manifests)(req)
 	}
 	if t.parity && httpmock.GraphQL(`commit: object\(oid`)(req) {
 		return parityOK(req)
@@ -131,7 +129,9 @@ jobs:
 
 func TestExistingSHARefRewritesSelfRepositoryAction(t *testing.T) {
 	const sha = "bcd2ba49218906704ab6c1aa796996da409d3eb1"
-	transport := &requestCountingTransport{parity: true, manifests: true, tags: map[string]string{"v3.2.0": sha}}
+	transport := &requestCountingTransport{parity: true, manifests: map[string]string{
+		"actions/create-github-app-token": "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n    - uses: actions/setup-go@v5\n",
+	}, tags: map[string]string{"v3.2.0": sha}}
 
 	dir := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
@@ -178,12 +178,14 @@ dependencies:
         repo_id: 642580244
         uses:
             - 'actions/checkout@v4'
+            - 'actions/setup-go@v5'
     'actions/create-github-app-token@v3.2.0':
         ref: 'v3.2.0'
         commit: 'sha1-` + sha + `'
         owner_id: 44036562
         repo_id: 642580244
         uses:
+            - 'actions/checkout@v4'
             - 'actions/setup-go@v5'
     'actions/checkout@v4':
         ref: 'v4'

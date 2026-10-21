@@ -19,7 +19,10 @@ type RunOptions struct {
 	WorkflowPaths []string
 	Resolver      *resolve.Resolver
 	Store         *lockfile.State
-	Pool          *pinpool.Pool
+	// RecordedWorkflows preserves ownership before obsolete workflows are
+	// pruned in memory. Nil uses the store's current workflow ownership.
+	RecordedWorkflows map[string][]string
+	Pool              *pinpool.Pool
 	// Relock re-resolves every ref live instead of trusting the lockfile.
 	Relock bool
 	// ReadOnly means planning will not rebuild the graph, even under Relock.

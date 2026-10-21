@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -196,6 +197,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		return err
 	}
 	rl.resolver, rl.store = r, store
+	recordedWorkflows := maps.Clone(store.File().Workflows)
 	var staleWorkflows []string
 	if fullScan {
 		keepWorkflows := make(map[string]bool, len(paths))
@@ -319,12 +321,13 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	}
 
 	runOpts := pipeline.RunOptions{
-		WorkflowPaths: opts.workflowPaths,
-		Resolver:      r,
-		Store:         store,
-		Pool:          pool,
-		Relock:        relock,
-		ReadOnly:      opts.noFix,
+		WorkflowPaths:     opts.workflowPaths,
+		Resolver:          r,
+		Store:             store,
+		RecordedWorkflows: recordedWorkflows,
+		Pool:              pool,
+		Relock:            relock,
+		ReadOnly:          opts.noFix,
 		// Accepting a moved pin relies on planning to re-record it, which a
 		// read-only run never does.
 		AcceptMoved:       opts.acceptMoved && !opts.noFix,
