@@ -158,6 +158,47 @@ A checkout of the same repository with no `ref`, or with `ref: ${{ github.sha }}
 uses that commit too. Checking out `ref: ${{ github.event.pull_request.head.sha }}`
 can make `./…` use different code. The CLI never converts `./…` references to `$/…`.
 
+### Container image warnings
+
+The lockfile pins action commits. It does not pin the container images that
+Docker container actions pull or build; those stay on whatever tag the action
+names unless the action pins them by digest.
+
+The CLI reports these images as non-blocking `container-image` warnings in the
+terminal and in JSON findings. Exit codes and `valid` are unchanged.
+
+| Where the image is named | Checked |
+| --- | --- |
+| `uses: docker://…` steps in your workflows | Yes, also offline |
+| `jobs.<id>.container` and `jobs.<id>.services.<id>`, as a string or `image:` | Yes, also offline |
+| Your `$/…` actions: `docker://…` steps and a Docker action's `runs.image` | Yes, also offline |
+| A remote Docker action's `runs.image` | Yes, from the manifest at the resolved or locked commit |
+| A remote Dockerfile-only action (a `Dockerfile` but no `action.yml`) | Yes, from the existence check the CLI already makes |
+| `docker://…` steps in remote composite actions, including transitive ones | Yes, as above |
+| Workflows called through `jobs.<id>.uses` in another repository | No: their jobs and steps are not read |
+| `./…` local actions, including ones an action writes at run time | No: reported by the `local-action` notice instead |
+| Images chosen by a `${{ }}` expression | No: skipped silently, since the value is only known at run time |
+| `FROM` lines inside a Dockerfile | No: the Dockerfile itself is not read |
+
+Same-repository reusable workflows are checked as workflow files of their own.
+
+A tag or an untagged image (which pulls `latest`) warns. Any `@sha256:` digest
+pin does not; the digest is not validated. A Docker action that builds from a
+`Dockerfile` warns that the image and its base images are built on the runner at
+run time. Each image is reported once per workflow, however it is spelled
+(`docker://node:20` and `container: node:20` are one image), with every job and
+step location that uses it listed in the terminal. An image run by a remote
+action names that action, including its sub-action path.
+
+For images in your own workflows and `$/…` actions, pin by digest
+(`image@sha256:…`) or pin your Dockerfile's base images. When a remote action
+warns, the JSON `required_by` names it; ask its maintainer to pin by digest.
+
+This is static analysis of files the CLI already reads; it makes no extra API
+requests and never pulls images. `--verify` inspects the recorded commits'
+manifests. A sticky run that does not need those manifests, or offline
+`--verify-local`, cannot discover images behind remote actions.
+
 ### Local path actions (`./…`)
 
 Local path actions are allowed. `gh actions-lock` cannot and will not follow
@@ -180,7 +221,7 @@ runtime semantics, not an automatic replacement for `./…`.
 
 A repo gets a lockfile (located at [`.github/workflows/actions.lock`](https://github.com/github/gh-actions-lock/blob/main/.github/workflows/actions.lock)) and workflows are onboarded to the lockfile on a per-workflow basis. 
 
-For actions covered by the lockfile, onboarded workflows enforce that dependencies are present and that the locked commit is executed on the runner. Workspace-local `./…` actions and their dependencies are not covered. Lockfiles are also verified for forgeries. The sha must exist in the refs it's stated to exist in. Repository identity is recorded and redirects and mismatches are blocked at runtime.
+For actions covered by the lockfile, onboarded workflows enforce that dependencies are present and that the locked commit is executed on the runner. Workspace-local `./…` actions and their dependencies are not covered, and neither are the container images that Docker actions pull or build (see [Container image warnings](#container-image-warnings)). Lockfiles are also verified for forgeries. The sha must exist in the refs it's stated to exist in. Repository identity is recorded and redirects and mismatches are blocked at runtime.
 
 Finally, locked actions must have a branch that the commit being locked exists within. This is to make impostor commit style attacks harder.
 

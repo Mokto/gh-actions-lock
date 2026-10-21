@@ -67,6 +67,15 @@ needs this decision. Unreleased changes of that kind:
   and exit 1; a fix run re-records its tag or branch and exits 0, or fails
   when no tag or branch contains the commit; a run given workflow paths warns
   about another workflow's such entry and exits 0.
+- Container images the lockfile can't pin are reported as a new
+  `container-image` finding category with `warning` severity, in JSON as well
+  as the terminal and under `--verify-local`. That covers `docker://` steps, job
+  `container:` and `services:` images, the repository's own `$/…` Docker actions
+  and remote Docker, Dockerfile-only and composite actions. Remote images name
+  the pulling action in `required_by`. Images in other repositories' called
+  reusable workflows and in `./…` actions are not scanned. The category is
+  additive: `valid`, exit codes and existing findings are unchanged, and
+  Dependabot only acts on `error` findings.
 
 ## Workspace-local action coverage
 
