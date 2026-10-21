@@ -87,13 +87,17 @@ still checked.
 Writable runs also check retained entries selected by final planned identities,
 including repository redirects, ref narrowing and reverse lookup.
 Selected workflows share batched manifest reads; failures remain attributed
-only to the workflows that reach them.
+only to the workflows that reach them. Recursion limits apply separately to
+each root, even when reads are shared.
 Retained action paths are reconstructed from their owning workflows, including
 owners outside a selected write scope. Missing or changed owner sources that
 cannot establish those paths block the run with restore and `--relock` guidance;
 adding a new sub-action path cannot repair damage to a retained path.
 Coverage from one owning workflow does not excuse an unprovable source in
-another owner of the same entry.
+another owner of the same entry. Within one workflow, reaching a shared child
+does not prove a different recorded root that the source no longer names.
+Selected version bumps retain historical inspection by walking the current
+action paths at the old locked commits.
 
 `--verify-local` runs offline and never writes. It checks direct refs and all
 recorded transitive edges for missing dependency entries, but cannot discover an

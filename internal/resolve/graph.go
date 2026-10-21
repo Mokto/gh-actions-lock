@@ -25,6 +25,7 @@ type Graph struct {
 	// host is the resolver's host, which an empty Dependency.Hostname means.
 	host          string
 	inspectionErr error
+	maxDepth      int
 }
 
 type graphNode struct {
@@ -174,8 +175,35 @@ func (g *Graph) restrict(roots []parserlock.ActionRef) (*Graph, error) {
 	err = errors.Join(err, view.conflictingCommits())
 	if cycle := view.cycle(); cycle != nil {
 		err = errors.Join(err, cycle)
+	} else {
+		err = errors.Join(err, view.depthError(g.maxDepth))
 	}
 	return view, err
+}
+
+func (g *Graph) depthError(limit int) error {
+	if limit <= 0 {
+		return nil
+	}
+	height := map[ghapi.ActionRef]int{}
+	var visit func(ghapi.ActionRef) int
+	visit = func(key ghapi.ActionRef) int {
+		if height[key] != 0 {
+			return height[key]
+		}
+		longest := 1
+		for _, child := range g.nodes[key].children {
+			longest = max(longest, 1+visit(child.key))
+		}
+		height[key] = longest
+		return longest
+	}
+	for _, root := range g.roots {
+		if visit(root) > limit {
+			return fmt.Errorf("composite action recursion exceeded max depth %d", limit)
+		}
+	}
+	return nil
 }
 
 func (g *Graph) addEdge(parent, child parserlock.ActionRef, self bool) {

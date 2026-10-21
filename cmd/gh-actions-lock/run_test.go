@@ -841,6 +841,78 @@ func TestCompleteness_MissingMetadataIsNotARetry(t *testing.T) {
 	}
 }
 
+func TestCompleteness_EveryRecordedRootNeedsCoverage(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		for _, mode := range []string{"", "--no-fix", "--no-onboard", "--verify"} {
+			t.Run(fmt.Sprintf("%s/reverse=%v", mode, reverse), func(t *testing.T) {
+				path := writeTempWorkflow(t, strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/leaf@v3", 1))
+				roots := []string{"acme/parent@v1.0.0", "acme/other@v1"}
+				if reverse {
+					slices.Reverse(roots)
+				}
+				const owner = ".github/workflows/owner.yml"
+				body := strings.Replace(graphWorkflow, "acme/parent@v1.0.0", roots[0], 1) + "      - uses: " + roots[1] + "\n"
+				require.NoError(t, os.WriteFile(owner, []byte(body), 0o600))
+				composite := "runs:\n  using: composite\n  steps:\n    - uses: acme/leaf@v3\n"
+				transport := &graphTransport{manifests: map[string]string{
+					"acme/parent@v1.0.0": composite, "acme/parent@" + graphParentSHA: composite,
+					"acme/other@v1": composite, "acme/other@" + graphLeafSHA: composite,
+				}}
+				_, stderr, err := runCommandWithHTTP(t, transport, "--no-narrow", path, owner)
+				require.NoError(t, err, stderr)
+				require.NoError(t, os.WriteFile(owner, []byte(graphWorkflow), 0o600))
+				before := snapshotWorkflows(t)
+				args := []string{path}
+				if mode != "" {
+					args = append(args, mode)
+				}
+				p, err := runParity(t, transport, args...)
+				require.ErrorIs(t, err, errSilent)
+				assert.True(t, slices.ContainsFunc(p.Findings, func(f format.Finding) bool {
+					return f.Category == "not-pinned" && f.Dependency == "acme/leaf@v3" &&
+						strings.Contains(f.Remediation, "restore") && strings.Contains(f.Remediation, "--relock")
+				}), "%+v", p.Findings)
+				assert.Equal(t, before, snapshotWorkflows(t))
+			})
+		}
+	}
+}
+
+func TestCompleteness_RootBumpInspectsReusedPaths(t *testing.T) {
+	for _, mode := range []string{"", "--no-onboard"} {
+		for _, damaged := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/damaged=%v", mode, damaged), func(t *testing.T) {
+				path, file := generateGraph(t)
+				if damaged {
+					child := file.Dependencies["acme/child@v2"]
+					child.Uses = nil
+					file.Dependencies["acme/child@v2"] = child
+					writeGraph(t, file)
+				}
+				require.NoError(t, os.WriteFile(path, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/parent@v1.1.0", 1)), 0o600))
+				before := snapshotWorkflows(t)
+				args := []string{path}
+				if mode != "" {
+					args = append(args, mode)
+				}
+				p, err := runParity(t, &graphTransport{}, args...)
+				if damaged {
+					require.ErrorIs(t, err, errSilent)
+					assert.Equal(t, before, snapshotWorkflows(t))
+					assert.True(t, slices.ContainsFunc(p.Findings, func(f format.Finding) bool {
+						return f.Category == "not-pinned" && f.Dependency == "acme/leaf@v3" && f.RequiredBy == "acme/child@v2"
+					}), "%+v", p.Findings)
+				} else {
+					require.NoError(t, err, "%+v", p.Findings)
+					assert.Contains(t, snapshotWorkflows(t)[path], "acme/parent@v1.1.0")
+					_, stderr, err := runCommandWithHTTP(t, &graphTransport{}, "--verify", path)
+					require.NoError(t, err, stderr)
+				}
+			})
+		}
+	}
+}
+
 func TestCompleteness_EveryOwnerRetainsCoverage(t *testing.T) {
 	for _, broken := range []string{"deleted", "changed", "transitive-failure"} {
 		for _, reverse := range []bool{false, true} {

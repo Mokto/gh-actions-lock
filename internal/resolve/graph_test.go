@@ -16,6 +16,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestGraphDepthIsIndependentOfOtherRoots(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		t.Run(map[bool]string{false: "chain alone", true: "chain and middle root"}[shared], func(t *testing.T) {
+			names := []string{"a", "b", "c", "d", "e", "f"}
+			entries := map[ghapi.ActionRef]resolvedEntry{}
+			for i, name := range names {
+				yml := "runs:\n  using: node20\n"
+				if i+1 < len(names) {
+					yml = "runs:\n  using: composite\n  steps:\n    - uses: o/" + names[i+1] + "@v1\n"
+				}
+				entries[ghapi.ForActionRef("o", name, "", "v1")] = resolvedEntry{
+					dep: dep.Dependency{NWO: "o/" + name, Ref: "v1", SHA: strings.Repeat(name, 40)}, actionYML: yml,
+				}
+			}
+			r := seedCache(&Resolver{MaxRecursionDepth: 4}, entries)
+			root := parserlock.ActionRef{Owner: "o", Repo: "a", Ref: "v1"}
+			middle := parserlock.ActionRef{Owner: "o", Repo: "d", Ref: "v1"}
+			roots := []parserlock.ActionRef{root}
+			if shared {
+				roots = append(roots, middle)
+			}
+			graph, _ := r.ResolveGraph(context.Background(), roots)
+			_, _, err := graph.Inspect([]parserlock.ActionRef{root})
+			require.ErrorContains(t, err, "max depth")
+			_, err = graph.Manifests([]parserlock.ActionRef{root})
+			require.ErrorContains(t, err, "max depth")
+			if shared {
+				_, _, err = graph.Inspect([]parserlock.ActionRef{middle})
+				require.NoError(t, err)
+				_, err = graph.Manifests([]parserlock.ActionRef{middle})
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestGraphCycleWithinRepository(t *testing.T) {
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	for _, tt := range []struct {

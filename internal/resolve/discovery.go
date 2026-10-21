@@ -250,6 +250,7 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 	seen := make(map[ghapi.ActionRef]bool)
 	g := newGraph(refs)
 	g.host = r.hostname
+	g.maxDepth = r.MaxRecursionDepth
 
 	pending := make([]resolutionRequest, len(refs))
 	for i, ref := range refs {
