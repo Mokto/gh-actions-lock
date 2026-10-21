@@ -32,7 +32,9 @@ func TestCheckPins_GraphQLParsesEachState(t *testing.T) {
 			"a2": {"nameWithOwner": "octo/gone", "databaseId": 5, "owner": {"databaseId": 6}, "commit": null},
 			"a3": {"nameWithOwner": "octo/retag", "databaseId": 7, "owner": {"databaseId": 8},
 			       "commit": {"oid": "`+paritySHA+`"}, "tag": {"oid": "`+parityMoved+`"}, "tagRef": {}},
-			"a4": null
+			"a4": null,
+			"a5": {"nameWithOwner": "octo/branch", "databaseId": 9, "owner": {"databaseId": 10},
+			       "commit": {"oid": "`+paritySHA+`"}, "head": {"oid": "`+parityMoved+`"}, "headRef": {}}
 		},
 		"errors": [
 			{"type": "NOT_FOUND", "path": ["a2", "commit"], "message": "Could not resolve to a commit"},
@@ -46,24 +48,28 @@ func TestCheckPins_GraphQLParsesEachState(t *testing.T) {
 		{Owner: "octo", Repo: "gone", SHA: paritySHA},
 		{Owner: "octo", Repo: "retag", SHA: paritySHA, Head: "v1.0.0"},
 		{Owner: "octo", Repo: "deleted", SHA: paritySHA},
+		{Owner: "octo", Repo: "branch", SHA: paritySHA, Head: "v2.0.0"},
 	})
-	require.Len(t, states, 5)
+	require.Len(t, states, 6)
 	assert.Len(t, reg.Requests, 1, "one batched request for every pin")
 	assert.NotContains(t, gotQuery, "action.yml", "parity must not fetch action blobs")
 	assert.Equal(t, "refs/tags/v4.2.1^{commit}", gotVars["tag0"])
 	assert.Equal(t, "refs/heads/v4.2.1^{commit}", gotVars["head0"])
 	assert.NotContains(t, gotVars, "tag1", "a pin with no ref looks none up")
 
-	assert.Equal(t, PinState{NameWithOwner: "actions/checkout", OwnerID: 1, RepoID: 2, CommitFound: true, HeadOID: paritySHA}, states[0])
+	assert.Equal(t, PinState{NameWithOwner: "actions/checkout", OwnerID: 1, RepoID: 2, CommitFound: true, HeadOID: paritySHA, HeadIsTag: true}, states[0])
 	assert.Equal(t, "typesafegithub/github-actions-typing", states[1].NameWithOwner)
 	assert.True(t, states[1].CommitFound)
 	assert.NoError(t, states[2].Err)
 	assert.False(t, states[2].CommitFound)
 	assert.True(t, states[3].CommitFound)
 	assert.Equal(t, parityMoved, states[3].HeadOID)
+	assert.True(t, states[3].HeadIsTag)
 	assert.NoError(t, states[4].Err)
 	assert.True(t, states[4].RepoMissing, "a NOT_FOUND repository is a verdict the runner shares")
 	assert.False(t, states[4].ViaFallback)
+	assert.Equal(t, parityMoved, states[5].HeadOID)
+	assert.False(t, states[5].HeadIsTag, "a branch named like a release is not a tag")
 }
 
 func TestCheckPins_GraphQLBatchesFifty(t *testing.T) {
@@ -141,8 +147,8 @@ func TestCheckPins_RESTOnly(t *testing.T) {
 		require.NoError(t, s.Err)
 	}
 	assert.Equal(t, PinState{NameWithOwner: "typesafegithub/github-actions-typing", OwnerID: 4, RepoID: 3, CommitFound: true}, states[0])
-	assert.Equal(t, PinState{NameWithOwner: "octo/retag", CommitFound: true, HeadOID: parityMoved}, states[1], "a moved tag is not a missing commit")
-	assert.Equal(t, PinState{NameWithOwner: "octo/retag", CommitFound: true, HeadOID: paritySHA}, states[2])
+	assert.Equal(t, PinState{NameWithOwner: "octo/retag", CommitFound: true, HeadOID: parityMoved, HeadIsTag: true}, states[1], "a moved tag is not a missing commit")
+	assert.Equal(t, PinState{NameWithOwner: "octo/retag", CommitFound: true, HeadOID: paritySHA, HeadIsTag: true}, states[2])
 	assert.False(t, states[3].CommitFound)
 	assert.Equal(t, PinState{RepoMissing: true, ViaFallback: true}, states[4])
 	for _, req := range reg.Requests {

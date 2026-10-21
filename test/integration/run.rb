@@ -447,6 +447,25 @@ LOCKFILE_TEMPLATES = {
       }
     )
   },
+  # Exact tag v4.2.2 locked at v4.2.0's commit, an older commit in the
+  # tag's history: the lockfile rolled the release back.
+  "pinned_checkout_exact_behind" => -> {
+    build_lockfile(
+      workflows: {
+        ".github/workflows/ci.yml" => [
+          "actions/checkout@v4.2.2"
+        ]
+      },
+      dependencies: {
+        "actions/checkout@v4.2.2" => {
+          "ref" => "v4.2.2",
+          "commit" => "sha1-#{CHECKOUT_V420_SHA}",
+          "owner_id" => 44036562,
+          "repo_id" => 197814629
+        }
+      }
+    )
+  },
   # Lockfile with a branch-ref dep key (main) — represents a workflow
   # onboarded with --no-narrow that should be narrowed on re-pin.
   "pinned_checkout_main" => -> {
@@ -837,6 +856,23 @@ STUB_WIRING = {
       end
     end
     s.env("GH_TOKEN" => "gho_fake_forgery_token")
+  },
+
+  # Parity: tag v4.2.2 points at CHECKOUT_SHA and the locked v4.2.0 commit
+  # is in its history.
+  verify_exact_tag_behind_blocks: ->(s) {
+    s.stub_server do |srv|
+      srv.on(:POST, %r{/graphql$}) do |req|
+        status, headers, body = checkout_parity(JSON.parse(req.body))
+        [status, headers, body.gsub(%("tag":{"oid":"#{CHECKOUT_V420_SHA}"}), %("tag":{"oid":"#{CHECKOUT_SHA}"}))]
+      end
+      checkout_repo_rest(srv)
+      srv.on(:GET, %r{/repos/actions/checkout/compare/#{CHECKOUT_V420_SHA}\.\.\.#{CHECKOUT_SHA}}) do |_req|
+        [200, { "Content-Type" => "application/json" },
+         JSON.generate({ status: "ahead", merge_base_commit: { sha: CHECKOUT_V420_SHA } })]
+      end
+    end
+    s.env("GH_TOKEN" => "gho_fake_exact_tag_behind_token")
   },
 
   # Relock scenario: branch ref recorded at a stale ancestor SHA; --relock

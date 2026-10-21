@@ -40,7 +40,9 @@ type PinState struct {
 	CommitFound bool
 	// HeadOID is the commit Head peels to; empty when the ref is gone.
 	HeadOID string
-	Err     error
+	// HeadIsTag marks a Head that resolved as a tag rather than a branch.
+	HeadIsTag bool
+	Err       error
 }
 
 // pinCheckBatchSize is larger than the action-file batch because each alias
@@ -235,6 +237,7 @@ func parsePinCheckResponse(data map[string]json.RawMessage, pins []PinCheck, gql
 		var oid string
 		switch {
 		case repo.TagRef != nil:
+			states[i].HeadIsTag = true
 			if repo.Tag != nil {
 				oid = repo.Tag.OID
 			}
@@ -295,9 +298,11 @@ func (c *Client) checkPinREST(ctx context.Context, p PinCheck) PinState {
 	}
 	s := PinState{NameWithOwner: meta.FullName, OwnerID: meta.OwnerID, RepoID: meta.RepoID}
 	if p.Head != "" {
-		if s.HeadOID, err = c.ResolveRefName(ctx, p.Owner, p.Repo, p.Head); err != nil {
+		t, err := c.LookupRefName(ctx, p.Owner, p.Repo, p.Head)
+		if err != nil {
 			return PinState{Err: err}
 		}
+		s.HeadOID, s.HeadIsTag = t.Commit, t.Kind == TagRef
 		if strings.EqualFold(s.HeadOID, p.SHA) {
 			s.CommitFound = true
 			return s

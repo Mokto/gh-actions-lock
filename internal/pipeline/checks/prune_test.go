@@ -20,6 +20,8 @@ func TestPrunesDependency(t *testing.T) {
 		{"ref-moved under relock", Finding{Category: RefMoved, Dependency: d}, false, true, true},
 		{"ref-moved under accept-moved", Finding{Category: RefMoved, Dependency: d}, true, true, true},
 		{"ref-moved on a plain run", Finding{Category: RefMoved, Dependency: d}, false, false, false},
+		{"tag-commit-mismatch under relock", Finding{Category: TagCommitMismatch, Dependency: d}, false, true, true},
+		{"tag-commit-mismatch on a plain run", Finding{Category: TagCommitMismatch, Dependency: d}, false, false, false},
 		{"unreachable-pin under accept-moved", Finding{Category: UnreachablePin, Dependency: d}, true, true, true},
 		{"unreachable-pin under relock alone", Finding{Category: UnreachablePin, Dependency: d}, false, true, false},
 		{"same-ID rename warning", Finding{Category: RepoRenamed, Severity: SeverityWarning, Dependency: d}, false, false, true},

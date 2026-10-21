@@ -80,12 +80,6 @@ func (c *Client) LookupRefName(ctx context.Context, owner, repo, name string) (R
 	return RefTarget{}, nil
 }
 
-// ResolveRefName returns the commit name resolves to; see LookupRefName.
-func (c *Client) ResolveRefName(ctx context.Context, owner, repo, name string) (string, error) {
-	t, err := c.LookupRefName(ctx, owner, repo, name)
-	return t.Commit, err
-}
-
 // TagExists reports whether owner/repo has a tag named exactly name.
 func (c *Client) TagExists(ctx context.Context, owner, repo, name string) (bool, error) {
 	c, err := c.ForRepo(ctx, owner, repo)

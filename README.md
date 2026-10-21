@@ -65,10 +65,15 @@ is looked up only as an existing tag, then branch, of exactly that name, the
 way the Actions backend resolver does. Every pin, whether an exact tag
 (`v4.2.1`), a partial version (`v4`), a branch (`main`) or a full SHA (`uses:
 owner/repo@<sha>`), must have its commit in that ref's history, so a fork
-commit can't pass as upstream. Tags can move: the Actions backend accepts an
-exact tag that moved ahead of the commit, so runs allow it and `--verify` only
-warns with "Tag now points past locked commit", not "Pinned commit not in
-upstream history". A lockfile entry whose `ref` the Actions backend resolver
+commit can't pass as upstream. An exact tag means exactly one commit: if the
+entry locks an older commit in the tag's history, for example because a
+publisher re-pointed the tag, every mode fails with `tag-commit-mismatch`
+until `gh actions-lock --relock` locks the tag's commit. Floating refs (`v4`,
+`main`) accept any commit in the ref's history, so a lockfile change that moves
+one to an older commit isn't detected. Review lockfile diffs or pin exact tags.
+A full-SHA `uses:` whose recorded tag moved ahead only warns under `--verify`
+with "Tag now points past locked commit", since the commit is in the workflow.
+A lockfile entry whose `ref` the Actions backend resolver
 would reject fails the run (exit 2), naming the first such entry in the file and its line:
 it must be a short tag or branch name the backend accepts, never a SHA, a
 `refs/` name, revision syntax such as `main~1`, or a `git describe` name, and

@@ -294,34 +294,50 @@ func TestParity_RelockReclaimedNameKeepsLock(t *testing.T) {
 	assert.NotContains(t, lock, parityTestMoved, "the reclaimed repo's commit must not be written")
 }
 
-// TestParity_MovedExactTagFollowsHistory: tags move, and the Actions
-// backend accepts a pin whose commit is still in the tag's history. --verify
-// warns about it; no mode blocks. A tag that lost the commit blocks.
+// TestParity_MovedExactTagFollowsHistory: an exact release tag names one
+// commit, so an entry keyed by v7.0.1 that locks v7.0.0's commit, an older
+// commit in the tag's history, blocks every mode (#202). A floating ref
+// behind its head is sticky and silent, and so is a branch named like a
+// release. A tag that lost the commit blocks as unreachable.
 func TestParity_MovedExactTagFollowsHistory(t *testing.T) {
+	const lost = "cccccccccccccccccccccccccccccccccccccccc"
+	fix := []string{"--no-onboard", "--no-narrow", "--no-interactive"}
 	tests := []struct {
 		name   string
+		ref    string
 		status string
 		base   string
 		args   []string
 		want   string
-		block  bool
 	}{
-		{"moved ahead warns under verify", "ahead", parityTestSHA, []string{"--verify"}, "ref-moved", false},
-		{"moved ahead passes a default run", "ahead", parityTestSHA, []string{"--no-onboard", "--no-narrow", "--no-interactive"}, "", false},
-		{"lost commit blocks verify", "diverged", "cccccccccccccccccccccccccccccccccccccccc", []string{"--verify"}, "unreachable-pin", true},
-		{"lost commit blocks a default run", "diverged", "cccccccccccccccccccccccccccccccccccccccc", []string{"--no-onboard", "--no-narrow", "--no-interactive"}, "unreachable-pin", true},
+		{"exact tag behind blocks verify", "v7.0.1", "ahead", parityTestSHA, []string{"--verify"}, "tag-commit-mismatch"},
+		{"exact tag behind blocks no-fix", "v7.0.1", "ahead", parityTestSHA, []string{"--no-fix"}, "tag-commit-mismatch"},
+		{"exact tag behind blocks a default run", "v7.0.1", "ahead", parityTestSHA, fix, "tag-commit-mismatch"},
+		{"floating ref behind passes verify", "v7", "ahead", parityTestSHA, []string{"--verify"}, ""},
+		{"floating ref behind passes a default run", "v7", "ahead", parityTestSHA, fix, ""},
+		{"lost commit blocks verify", "v7.0.1", "diverged", lost, []string{"--verify"}, "unreachable-pin"},
+		{"lost commit blocks a default run", "v7.0.1", "diverged", lost, fix, "unreachable-pin"},
+		{"branch named like a release passes verify", "v7.0.1", "ahead", parityTestSHA, []string{"--verify"}, ""},
+		{"branch named like a release passes a default run", "v7.0.1", "ahead", parityTestSHA, fix, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
 			defer reg.Verify(t)
+			head := map[string]any{
+				"nameWithOwner": "actions/checkout",
+				"commit":        map[string]any{"oid": parityTestSHA},
+				"tag":           map[string]any{"oid": parityTestMoved},
+				"tagRef":        map[string]any{"oid": parityTestMoved},
+			}
+			if strings.HasPrefix(tt.name, "branch") {
+				delete(head, "tag")
+				delete(head, "tagRef")
+				head["head"] = map[string]any{"oid": parityTestMoved}
+				head["headRef"] = map[string]any{}
+			}
 			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
-				"data": map[string]any{"a0": map[string]any{
-					"nameWithOwner": "actions/checkout",
-					"commit":        map[string]any{"oid": parityTestSHA},
-					"tag":           map[string]any{"oid": parityTestMoved},
-					"tagRef":        map[string]any{"oid": parityTestMoved},
-				}},
+				"data": map[string]any{"a0": head},
 			}))
 			reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
 				httpmock.JSONResponse(map[string]any{"status": tt.status, "merge_base_commit": map[string]any{"sha": tt.base}}))
@@ -332,8 +348,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.1
-`, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+      - uses: actions/checkout@`+tt.ref+`
+`, "actions/checkout@"+tt.ref+"=sha1-"+parityTestSHA)
 			beforeWorkflow, err := os.ReadFile(path)
 			require.NoError(t, err)
 			lockPath := filepath.Join(".github", "workflows", "actions.lock")
@@ -346,36 +362,31 @@ jobs:
 			lock := readTempLockfilePins(t)
 			assert.Contains(t, lock, "sha1-"+parityTestSHA)
 			assert.NotContains(t, lock, parityTestMoved, "the lock keeps its commit")
-			if tt.args[0] == "--verify" || tt.block {
-				afterLock, readErr := os.ReadFile(lockPath)
-				require.NoError(t, readErr)
-				assert.Equal(t, beforeLock, afterLock, "verification and blocked runs must not write the lockfile")
-			}
 			if tt.want == "" {
 				require.NoError(t, err)
 				assert.True(t, p.Valid)
 				assert.Empty(t, p.Findings)
 				return
 			}
-			require.Len(t, p.Findings, 1, "%+v", p.Findings)
-			assert.Equal(t, tt.want, p.Findings[0].Category)
-			if !tt.block {
-				require.NoError(t, err)
-				assert.True(t, p.Valid)
-				assert.Equal(t, "warning", p.Findings[0].Severity)
-				assert.Equal(t, "tag v4.2.1 now points at bbbbbbbbbbbb; locked commit 9ddf35b71a48 is still in its history", p.Findings[0].Detail)
-				return
-			}
+			afterLock, readErr := os.ReadFile(lockPath)
+			require.NoError(t, readErr)
+			assert.Equal(t, beforeLock, afterLock, "a blocked run must not write the lockfile")
 			require.ErrorIs(t, err, errSilent)
 			assert.False(t, p.Valid)
+			require.Len(t, p.Findings, 1, "%+v", p.Findings)
+			assert.Equal(t, tt.want, p.Findings[0].Category)
 			assert.Equal(t, "error", p.Findings[0].Severity)
+			if tt.want == "tag-commit-mismatch" {
+				assert.Equal(t, "high", p.Findings[0].Confidence)
+				assert.Equal(t, "tag v7.0.1 points at bbbbbbbbbbbb; the lockfile locks 9ddf35b71a48, an older commit in its history", p.Findings[0].Detail)
+			}
 		})
 	}
 }
 
 // TestParity_TerminalSeverity: the terminal must agree with the exit code.
-// A fail-closed history check prints as an error, never a warning; a moved
-// exact tag under --verify prints as a warning on a passing run.
+// A fail-closed history check prints as an error, never a warning, and so
+// does an exact tag locked behind its commit.
 func TestParity_TerminalSeverity(t *testing.T) {
 	workflow := `
 name: ci
@@ -399,10 +410,10 @@ jobs:
 		name   string
 		status string
 		base   string
-		block  bool
+		title  string
 	}{
-		{"moved exact tag warns", "ahead", parityTestSHA, false},
-		{"unreachable pin blocks", "diverged", "cccccccccccccccccccccccccccccccccccccccc", true},
+		{"exact tag behind blocks", "ahead", parityTestSHA, "✗ Locked commit isn't the tag's commit actions/checkout@v4.2.1"},
+		{"unreachable pin blocks", "diverged", "cccccccccccccccccccccccccccccccccccccccc", "✗ Pinned commit not in upstream history actions/checkout@v4.2.1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
@@ -419,22 +430,30 @@ jobs:
 				httpmock.JSONResponse(map[string]any{"status": tt.status, "merge_base_commit": map[string]any{"sha": tt.base}}))
 			path := writeTempWorkflow(t, workflow, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 			_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
-			if tt.block {
-				require.ErrorIs(t, err, errSilent, stderr)
-				assert.Contains(t, stderr, "✗ Pinned commit not in upstream history actions/checkout@v4.2.1")
-				assert.NotContains(t, stderr, "Tag now points past locked commit")
-				assert.NotContains(t, stderr, "All 1 workflow valid")
-				return
-			}
-			require.NoError(t, err, stderr)
-			assert.Contains(t, stderr, "Tag now points past locked commit actions/checkout@v4.2.1")
-			assert.Contains(t, stderr, "tag v4.2.1 now points at bbbbbbbbbbbb; locked commit 9ddf35b71a48 is still in its history")
-			assert.Contains(t, stderr, "All 1 workflow valid")
-			assert.NotContains(t, stderr, "not in upstream history")
-			assert.NotContains(t, stderr, "--accept-moved")
-			assert.NotContains(t, stderr, "✗")
+			require.ErrorIs(t, err, errSilent, stderr)
+			assert.Contains(t, stderr, tt.title)
+			assert.NotContains(t, stderr, "Tag now points past locked commit")
+			assert.NotContains(t, stderr, "All 1 workflow valid")
 		})
 	}
+	t.Run("exact tag behind explains the fix", func(t *testing.T) {
+		reg := &httpmock.Registry{}
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+			"data": map[string]any{"a0": map[string]any{
+				"nameWithOwner": "actions/checkout",
+				"commit":        map[string]any{"oid": parityTestSHA},
+				"tag":           map[string]any{"oid": parityTestMoved},
+				"tagRef":        map[string]any{"oid": parityTestMoved},
+			}},
+		}))
+		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+			httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+		path := writeTempWorkflow(t, workflow, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+		_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
+		require.ErrorIs(t, err, errSilent, stderr)
+		assert.Contains(t, stderr, "tag v4.2.1 points at bbbbbbbbbbbb; the lockfile locks 9ddf35b71a48, an older commit in its history")
+		assert.Contains(t, stderr, "run `gh actions-lock --relock` to lock the tag's commit, or change `uses:` to the release you want")
+	})
 }
 
 // TestParity_DefaultRunPrintsParityFinding: parity findings have no pin
@@ -2825,6 +2844,149 @@ func testRelockMovedTag(t *testing.T, shared, compareOK, narrow bool) {
 	wfAfter, werr := os.ReadFile(path)
 	require.NoError(t, werr)
 	assert.Equal(t, string(wfBefore), string(wfAfter), "the workflow is not rewritten")
+}
+
+// TestParity_RelockRepairsExactTagBehind: --relock and --accept-moved
+// excuse an exact tag locked behind its commit, re-resolve it to the tag's
+// commit, and the result verifies.
+func TestParity_RelockRepairsExactTagBehind(t *testing.T) {
+	for _, flag := range []string{"--relock", "--accept-moved"} {
+		t.Run(flag, func(t *testing.T) {
+			reg := exactTagBehindRegistry(t, "")
+			path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v7.0.1\n")
+			lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+				"  'actions/checkout@v7.0.1':\n    ref: 'v7.0.1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+				"workflows:\n  '.github/workflows/workflow.yml':\n    - 'actions/checkout@v7.0.1'\n"
+			lockPath := filepath.Join(".github", "workflows", "actions.lock")
+			require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, reg, flag, "--no-interactive", path)
+			after, rerr := os.ReadFile(lockPath)
+			require.NoError(t, rerr)
+			require.NoError(t, err, "%s\n%s", stderr, after)
+			assert.Contains(t, string(after), "commit: 'sha1-"+parityTestMoved+"'", "the tag's commit is written")
+			assert.NotContains(t, string(after), parityTestSHA, "the older commit is not")
+			p, err := runParity(t, reg, "--verify", path)
+			require.NoError(t, err, "the relocked lock verifies")
+			assert.True(t, p.Valid, "%+v", p.Findings)
+		})
+	}
+}
+
+// TestParity_ExactTagBehindInCompositeNamesHolder: a composite's exact-tag
+// entry locked behind its tag blocks, and the advice names the composite.
+// --relock can't repair it while the composite is unchanged.
+func TestParity_ExactTagBehindInCompositeNamesHolder(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	reg := exactTagBehindRegistry(t, rootSHA)
+	path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/root@v1\n")
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'octo/root@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/checkout@v7.0.1'\n" +
+		"  'actions/checkout@v7.0.1':\n    ref: 'v7.0.1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+	p, err := runParity(t, reg, "--verify", path)
+	require.ErrorIs(t, err, errSilent)
+	require.Len(t, p.Findings, 1, "%+v", p.Findings)
+	assert.Equal(t, "tag-commit-mismatch", p.Findings[0].Category)
+	assert.Equal(t, "upgrade octo/root@v1 or run `gh actions-lock --relock`", p.Findings[0].Remediation)
+
+	// The composite didn't move, so --relock keeps its recorded entry:
+	// the run blocks, writes nothing, and points only at the composite.
+	_, stderr, err := runCommandWithHTTP(t, reg, "--relock", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent, stderr)
+	assert.Contains(t, stderr, "upgrade octo/root@v1 to a version that locks actions/checkout@v7.0.1 at the tag's commit")
+	after, rerr := os.ReadFile(filepath.Join(".github", "workflows", "actions.lock"))
+	require.NoError(t, rerr)
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
+// TestParity_ExactTagBehindSeededCompositeChildBlocks: a new composite
+// whose child is the workflow's recorded exact tag resolves that child from
+// the lockfile, at the older commit. That fresh pin must not hide the
+// mismatch: the run blocks and writes nothing.
+func TestParity_ExactTagBehindSeededCompositeChildBlocks(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	reg := exactTagBehindRegistry(t, rootSHA)
+	path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v7.0.1\n      - uses: octo/root@v1\n")
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'actions/checkout@v7.0.1':\n    ref: 'v7.0.1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'actions/checkout@v7.0.1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	p, err := runParity(t, reg, "--no-narrow", "--no-interactive", path)
+	require.ErrorIs(t, err, errSilent)
+	assert.False(t, p.Valid)
+	var cats []string
+	for _, f := range p.Findings {
+		cats = append(cats, f.Category)
+	}
+	assert.Contains(t, cats, "tag-commit-mismatch")
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
+// exactTagBehindRegistry answers parity with actions/checkout@v7.0.1 at
+// parityTestMoved, a descendant of the locked parityTestSHA, and resolves
+// octo/root (a composite using actions/checkout@v7.0.1) at rootSHA.
+func exactTagBehindRegistry(t *testing.T, rootSHA string) *httpmock.Registry {
+	t.Helper()
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			head := v
+			if nwo == "actions/checkout" {
+				head = parityTestMoved
+			}
+			data["a"+i] = map[string]any{
+				"nameWithOwner": nwo,
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": v},
+				"tag":           map[string]any{"oid": head},
+				"tagRef":        map[string]any{"oid": head},
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	repos := map[string]map[string]any{
+		"actions/checkout": testRepoResponse("actions/checkout", parityTestMoved, nodeActionYAML),
+	}
+	if rootSHA != "" {
+		repos["octo/root"] = testRepoResponse("octo/root", rootSHA, "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v7.0.1\n")
+		reg.RegisterReusable(httpmock.REST("GET", `repos/octo/root/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v1.0.0", rootSHA, "v1", rootSHA)))
+	}
+	reg.RegisterReusable(httpmock.GraphQL(`.`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			if i, ok := strings.CutPrefix(k, "owner"); ok {
+				data["a"+i] = repos[v.(string)+"/"+body.Variables["name"+i].(string)]
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+		httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v7.0.1", parityTestMoved, "v7.0.0", parityTestSHA)))
+	useDefaultTransport(t, reg)
+	return reg
 }
 
 // TestParity_RelockUnreachableKeepsWorkflow: one pin's tag moved cleanly,

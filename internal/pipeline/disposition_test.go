@@ -73,6 +73,7 @@ func TestDisposeParity_SharedPinRemediationNamesComposite(t *testing.T) {
 
 func TestDisposeParity_DefersWhatItExcusesOrAccepts(t *testing.T) {
 	tagPin := parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: "v4"}
+	exactPin := parserlock.Pin{Owner: "actions", Repo: "checkout", Ref: "v7.0.1"}
 	tests := []struct {
 		name        string
 		mode        parityMode
@@ -84,6 +85,11 @@ func TestDisposeParity_DefersWhatItExcusesOrAccepts(t *testing.T) {
 		{"an excused inconclusive check would block as an error", parityMode{relock: true}, paritySubject{pin: tagPin, head: "v4", inconclusive: true, away: true}, checks.ReachabilityUnknown, verdictExcuse, checks.SeverityError},
 		{"an accepted unreachable pin would block as an error", parityMode{relock: true, acceptMoved: true}, paritySubject{pin: tagPin}, checks.UnreachablePin, verdictAccept, checks.SeverityError},
 		{"a kept finding is itself", parityMode{}, paritySubject{pin: tagPin}, checks.UnreachablePin, verdictKeep, checks.SeverityError},
+		{"an exact tag behind its commit blocks a plain run", parityMode{}, paritySubject{pin: exactPin, head: "v7.0.1"}, checks.TagCommitMismatch, verdictKeep, checks.SeverityError},
+		{"an exact tag behind its commit blocks verify", parityMode{verify: true}, paritySubject{pin: exactPin, head: "v7.0.1"}, checks.TagCommitMismatch, verdictKeep, checks.SeverityError},
+		{"relock excuses an exact tag behind its commit", parityMode{relock: true}, paritySubject{pin: exactPin, head: "v7.0.1"}, checks.TagCommitMismatch, verdictExcuse, checks.SeverityError},
+		{"accept-moved excuses an exact tag behind its commit", parityMode{relock: true, acceptMoved: true}, paritySubject{pin: exactPin, head: "v7.0.1"}, checks.TagCommitMismatch, verdictExcuse, checks.SeverityError},
+		{"relock defers a composite's exact tag to the audit", parityMode{relock: true}, paritySubject{pin: exactPin, head: "v7.0.1", heldBy: "octo/composite@v1"}, checks.TagCommitMismatch, verdictExcuse, checks.SeverityError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -25,10 +25,10 @@ const (
 
 // PruneEffectOf reports what planning does with f's dependency.
 //
-// acceptMoved also prunes ref-moved and unreachable-pin deps; relock prunes
-// ref-moved deps only, so a benign branch/version advance can be re-pinned
-// without accepting a possibly-tampered unreachable pin. A same-ID redirect
-// is pruned so it re-resolves under the canonical name.
+// relock prunes ref-moved and tag-commit-mismatch deps, so a ref that moved
+// ahead can be re-pinned without accepting a possibly-tampered unreachable
+// pin; acceptMoved prunes unreachable-pin deps too. A same-ID redirect is
+// pruned so it re-resolves under the canonical name.
 func PruneEffectOf(f Finding, acceptMoved, relock bool) PruneEffect {
 	if f.Dependency == nil {
 		return NotPruned
@@ -39,7 +39,7 @@ func PruneEffectOf(f Finding, acceptMoved, relock bool) PruneEffect {
 		return Dropped
 	case f.Reresolve,
 		f.Category == UnreachablePin && acceptMoved,
-		f.Category == RefMoved && (acceptMoved || relock):
+		(f.Category == RefMoved || f.Category == TagCommitMismatch) && (acceptMoved || relock):
 		return Reresolved
 	}
 	return NotPruned

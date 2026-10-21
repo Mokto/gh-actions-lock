@@ -153,6 +153,16 @@ func UnreachableRemediation(holder, nwo string) string {
 	return AcceptMovedRemediation
 }
 
+// TagCommitMismatchRemediation is the next step for an exact-tag entry
+// locked behind its tag. holder (NWO@ref) is the composite that pins it, or
+// "" for the workflow's own use.
+func TagCommitMismatchRemediation(holder string) string {
+	if holder != "" {
+		return fmt.Sprintf("upgrade %s or run `gh actions-lock --relock`", holder)
+	}
+	return "run `gh actions-lock --relock` to lock the tag's commit, or change `uses:` to the release you want"
+}
+
 // NotInHistoryDetail describes a locked commit missing from upstream
 // history. It can't tell a force-push from a forged lockfile, so it names
 // both. live, when known, is where ref points now.
