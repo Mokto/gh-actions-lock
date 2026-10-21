@@ -693,6 +693,27 @@ scenarios:
     expect:
       exit: 0
 
+  - name: verify_exact_tag_behind_blocks
+    category: output_modes
+    description: "Real-binary --verify --json exits 1 with tag-commit-mismatch for an exact tag locked at an older commit in its history; Go command tests cover the rule, this covers only the real binary and JSON emitter"
+    needs_stub: true
+    tags: [stub]
+    flags: ["--verify", "--json=valid,findings"]
+    fixtures:
+      workflows:
+        ci.yml:
+          name: CI
+          actions: ["actions/checkout@v4.2.2"]
+      lockfile_template: pinned_checkout_exact_behind
+    expect:
+      exit: 1
+      stdout_is_json: true
+      jq:
+        - expr: '.valid'
+          equals: "false"
+        - expr: '.findings[] | select(.category == "tag-commit-mismatch") | .severity'
+          equals: "error"
+
   - name: verify_json_combined
     category: output_modes
     description: "--verify --json produces JSON output"

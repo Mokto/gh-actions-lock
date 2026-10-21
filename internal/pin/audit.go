@@ -2,6 +2,7 @@ package pin
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -113,20 +114,26 @@ func usesKey(uses string) (string, bool) {
 	return lockfile.EntryKey(p), true
 }
 
-// adviseHolder points an unreachable pin's advice at the entry that kept
-// it: the write the override planned left it to that entry's recorded
-// edge, so rerunning the override can't help.
+// adviseHolder points an unreachable pin's or a mismatched exact tag's
+// advice at the entry that kept it: the write the override planned left it
+// to that entry's recorded edge, so rerunning the override can't help.
 func adviseHolder(preview *lockfile.State, d *checks.Deferred) {
 	f := &d.Finding
-	if f.Category != checks.UnreachablePin || f.RefMissing || f.Dependency == nil {
+	if f.Category != checks.UnreachablePin && f.Category != checks.TagCommitMismatch || f.RefMissing || f.Dependency == nil {
 		return
 	}
 	holders := preview.UsedBy(d.Key)
 	if len(holders) == 0 {
 		return
 	}
-	if p, ok := parserlock.ParsePin(holders[0]); ok {
-		f.Remediation = checks.UnreachableRemediation(p.NWO+"@"+p.Ref, f.Dependency.NWO)
+	p, ok := parserlock.ParsePin(holders[0])
+	if !ok {
+		return
+	}
+	holder := p.NWO + "@" + p.Ref
+	f.Remediation = checks.UnreachableRemediation(holder, f.Dependency.NWO)
+	if f.Category == checks.TagCommitMismatch {
+		f.Remediation = fmt.Sprintf("upgrade %s to a version that locks %s@%s at the tag's commit", holder, f.Dependency.NWO, f.Dependency.Ref)
 	}
 }
 

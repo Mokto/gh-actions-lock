@@ -60,9 +60,10 @@ type Finding struct {
 	// backend refuses by policy, so it was never looked up. It only picks
 	// the terminal title.
 	RefRefused bool
-	// TagMoved marks a ref-moved warning from parity: an exact-version tag
-	// moved ahead of its locked commit. Unlike a sticky mutable ref, the
-	// terminal shows it; the JSON category is unchanged.
+	// TagMoved marks a ref-moved warning from parity: the exact-version tag
+	// a full-SHA key records moved ahead of its locked commit. Unlike a
+	// sticky mutable ref, the terminal shows it; the JSON category is
+	// unchanged.
 	TagMoved bool
 	// RecordedRef is the lock entry ref a parity finding on a recorded pin
 	// checked; empty for a ref this run resolved. FreshRef marks the

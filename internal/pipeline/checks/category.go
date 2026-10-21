@@ -20,6 +20,12 @@ const (
 	// RefMoved means the upstream tag now resolves to a different
 	// SHA than what the lockfile has recorded.
 	RefMoved Category = "ref-moved"
+	// TagCommitMismatch means a lock entry keyed by an exact release tag
+	// (v4.2.1) locks an older commit in the tag's history rather than the
+	// commit the tag points at. An exact tag names one commit, so the
+	// publisher re-pointed it, or the lockfile was edited to roll it back.
+	// Floating refs (v4, main) are sticky and report ref-moved instead.
+	TagCommitMismatch Category = "tag-commit-mismatch"
 	// Stale means the lockfile pins a dependency for a workflow that no
 	// uses: in that workflow references.
 	Stale Category = "stale"

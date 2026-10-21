@@ -15,6 +15,7 @@ func TestCategoryStringsAreFrozen(t *testing.T) {
 		{ShaAsRef, "sha-as-ref"},
 		{RefChanged, "ref-changed"},
 		{RefMoved, "ref-moved"},
+		{TagCommitMismatch, "tag-commit-mismatch"},
 		{Stale, "stale"},
 		{MisleadingSHA, "misleading-sha"},
 		{UnreachablePin, "unreachable-pin"},
@@ -53,7 +54,7 @@ func TestCategoryIsInconclusive(t *testing.T) {
 		}
 	}
 	blocking := []Category{
-		NotPinned, ShaAsRef, RefChanged, RefMoved, Stale,
+		NotPinned, ShaAsRef, RefChanged, RefMoved, TagCommitMismatch, Stale,
 		MisleadingSHA, UnreachablePin, RepoRenamed, RepoReplaced, RepoUnavailable,
 		Valid, RunOnly, OnboardingRequired, VersionRef, LocalAction,
 		StaleWorkflow,

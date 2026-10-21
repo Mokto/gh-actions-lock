@@ -22,10 +22,13 @@ import (
 // still present, and the lock entry's ref (a tag, else a branch) still
 // vouching for it: the commit must be in the ref's history, since a
 // fork-network commit resolves under the upstream name, so existence alone
-// proves nothing (#174). A ref that has moved ahead is fine: the lock is
-// sticky until --relock. Tags can move too, so with verify an exact-version
-// tag that moved ahead only warns. A ref that is gone, or a history check
-// that can't finish, blocks.
+// proves nothing (#174). A floating ref (v4, main) that has moved ahead is
+// fine: the lock is sticky until --relock. An exact release tag names one
+// commit, so an entry keyed by one that locks an older commit in the tag's
+// history blocks in every mode (tag-commit-mismatch); with verify, a
+// full-SHA key whose recorded tag moved ahead only warns, since its commit
+// is visible in the workflow. A ref that is gone, or a history check that
+// can't finish, blocks.
 //
 // A pinned commit fixes the dependencies it declares, so the flattened
 // closure in the lockfile is checked in one batch with no recursion.
@@ -166,8 +169,8 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	// tagMoved marks an exact-version ref that moved ahead of its commit.
-	// The Actions backend accepts it, so --verify only warns.
+	// tagMoved marks an exact-version tag that moved ahead of its commit. A
+	// branch named like one is a floating ref.
 	tagMoved := make([]bool, len(states))
 	for i := range states {
 		st, pc := &states[i], pins[i]
@@ -184,8 +187,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 			st.Err = &ghapi.BriefError{Msg: brief, Err: fmt.Errorf("checking %s history: %s", pc.Head, detail)}
 		default:
-			sv, ok := parserlock.ParseSemVer(pc.Head)
-			tagMoved[i] = ok && sv.IsFull()
+			tagMoved[i] = st.HeadIsTag && exactTag(pc.Head)
 		}
 	}
 	if ghapi.DependabotProxy() {
@@ -213,43 +215,60 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if ok && (f.Severity == checks.SeverityError || st.Err != nil) {
 				unhealthy[pinKey(pins[i].Owner+"/"+pins[i].Repo, pins[i].SHA)] = true
 			}
-			if o.fresh {
-				f.FreshRef = true
-			} else {
-				f.RecordedRef = o.lp.Action.Ref
+			var found []checks.Finding
+			if ok {
+				found = append(found, f)
 			}
-			if !ok && mode.verify && tagMoved[i] {
-				f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
+			// A same-ID rename doesn't vouch for the commit, so the tag is
+			// still checked alongside it.
+			renamed := ok && f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning
+			if tagMoved[i] && (!ok || renamed) {
+				switch {
+				case exactTag(o.lp.Pin.Ref):
+					found = append(found, tagCommitMismatchFinding(o.pw, o.ref, o.lp, pins[i], st))
+				case mode.verify:
+					found = append(found, movedTagFinding(o.pw, o.ref, o.lp, pins[i], st))
+				}
 			}
 			wr := &report.Workflows[o.report]
-			if !ok {
+			if len(found) == 0 {
 				if o.fresh {
 					verified[checks.VerifiedKey(lockfile.EntryKey(o.lp.Pin), pins[i].SHA)] = true
 				}
 				continue
 			}
-			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
-			if verdict != verdictKeep {
-				wr.Deferred = append(wr.Deferred, checks.Deferred{
-					Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
-				})
+			clean := true
+			for _, f := range found {
+				if o.fresh {
+					f.FreshRef = true
+				} else {
+					f.RecordedRef = o.lp.Action.Ref
+				}
+				verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
+				if verdict != verdictKeep {
+					wr.Deferred = append(wr.Deferred, checks.Deferred{
+						Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
+					})
+				}
+				if verdict == verdictExcuse {
+					clean = false
+					continue
+				}
+				// Dependabot reads back only actions.lock, so a rewritten `uses:`
+				// would never ship; keep the pin under the name the workflow uses.
+				if f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning && o.lp.Parent == "" && !ghapi.DependabotProxy() {
+					r.Redirect(o.lp.Pin.Owner, o.lp.Pin.Repo, o.ref, st.NameWithOwner)
+				}
+				if f.Severity == checks.SeverityError {
+					clean = false
+					wr.Findings = dropValid(wr.Findings)
+					wr.SkipCommit = true
+				}
+				wr.Findings = append(wr.Findings, f)
 			}
-			if verdict == verdictExcuse {
-				continue
-			}
-			if o.fresh && f.Severity != checks.SeverityError {
+			if o.fresh && clean {
 				verified[checks.VerifiedKey(lockfile.EntryKey(o.lp.Pin), pins[i].SHA)] = true
 			}
-			// Dependabot reads back only actions.lock, so a rewritten `uses:`
-			// would never ship; keep the pin under the name the workflow uses.
-			if f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning && o.lp.Parent == "" && !ghapi.DependabotProxy() {
-				r.Redirect(o.lp.Pin.Owner, o.lp.Pin.Repo, o.ref, st.NameWithOwner)
-			}
-			if f.Severity == checks.SeverityError {
-				wr.Findings = dropValid(wr.Findings)
-				wr.SkipCommit = true
-			}
-			wr.Findings = append(wr.Findings, f)
 		}
 	}
 	return checkManifests(ctx, r, store.File(), byKey, report, roots, unhealthy)
@@ -407,11 +426,43 @@ func verbose(err error) string {
 	return err.Error()
 }
 
-// movedTagFinding warns that an exact-version tag moved ahead of its locked
-// commit. Tags can move and the Actions backend accepts the pin, so it never
-// blocks. The advice must follow the tag: --relock re-resolves a tag
-// `uses:`, but leaves a full-SHA one, and only its parent changes a
-// composite's pin.
+// exactTag reports whether ref is a full semver release tag (v4.2.1).
+func exactTag(ref string) bool {
+	sv, ok := parserlock.ParseSemVer(ref)
+	return ok && sv.IsFull()
+}
+
+// tagCommitMismatchFinding blocks a lock entry keyed by an exact release tag
+// whose locked commit is an older commit in the tag's history. The rollback
+// is invisible in the workflow, which names only the tag, so unlike a
+// floating ref the lock is not sticky. --relock and --accept-moved excuse it
+// (see disposeParity) and re-resolve the entry.
+func tagCommitMismatchFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfile.LockedPin, pc ghapi.PinCheck, st ghapi.PinState) checks.Finding {
+	nwo := pc.Owner + "/" + pc.Repo
+	f := checks.Finding{
+		WorkflowPath: pw.Path,
+		ActionRef:    &ref,
+		Dependency:   &dep.Dependency{NWO: nwo, Path: ref.Path, Ref: lp.Pin.Ref, SHA: pc.SHA},
+		Category:     checks.TagCommitMismatch,
+		Severity:     checks.SeverityError,
+		Confidence:   checks.ConfidenceHigh,
+		ObservedSHA:  st.HeadOID,
+		ParentNWO:    lockParent(lp),
+		Detail:       fmt.Sprintf("tag %s points at %s; the lockfile locks %s, an older commit in its history", pc.Head, parserlock.ShortSHA(st.HeadOID), parserlock.ShortSHA(pc.SHA)),
+		DocURL:       DocURLFor(checks.TagCommitMismatch),
+	}
+	if f.ParentNWO != "" {
+		f.Detail += fmt.Sprintf(" (used by %s)", f.ParentNWO)
+	}
+	f.Remediation = checks.TagCommitMismatchRemediation(f.ParentNWO)
+	return f
+}
+
+// movedTagFinding warns that the exact-version tag a full-SHA key records
+// moved ahead of its locked commit. The commit is visible in the workflow
+// and the Actions backend accepts the pin, so it never blocks. The advice
+// must follow the tag: only changing `uses:` follows it, and only its
+// parent changes a composite's pin.
 func movedTagFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfile.LockedPin, pc ghapi.PinCheck, st ghapi.PinState) checks.Finding {
 	nwo := pc.Owner + "/" + pc.Repo
 	f := checks.Finding{

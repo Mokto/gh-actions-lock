@@ -65,7 +65,8 @@ const (
 // fixes them, and pin.Audit then holds the run to writing that fix. It never
 // excuses repository identity, a full-SHA key's inconclusive check, or an
 // unreachable pin: a commit gone from its ref's history stays an error
-// unless --accept-moved accepts it.
+// unless --accept-moved accepts it. An exact tag locked behind its commit
+// (tag-commit-mismatch) is excused like any finding re-resolving fixes.
 //
 // --accept-moved accepts an unreachable pin as a warning that itself makes
 // planning re-resolve the entry: a mutable ref is locked at its current
