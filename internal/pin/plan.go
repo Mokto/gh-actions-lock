@@ -106,10 +106,6 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 			if err != nil {
 				return fmt.Errorf("planning %s: %w", iwr.wr.Path, err)
 			}
-			for k := range pr.wplans {
-				pr.wplans[k].Rewrites = literalRewrites(pr.wplans[k].Rewrites, iwr.wr.RewriteRefs)
-				pr.wplans[k].RequiredRewrites = literalRewrites(pr.wplans[k].RequiredRewrites, iwr.wr.RewriteRefs)
-			}
 			results[iwr.idx] = pr
 			return nil
 		},
@@ -118,7 +114,11 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 		planErr = poolErr
 	}
 
-	targets := make(map[string]string)
+	type target struct {
+		host   string
+		commit dep.Ref
+	}
+	targets := make(map[dep.Key]target)
 	for _, pr := range results {
 		for _, entry := range pr.entries {
 			if planErr != nil || entry.SHA == "" ||
@@ -129,12 +129,12 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 			// them by reference identity: two spellings of one full SHA on
 			// different hosts claim one reference for two repositories.
 			key := dep.RefKey(entry.NWO, entry.Ref)
-			target := entry.Hostname + "/" + entry.SHA
-			if previous, ok := targets[key]; ok && !strings.EqualFold(previous, target) {
-				planErr = fmt.Errorf("conflicting planned target %s resolves to both %s and %s", key, previous, target)
+			to := target{strings.ToLower(entry.Hostname), dep.NewRef(entry.SHA)}
+			if previous, ok := targets[key]; ok && previous != to {
+				planErr = fmt.Errorf("conflicting planned target %s resolves to both %s/%s and %s/%s", key, previous.host, previous.commit, to.host, to.commit)
 				continue
 			}
-			targets[key] = target
+			targets[key] = to
 		}
 		rec.Entries = append(rec.Entries, pr.entries...)
 		rec.Workflows = append(rec.Workflows, pr.wplans...)
@@ -148,7 +148,26 @@ type planResult struct {
 	wplans  []WorkflowPlan
 }
 
+// planWorkflow plans one workflow and spells its rewrites as the files do.
 func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOptions, status func(string)) (planResult, error) {
+	pr, err := planWorkflowByID(ctx, wr, opts, status)
+	if err != nil {
+		return pr, err
+	}
+	literal := wr.RewriteRefs
+	if literal == nil {
+		literal = wr.ActionRefs
+	}
+	for k := range pr.wplans {
+		wp := &pr.wplans[k]
+		wp.Rewrites = literalRewrites(wp.rewrites, literal)
+		wp.RequiredRewrites = literalRewrites(wp.required, literal)
+	}
+	return pr, nil
+}
+
+// planWorkflowByID plans one workflow, keying its rewrites by identity.
+func planWorkflowByID(ctx context.Context, wr checks.WorkflowReport, opts PlanOptions, status func(string)) (planResult, error) {
 	var entries []Entry
 	var wplans []WorkflowPlan
 	if wr.SkipCommit || wr.BlockingResolverError {
@@ -175,7 +194,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 		if err := rejectPartialSelfActionRewrites(opts, wr.SelfActionRefs, rw); err != nil {
 			return planResult{}, err
 		}
-		wplans = append(wplans, WorkflowPlan{Path: wr.Path, Rewrites: rw, SelfActionFiles: wr.SelfActionFiles})
+		wplans = append(wplans, WorkflowPlan{Path: wr.Path, rewrites: rw, SelfActionFiles: wr.SelfActionFiles})
 		return planResult{entries: entries, wplans: wplans}, nil
 	}
 
@@ -197,7 +216,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// Explicit refresh must rebuild the graph, not just entries with movement
 	// findings: absent children have no recorded SHA to compare.
 	var unrecordedRefs []parserlock.ActionRef
-	var inventorySHA map[string]bool
+	var inventorySHA map[checks.PruneID]bool
 	if !refresh {
 		unrecordedRefs, inventorySHA = partitionByInventory(inventory, wr.ActionRefs)
 		entries = verifiedEntries(inventory, wr.Path)
@@ -212,7 +231,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 		if err := rejectPartialSelfActionRewrites(opts, wr.SelfActionRefs, rw); err != nil {
 			return planResult{}, err
 		}
-		wplans = append(wplans, WorkflowPlan{Path: wr.Path, Rewrites: rw, Refresh: refresh, SelfActionFiles: wr.SelfActionFiles})
+		wplans = append(wplans, WorkflowPlan{Path: wr.Path, rewrites: rw, Refresh: refresh, SelfActionFiles: wr.SelfActionFiles})
 		return planResult{entries: entries, wplans: wplans}, nil
 	}
 
@@ -243,7 +262,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 
 	// Narrow mutable version tags to exact patch tags.
 	status("pinning " + wr.Path)
-	rewrites := make(map[string]string)
+	rewrites := idRewrites{}
 	preservedDeps := make(map[int]bool)
 	// Narrowing and reverse lookup change only a dep's Ref, Tag and Branch,
 	// so a changed Ref is exactly a renamed entry.
@@ -267,7 +286,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// still needs it.
 	renames := make(map[resolve.EntryKey]string)
 	for i, d := range deps {
-		if d.Ref != declaredRef[i] {
+		if !dep.SameRef(d.Ref, declaredRef[i]) {
 			renames[discovered[i].Key] = d.Ref
 		}
 	}
@@ -346,11 +365,11 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	}
 	if len(rewrites) > 0 {
 		wplans = append(wplans, WorkflowPlan{
-			Path:             wr.Path,
-			Refresh:          refresh,
-			Rewrites:         rewrites,
-			RequiredRewrites: required,
-			SelfActionFiles:  wr.SelfActionFiles,
+			Path:            wr.Path,
+			Refresh:         refresh,
+			rewrites:        rewrites,
+			required:        required,
+			SelfActionFiles: wr.SelfActionFiles,
 		})
 	} else if len(wplans) == 0 {
 		// Keep the workflow in the plan so its lockfile entry is updated.
@@ -369,30 +388,45 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	return planResult{entries: entries, wplans: wplans}, nil
 }
 
+// idRewrites are planned `uses:` rewrites keyed by the identity of the
+// reference each replaces. literalRewrites spells them as the files do.
+type idRewrites map[dep.Key]usesRewrite
+
+// usesRewrite replaces from with to. from is the reference as planning
+// spelled it, written only when no file spelling of it is known.
+type usesRewrite struct{ from, to string }
+
+func (r idRewrites) add(name, ref, to string) {
+	r[dep.RefKey(name, ref)] = usesRewrite{from: name + "@" + ref, to: to}
+}
+
 // literalRewrites keys each `uses:` rewrite by the spelling the files use.
-// Planning compares references by identity, a full SHA lowercased (see
-// pipeline.ParseAll), but a rewrite replaces text, so a full SHA written in
-// another case is rewritten under each spelling the workflow uses.
-func literalRewrites(rewrites map[string]string, literal []parserlock.ActionRef) map[string]string {
+// A rewrite reaches every spelling with its identity, by owner/repo or by
+// the full sub-path name, so a full SHA the workflow spells in another case
+// is rewritten under each spelling the workflow uses.
+func literalRewrites(rewrites idRewrites, literal []parserlock.ActionRef) map[dep.Spelling]string {
 	if len(rewrites) == 0 {
-		return rewrites
+		return nil
 	}
-	out := make(map[string]string, len(rewrites))
-	for oldUses, newUses := range rewrites {
-		name, ref, ok := strings.Cut(oldUses, "@")
-		if !ok || !parserlock.IsFullSha(ref) {
-			out[oldUses] = newUses
-			continue
-		}
+	out := make(map[dep.Spelling]string, len(rewrites))
+	for id, rw := range rewrites {
 		spelled := false
 		for _, r := range literal {
-			if dep.RefKey(r.FullName(), r.Ref) == dep.RefKey(name, ref) {
-				out[r.FullName()+"@"+r.Ref] = keepSHASpelling(newUses, r.Ref)
-				spelled = true
+			name := ""
+			switch id {
+			case dep.RefKey(r.FullName(), r.Ref):
+				name = r.FullName()
+			case dep.RefKey(r.NWO(), r.Ref):
+				// Sub-path uses match an owner/repo rewrite in the file.
+				name = r.NWO()
+			default:
+				continue
 			}
+			out[dep.Spelling(name+"@"+r.Ref)] = keepSHASpelling(rw.to, r.Ref)
+			spelled = true
 		}
 		if !spelled {
-			out[oldUses] = newUses
+			out[dep.Spelling(rw.from)] = rw.to
 		}
 	}
 	return out
@@ -403,7 +437,7 @@ func literalRewrites(rewrites map[string]string, literal []parserlock.ActionRef)
 // never just to another case of the same commit.
 func keepSHASpelling(newUses, written string) string {
 	name, ref, ok := strings.Cut(newUses, "@")
-	if ok && parserlock.IsFullSha(ref) && dep.RefKey(name, ref) == dep.RefKey(name, written) {
+	if ok && parserlock.IsFullSha(ref) && dep.SameRef(ref, written) {
 		return name + "@" + written
 	}
 	return newUses
@@ -435,20 +469,17 @@ func entryDeps(entries []resolve.Entry) []dep.Dependency {
 
 // transferRewrites moves each redirected root's `uses:` in this workflow
 // to the canonical repository.
-func transferRewrites(deps []dep.Dependency, rootTracker lockfile.DirectTracker, sources []parserlock.ActionRef, rewrites map[string]string) map[string]string {
-	// Rewrites are keyed by reference identity here; literalRewrites
-	// respells them as the workflow wrote them.
-	written := make(map[string]bool, len(sources))
+func transferRewrites(deps []dep.Dependency, rootTracker lockfile.DirectTracker, sources []parserlock.ActionRef, rewrites idRewrites) idRewrites {
+	written := make(map[dep.Key]bool, len(sources))
 	for _, ref := range sources {
 		written[dep.RefKey(ref.FullName(), ref.Ref)] = true
 	}
-	var required map[string]string
+	var required idRewrites
 	for i, d := range deps {
 		if !rootTracker.IsDirect(i) {
 			continue
 		}
 		for _, ref := range d.OriginalRefs {
-			oldUse := ref.FullName() + "@" + ref.Ref
 			if !written[dep.RefKey(ref.FullName(), ref.Ref)] {
 				continue
 			}
@@ -457,22 +488,22 @@ func transferRewrites(deps []dep.Dependency, rootTracker lockfile.DirectTracker,
 				newUse += "/" + ref.Path
 			}
 			if required == nil {
-				required = map[string]string{}
+				required = idRewrites{}
 			}
-			rewrites[oldUse] = newUse + "@" + d.Ref
-			required[oldUse] = rewrites[oldUse]
+			rewrites.add(ref.FullName(), ref.Ref, newUse+"@"+d.Ref)
+			required.add(ref.FullName(), ref.Ref, newUse+"@"+d.Ref)
 		}
 	}
 	return required
 }
 
-func rejectPartialSelfActionRewrites(opts PlanOptions, selfActionRefs []parserlock.ActionRef, rewrites map[string]string) error {
+func rejectPartialSelfActionRewrites(opts PlanOptions, selfActionRefs []parserlock.ActionRef, rewrites idRewrites) error {
 	if !opts.PartialScan || len(rewrites) == 0 {
 		return nil
 	}
 	selfKeys := actionRefKeys(selfActionRefs)
-	for oldUses := range rewrites {
-		ref := parserlock.ParseActionRef(oldUses)
+	for _, rw := range rewrites {
+		ref := parserlock.ParseActionRef(rw.from)
 		if ref == nil {
 			continue
 		}
@@ -487,8 +518,8 @@ func rejectPartialSelfActionRewrites(opts PlanOptions, selfActionRefs []parserlo
 // preserveReRecorded keeps the `uses:` of each direct full-SHA pin whose
 // entry recorded the SHA itself as its ref: the run only re-records the
 // entry's tag or branch. It returns the keys of those deps.
-func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, directTracker lockfile.DirectTracker, preservedDeps map[int]bool) map[string]bool {
-	out := map[string]bool{}
+func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, directTracker lockfile.DirectTracker, preservedDeps map[int]bool) map[dep.Key]bool {
+	out := map[dep.Key]bool{}
 	if opts.Store == nil {
 		return out
 	}
@@ -504,7 +535,7 @@ func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, directTracker l
 		}
 		if recorded {
 			preservedDeps[i] = true
-			out[dep.RefKey(d.NWO, d.Ref)] = true
+			out[d.ID()] = true
 		}
 	}
 	return out
@@ -512,7 +543,7 @@ func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, directTracker l
 
 // narrowDirectDeps rewrites direct partial semver refs to exact patch tags,
 // leaving bare SHA and transitive refs for reverse lookup.
-func narrowDirectDeps(ctx context.Context, opts PlanOptions, deps []dep.Dependency, directTracker lockfile.DirectTracker, rewrites map[string]string, preservedDeps map[int]bool) {
+func narrowDirectDeps(ctx context.Context, opts PlanOptions, deps []dep.Dependency, directTracker lockfile.DirectTracker, rewrites idRewrites, preservedDeps map[int]bool) {
 	if opts.Tagger == nil {
 		return
 	}
@@ -560,9 +591,7 @@ func narrowDirectDeps(ctx context.Context, opts PlanOptions, deps []dep.Dependen
 		if err != nil || patchTag == "" {
 			continue
 		}
-		oldUses := dep.NWO + "@" + dep.Ref
-		newUses := dep.NWO + "@" + patchTag
-		rewrites[oldUses] = newUses
+		rewrites.add(dep.NWO, dep.Ref, dep.NWO+"@"+patchTag)
 		dep.Ref = patchTag
 		preservedDeps[i] = true
 	}
@@ -571,15 +600,20 @@ func narrowDirectDeps(ctx context.Context, opts PlanOptions, deps []dep.Dependen
 // reverseLookupRewrites canonicalizes refs via ReverseLookup, preserving
 // narrowed refs, transitive declarations, and existing locked targets.
 // It returns rewrites, indices of unresolvable deps, and any hard error.
-func reverseLookupRewrites(ctx context.Context, opts PlanOptions, wr checks.WorkflowReport, deps []dep.Dependency, directTracker lockfile.DirectTracker, preservedDeps map[int]bool) (map[string]string, []resolve.LookupIssue, error) {
+func reverseLookupRewrites(ctx context.Context, opts PlanOptions, wr checks.WorkflowReport, deps []dep.Dependency, directTracker lockfile.DirectTracker, preservedDeps map[int]bool) (idRewrites, []resolve.LookupIssue, error) {
 	originalRefs := make([]string, len(deps))
 	for i := range deps {
 		originalRefs[i] = deps[i].Ref
 	}
 
-	normRewrites, lookupIssues, err := opts.Resolver.ReverseLookup(ctx, deps)
+	lookedUp, lookupIssues, err := opts.Resolver.ReverseLookup(ctx, deps)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reverse lookup: %w", err)
+	}
+	normRewrites := idRewrites{}
+	for from, to := range lookedUp {
+		name, ref, _ := strings.Cut(from, "@")
+		normRewrites.add(name, ref, to)
 	}
 	// Composite refs must match their action.yml. A direct rewrite must not
 	// reuse a ref locked to a different commit. Keep the discovered metadata.
@@ -587,7 +621,7 @@ func reverseLookupRewrites(ctx context.Context, opts PlanOptions, wr checks.Work
 		if preservedDeps[i] || !directTracker.IsDirect(i) ||
 			hasConflictingLockTarget(opts, deps[i].NWO, deps[i].Ref, deps[i].SHA) {
 			deps[i].Ref = originalRefs[i]
-			delete(normRewrites, deps[i].Key())
+			delete(normRewrites, deps[i].ID())
 		}
 	}
 	return normRewrites, lookupIssues, nil
@@ -596,14 +630,14 @@ func reverseLookupRewrites(ctx context.Context, opts PlanOptions, wr checks.Work
 // buildPinnedEntries emits an entry for every resolved dep, marking it Verified
 // when the lockfile already records the same SHA and Pinned otherwise. Deps
 // already emitted from inventory under the same key and commit are skipped.
-func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.Dependency, parentMap dep.ParentMap, directTracker lockfile.DirectTracker, inventorySHA map[string]bool) []Entry {
+func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.Dependency, parentMap dep.ParentMap, directTracker lockfile.DirectTracker, inventorySHA map[checks.PruneID]bool) []Entry {
 	// Load existing lockfile state so re-runs are noops for unchanged deps.
-	existingSHA := make(map[string]string) // NWO@Ref -> SHA
+	existingSHA := make(map[dep.Key]string)
 	if opts.Store != nil {
 		wfKey := workflowfile.KeyFromPath(wr.Path)
 		if existing, err := opts.Store.Get(wfKey); err == nil {
 			for _, d := range existing {
-				existingSHA[d.Key()] = d.SHA
+				existingSHA[d.ID()] = d.SHA
 			}
 		}
 	}
@@ -616,10 +650,10 @@ func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.D
 		if inventorySHA[checks.PruneKey(dep.NWO, dep.Ref, dep.SHA)] {
 			continue // already emitted as Verified from inventory
 		}
-		depKey := dep.Key()
+		depKey := dep.ID()
 		parents := parentMap[depKey]
 		res := Pinned
-		if sha, ok := existingSHA[depKey]; ok && sha == dep.SHA {
+		if sha, ok := existingSHA[depKey]; ok && depSameRef(sha, dep.SHA) {
 			res = Verified
 		}
 		entry := Entry{
@@ -694,9 +728,9 @@ func informationalEntry(f checks.Finding, path string) Entry {
 // entry by reference identity: a full SHA in another case reaches its entry.
 // A full SHA recorded under several spellings never gets here: the pipeline
 // refuses to write a workflow that reaches one.
-func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.ActionRef) (unrecorded []parserlock.ActionRef, shaSeen map[string]bool) {
-	recorded := make(map[string]bool, len(inventory))
-	shaSeen = make(map[string]bool, len(inventory))
+func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.ActionRef) (unrecorded []parserlock.ActionRef, shaSeen map[checks.PruneID]bool) {
+	recorded := make(map[dep.Key]bool, len(inventory))
+	shaSeen = make(map[checks.PruneID]bool, len(inventory))
 	for _, inv := range inventory {
 		recorded[dep.RefKey(inv.Dep.NWO, inv.Dep.Ref)] = true
 		shaSeen[checks.PruneKey(inv.Dep.NWO, inv.Dep.Ref, inv.Dep.SHA)] = true
@@ -712,7 +746,7 @@ func partitionByInventory(inventory []checks.InventoryEntry, refs []parserlock.A
 // pruneStaleInventory drops inventory entries matching a pruning finding
 // (see checks.PrunesDependency), so a fix-mode re-pin converges.
 func pruneStaleInventory(inventory []checks.InventoryEntry, findings []checks.Finding, acceptMoved, relock bool) []checks.InventoryEntry {
-	stale := make(map[string]bool)
+	stale := make(map[checks.PruneID]bool)
 	for _, f := range findings {
 		if !checks.PrunesDependency(f, acceptMoved, relock) {
 			continue
@@ -761,12 +795,12 @@ func verifiedEntries(inventory []checks.InventoryEntry, path string) []Entry {
 // narrowVerifiedEntries upgrades already-recorded direct deps to full semver
 // tags when possible, returning the workflow-YAML rewrites. Skipped for
 // --no-narrow, transitive deps, and refs the user kept imprecise (sticky v4).
-func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOptions, rewriteRefs []parserlock.ActionRef) map[string]string {
+func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOptions, rewriteRefs []parserlock.ActionRef) idRewrites {
 	if opts.NoNarrow || opts.Tagger == nil {
 		return nil
 	}
 	rewriteRefKeys := actionRefKeys(rewriteRefs)
-	rewrites := make(map[string]string)
+	rewrites := idRewrites{}
 	for i := range entries {
 		e := &entries[i]
 		if !e.Direct {
@@ -789,11 +823,11 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 				continue
 			}
 			oldRef := e.Ref
-			// The workflow may spell the SHA in another case: rewrite its
-			// own spelling.
+			// literalRewrites spells the rewrite as the workflow does; a
+			// sub-path use keeps its path.
 			for _, ref := range rewriteRefs {
-				if dep.RefKey(ref.Owner+"/"+ref.Repo, ref.Ref) == dep.RefKey(e.NWO, oldRef) {
-					rewrites[ref.FullName()+"@"+ref.Ref] = ref.FullName() + "@" + newRef
+				if dep.RefKey(ref.NWO(), ref.Ref) == dep.RefKey(e.NWO, oldRef) {
+					rewrites.add(ref.FullName(), ref.Ref, ref.FullName()+"@"+newRef)
 				}
 			}
 			e.Ref = newRef
@@ -827,9 +861,7 @@ func narrowVerifiedEntries(ctx context.Context, entries []Entry, opts PlanOption
 			continue
 		}
 		oldRef := e.Ref
-		oldUses := e.NWO + "@" + oldRef
-		newUses := e.NWO + "@" + patchTag
-		rewrites[oldUses] = newUses
+		rewrites.add(e.NWO, oldRef, e.NWO+"@"+patchTag)
 		e.Ref = patchTag
 		e.AutoFixedRef = oldRef
 	}
@@ -862,8 +894,8 @@ func retainedLockTargets(report *checks.Report, opts PlanOptions) map[string]boo
 // staleRoots returns, per workflow key, the pin keys of the lock roots this
 // run prunes (stale findings, see lockfile.UsedRoot), for workflows planning
 // may write.
-func staleRoots(report *checks.Report, opts PlanOptions) map[string]map[string]bool {
-	staleByWorkflow := make(map[string]map[string]bool)
+func staleRoots(report *checks.Report, opts PlanOptions) map[string]map[dep.Key]bool {
+	staleByWorkflow := make(map[string]map[dep.Key]bool)
 	for _, wr := range report.Workflows {
 		if wr.SkipCommit || wr.BlockingResolverError || wr.CountByCategory(checks.InvalidSelfRepositoryRef) > 0 {
 			continue
@@ -871,7 +903,7 @@ func staleRoots(report *checks.Report, opts PlanOptions) map[string]map[string]b
 		if opts.Relock && !opts.AcceptMoved && wr.CountByCategory(checks.UnreachablePin) > 0 && wr.CountByCategory(checks.RefMoved) > 0 {
 			continue
 		}
-		stale := make(map[string]bool)
+		stale := make(map[dep.Key]bool)
 		for _, f := range wr.Findings {
 			if f.Category == checks.Stale && f.Dependency != nil {
 				stale[dep.RefKey(f.Dependency.NWO, f.Dependency.Ref)] = true
@@ -900,18 +932,21 @@ func hasConflictingLockTarget(opts PlanOptions, nwo, ref, sha string) bool {
 		return false
 	}
 	_, targetSHA, ok := strings.Cut(action.Commit, "-")
-	return ok && !strings.EqualFold(targetSHA, sha)
+	return ok && !dep.SameRef(targetSHA, sha)
 }
 
 // actionRefKeys indexes workflow refs by reference identity: recorded
 // entries are matched against them, and those come from another source.
-func actionRefKeys(refs []parserlock.ActionRef) map[string]bool {
-	keys := make(map[string]bool, len(refs))
+func actionRefKeys(refs []parserlock.ActionRef) map[dep.Key]bool {
+	keys := make(map[dep.Key]bool, len(refs))
 	for _, ref := range refs {
 		keys[dep.RefKey(ref.Owner+"/"+ref.Repo, ref.Ref)] = true
 	}
 	return keys
 }
+
+// depSameRef is dep.SameRef, for where a loop variable shadows the package.
+func depSameRef(a, b string) bool { return dep.SameRef(a, b) }
 
 // splitNWO splits "owner/repo" or "owner/repo/sub" into (owner, repo).
 func splitNWO(nwo string) (string, string) {

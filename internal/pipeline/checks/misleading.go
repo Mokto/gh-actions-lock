@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/resolve"
 )
 
@@ -25,10 +26,10 @@ func checkMisleadingSha(ctx context.Context, pw ParsedWorkflow, r CheckResolver)
 		if !ok || sha == "" {
 			continue
 		}
-		if strings.EqualFold(sha, ref.Ref) {
+		if dep.SameRef(sha, ref.Ref) {
 			continue
 		}
-		if peeled, ok := r.PeelTagObject(ctx, ref.Owner, ref.Repo, ref.Ref); ok && strings.EqualFold(peeled, sha) {
+		if peeled, ok := r.PeelTagObject(ctx, ref.Owner, ref.Repo, ref.Ref); ok && dep.SameRef(peeled, sha) {
 			continue
 		}
 		// Ref string is SHA-shaped, resolver returned a different commit,
@@ -50,12 +51,12 @@ func checkMisleadingSha(ctx context.Context, pw ParsedWorkflow, r CheckResolver)
 // When the observed SHA is itself unreachable from any branch of the
 // upstream repo (tag-moved-to-fork-network), an additional
 // lockfile-tampering claim is stronger.
-func checkRefMovedAndForgery(ctx context.Context, pw ParsedWorkflow, depIndex map[string]lockedPin, r CheckResolver) []Finding {
+func checkRefMovedAndForgery(ctx context.Context, pw ParsedWorkflow, depIndex map[dep.Key]lockedPin, r CheckResolver) []Finding {
 	var out []Finding
 
 	// Build a set of index keys already covered by direct refs so we don't
 	// double-check them when iterating transitive deps below.
-	directKeys := make(map[string]bool, len(pw.Refs))
+	directKeys := make(map[dep.Key]bool, len(pw.Refs))
 	for _, ref := range pw.Refs {
 		directKeys[rootKey(ref)] = true
 	}
@@ -80,17 +81,13 @@ func checkRefMovedAndForgery(ctx context.Context, pw ParsedWorkflow, depIndex ma
 		if directKeys[indexKey] {
 			continue
 		}
-		parsed, ok := parserlock.ParsePin(indexKey)
-		if !ok {
-			continue
-		}
-		if parserlock.IsFullSha(parsed.Ref) {
+		if parserlock.IsFullSha(pin.Pin.Ref) {
 			continue
 		}
 		ref := parserlock.ActionRef{
-			Owner: parsed.Owner,
-			Repo:  parsed.Repo,
-			Ref:   parsed.Ref,
+			Owner: strings.ToLower(pin.Pin.Owner),
+			Repo:  strings.ToLower(pin.Pin.Repo),
+			Ref:   pin.Pin.Ref,
 		}
 		if f, ok := checkOneRefMoved(ctx, pw, ref, pin, r); ok {
 			out = append(out, f)
@@ -110,7 +107,7 @@ func checkOneRefMoved(ctx context.Context, pw ParsedWorkflow, ref parserlock.Act
 	if !ok || sha == "" {
 		return Finding{}, false
 	}
-	if strings.EqualFold(sha, pin.SHA()) {
+	if dep.SameRef(sha, pin.SHA()) {
 		return Finding{}, false
 	}
 	ancestry, ancestryDetail := r.CheckAncestry(ctx, ref.Owner, ref.Repo, pin.SHA(), sha)

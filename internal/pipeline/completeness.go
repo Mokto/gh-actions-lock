@@ -43,12 +43,13 @@ func checkLockedManifests(ctx context.Context, r *resolve.Resolver, parsed []che
 		// neither fails a complete graph nor skips its entry's descendants.
 		// A spelling that reaches several entries checks each of them:
 		// their edges can differ.
-		for _, child := range slices.Sorted(maps.Keys(parents)) {
-			for _, parent := range lockedParents(refs, parents[child]) {
+		for _, childID := range slices.SortedFunc(maps.Keys(parents), dep.Key.Compare) {
+			child := childID.String()
+			for _, parent := range lockedParents(refs, parents[childID]) {
 				action := file.Dependencies[parent]
 				found := false
 				for _, use := range action.Uses {
-					if dep.RefKeyOf(use) == dep.RefKeyOf(child) {
+					if dep.RefKeyOf(use) == childID {
 						found = true
 						break
 					}
@@ -117,7 +118,7 @@ func lockedRoots(roots []parserlock.ActionRef, existing []dep.Dependency) []pars
 		}
 		if len(spellings) == 0 {
 			for _, d := range existing {
-				if strings.EqualFold(d.NWO, ref.NWO()) && strings.EqualFold(d.SHA, ref.Ref) {
+				if dep.RefKey(d.NWO, d.SHA) == dep.RefKey(ref.NWO(), ref.Ref) {
 					spellings = []string{d.Ref}
 					break
 				}

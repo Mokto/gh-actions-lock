@@ -651,7 +651,7 @@ func (s *State) PrepareRefresh(workflows []string, deps []dep.Dependency, parent
 	}
 	refresh := reachable(s.file, refreshRoots)
 	protected := reachable(s.file, otherRoots)
-	keyToPin := map[string]string{}
+	keyToPin := map[dep.Key]string{}
 	commits := map[string]string{}
 	for _, d := range deps {
 		pin, err := depToPin(d)
@@ -664,7 +664,7 @@ func (s *State) PrepareRefresh(workflows []string, deps []dep.Dependency, parent
 			return fmt.Errorf("refreshed graph has conflicting commits for %s", key)
 		}
 		commits[key] = commit
-		keyToPin[d.Key()] = key
+		keyToPin[d.ID()] = key
 		if existing, ok := s.file.Dependencies[key]; ok && protected[key] {
 			if !strings.EqualFold(existing.Commit, commit) {
 				return fmt.Errorf("cannot refresh shared pin %s without refreshing all workflows that use it", key)
@@ -678,7 +678,7 @@ func (s *State) PrepareRefresh(workflows []string, deps []dep.Dependency, parent
 			return fmt.Errorf("refreshed graph is missing child %s", child)
 		}
 		for _, parent := range pp {
-			parentPin, ok := keyToPin[parent]
+			parentPin, ok := keyToPin[dep.RefKeyOf(parent)]
 			if !ok {
 				return fmt.Errorf("refreshed graph is missing parent %s", parent)
 			}
@@ -818,7 +818,7 @@ func (s *State) hostConflicts() map[string][]string {
 //
 // Resolution of owner/repo numeric IDs happens lazily per NWO and is cached
 // for the lifetime of the store.
-func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependency, parentMap map[string][]string, directKeys map[string]bool) error {
+func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependency, parentMap dep.ParentMap, directKeys map[dep.Key]bool) error {
 	// Resolve repo IDs for every unique owner/repo BEFORE taking s.mu so
 	// concurrent pin workers don't serialize on the network round-trip.
 	// lookupIDs is safe to call without s.mu and dedups in-flight fetches
@@ -853,8 +853,8 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 	defer s.mu.Unlock()
 	directPins := make([]string, 0)
 	seenDirect := map[string]bool{}
-	// keyToPin: Dependency.Key() (NWO@Ref) → canonical pin (NWO@Ref:algo-hex).
-	keyToPin := make(map[string]string, len(deps))
+	// keyToPin: dependency identity → canonical pin (NWO@Ref:algo-hex).
+	keyToPin := make(map[dep.Key]string, len(deps))
 	for _, d := range deps {
 		pin, err := depToPin(d)
 		if err != nil {
@@ -869,12 +869,12 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 		if existing, ok := s.file.Dependencies[pinKey]; ok && s.hostOrHome(existing.Hostname) != hostname {
 			return fmt.Errorf("dependency %s has conflicting hosts %s and %s", pinKey, s.hostOrHome(existing.Hostname), hostname)
 		}
-		keyToPin[d.Key()] = pinKey
+		keyToPin[d.ID()] = pinKey
 		var isDirect bool
 		if directKeys != nil {
-			isDirect = directKeys[d.Key()]
+			isDirect = directKeys[d.ID()]
 		} else {
-			_, hasParent := parentMap[d.Key()]
+			_, hasParent := parentMap[d.ID()]
 			isDirect = !hasParent
 		}
 		if isDirect && !seenDirect[pinKey] {
@@ -894,7 +894,7 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 			continue
 		}
 		for _, parentDepKey := range parents {
-			parentPin, ok := keyToPin[parentDepKey]
+			parentPin, ok := keyToPin[dep.RefKeyOf(parentDepKey)]
 			if !ok {
 				continue
 			}

@@ -3,6 +3,8 @@
 // and Commit writes the Record to disk (workflow files + lockfile).
 package pin
 
+import "github.com/github/gh-actions-lock/internal/dep"
+
 // Entry records the plan decision for one action dependency.
 type Entry struct {
 	Hostname     string
@@ -32,17 +34,21 @@ type Entry struct {
 // WorkflowPlan records what Commit must write for one workflow file.
 type WorkflowPlan struct {
 	Path     string
-	Rewrites map[string]string
+	Rewrites map[dep.Spelling]string
 	// Refresh replaces the recorded edges with a newly resolved graph.
 	Refresh bool
 	// RequiredRewrites move redirected `uses:` to the canonical repository;
 	// Commit fails rather than skip one.
-	RequiredRewrites map[string]string
+	RequiredRewrites map[dep.Spelling]string
 	// RewrittenIn lists, per RequiredRewrites key, the files Commit found it in.
-	RewrittenIn map[string][]string
+	RewrittenIn map[dep.Spelling][]string
 	// SelfActionFiles are in-repo action definition files reached from this
 	// workflow through `$/…`. The same rewrites apply to their `uses:` lines.
 	SelfActionFiles []string
+
+	// rewrites and required are planning's Rewrites and RequiredRewrites
+	// by identity, before literalRewrites spells them as the files do.
+	rewrites, required idRewrites
 }
 
 // Record is the complete output of Plan: everything Commit needs to

@@ -54,9 +54,15 @@ func (d Dependency) FullName() string {
 	return d.NWO
 }
 
-// Key returns the dependency key for deduplication: NWO@Ref.
+// Key is NWO@Ref as spelled, for display. Compare or index dependencies
+// by ID.
 func (d Dependency) Key() string {
 	return d.NWO + "@" + d.Ref
+}
+
+// ID is the dependency's reference identity.
+func (d Dependency) ID() Key {
+	return RefKey(d.NWO, d.Ref)
 }
 
 // OwnerRepo splits NWO into owner and repo components.
@@ -110,11 +116,12 @@ func Dedup(deps []Dependency) []Dependency {
 // run, and the lockfile can't record them.
 var ErrUsesCycle = errors.New("dependency graph has a uses cycle")
 
-// ParentMap is a child dep key → parent dep keys mapping returned alongside
-// resolved dependencies by ResolveAllRecursive. It is value-typed so callers
-// can hold their own copy across concurrent calls without racing on resolver
-// state.
-type ParentMap map[string][]string
+// ParentMap maps a child dependency's identity to its parents, each spelled
+// owner/repo@ref as resolved (compare them through RefKeyOf). It's returned
+// alongside resolved dependencies by ResolveAllRecursive and value-typed so
+// callers can hold their own copy across concurrent calls without racing on
+// resolver state.
+type ParentMap map[Key][]string
 
 // RekeyParentMap returns a new ParentMap with both child keys and parent
 // values rewritten according to rewrites (e.g. tag narrowing v4 → v4.3.1,
@@ -131,15 +138,19 @@ func RekeyParentMap(pm ParentMap, rewrites map[string]string) ParentMap {
 		}
 		return out
 	}
+	byID := make(map[Key]string, len(rewrites))
+	for old, rk := range rewrites {
+		byID[RefKeyOf(old)] = rk
+	}
 	updated := make(ParentMap, len(pm))
 	for childKey, parents := range pm {
 		newChild := childKey
-		if rk, ok := rewrites[childKey]; ok {
-			newChild = rk
+		if rk, ok := byID[childKey]; ok {
+			newChild = RefKeyOf(rk)
 		}
 		newParents := make([]string, len(parents))
 		for i, p := range parents {
-			if rk, ok := rewrites[p]; ok {
+			if rk, ok := byID[RefKeyOf(p)]; ok {
 				newParents[i] = rk
 			} else {
 				newParents[i] = p

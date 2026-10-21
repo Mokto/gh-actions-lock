@@ -50,7 +50,7 @@ func (pw ParsedWorkflow) PartitionRefs() (recorded, unrecorded []parserlock.Acti
 	if len(pw.Refs) == 0 {
 		return nil, nil
 	}
-	haveDep := make(map[string]bool, len(pw.ExistingDeps)*2)
+	haveDep := make(map[dep.Key]bool, len(pw.ExistingDeps)*2)
 	for _, d := range pw.ExistingDeps {
 		haveDep[dep.RefKey(d.NWO, d.Ref)] = true
 		if d.SHA != "" {
@@ -77,7 +77,7 @@ func (pw ParsedWorkflow) IsFullyRecorded() bool {
 // RecordedDeps returns the subset of ExistingDeps whose NWO@Ref or
 // NWO@SHA matches one of the given recorded refs.
 func (pw ParsedWorkflow) RecordedDeps(recorded []parserlock.ActionRef) []dep.Dependency {
-	refKeys := make(map[string]bool, len(recorded))
+	refKeys := make(map[dep.Key]bool, len(recorded))
 	for _, r := range recorded {
 		refKeys[dep.RefKey(r.Owner+"/"+r.Repo, r.Ref)] = true
 	}

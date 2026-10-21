@@ -10,8 +10,8 @@ import (
 
 func TestIsTransitivePin(t *testing.T) {
 	d := dep.Dependency{NWO: "actions/cache", Ref: "v4"}
-	depByKey := map[string]dep.Dependency{d.Key(): d}
-	withParents := map[string][]string{d.Key(): {"some/composite@v1"}}
+	depByKey := map[dep.Key]dep.Dependency{d.ID(): d}
+	withParents := dep.ParentMap{d.ID(): {"some/composite@v1"}}
 
 	t.Run("transitive when indexed and has parents", func(t *testing.T) {
 		f := checks.Finding{Dependency: &d}
@@ -30,7 +30,7 @@ func TestIsTransitivePin(t *testing.T) {
 	})
 
 	t.Run("not transitive when the dep has no parents", func(t *testing.T) {
-		noParents := map[string][]string{d.Key(): nil}
+		noParents := dep.ParentMap{d.ID(): nil}
 		f := checks.Finding{Dependency: &d}
 		assert.False(t, isTransitivePin(f, depByKey, noParents))
 	})
@@ -39,7 +39,7 @@ func TestIsTransitivePin(t *testing.T) {
 func TestPopulateInventoryParents(t *testing.T) {
 	transitive := dep.Dependency{NWO: "actions/cache", Ref: "v4"}
 	direct := dep.Dependency{NWO: "actions/checkout", Ref: "v4"}
-	parentMap := map[string][]string{transitive.Key(): {"some/composite@v1"}}
+	parentMap := dep.ParentMap{transitive.ID(): {"some/composite@v1"}}
 
 	inventory := []checks.InventoryEntry{
 		{Dep: transitive, Direct: false},
@@ -59,6 +59,6 @@ func TestPopulateInventoryParents_KeepsExistingParents(t *testing.T) {
 		{Dep: d, Direct: false, Parents: []string{"already/set@v1"}},
 	}
 	// parentMap would offer a different parent, but existing parents win.
-	populateInventoryParents(inventory, map[string][]string{d.Key(): {"other/comp@v2"}})
+	populateInventoryParents(inventory, dep.ParentMap{d.ID(): {"other/comp@v2"}})
 	assert.Equal(t, []string{"already/set@v1"}, inventory[0].Parents)
 }

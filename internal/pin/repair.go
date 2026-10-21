@@ -45,7 +45,7 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 		return err
 	}
 	preview.GC()
-	unresolved := map[string]bool{}
+	unresolved := map[dep.Key]bool{}
 	for _, e := range rec.Unresolved() {
 		unresolved[dep.RefKey(e.NWO, e.Ref)] = true
 	}

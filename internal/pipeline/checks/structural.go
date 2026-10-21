@@ -11,7 +11,7 @@ import (
 )
 
 func checkRecordedClosure(pw ParsedWorkflow, file parserlock.File) []Finding {
-	direct := make(map[string]bool, len(pw.Refs))
+	direct := make(map[dep.Key]bool, len(pw.Refs))
 	for _, ref := range pw.Refs {
 		direct[rootKey(ref)] = true
 	}
@@ -70,12 +70,12 @@ func checkUntracked(pw ParsedWorkflow, tracked bool) []Finding {
 // unlocked SHA was never history-checked (it may be a fork commit served
 // under the upstream name), so it is NotPinned even if a sibling ref of
 // the same repo is locked.
-func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[string]lockedPin) []Finding {
+func checkNotPinned(pw ParsedWorkflow, depPins []lockedPin, depIndex map[dep.Key]lockedPin) []Finding {
 	if len(pw.Refs) == 0 {
 		return nil
 	}
 	knownAction := make(map[string]bool, len(depPins))
-	lockedSHA := make(map[string]bool, len(depPins))
+	lockedSHA := make(map[dep.Key]bool, len(depPins))
 	for _, p := range depPins {
 		knownAction[nwoLower(p.Owner, p.Repo)] = true
 		lockedSHA[dep.RefKey(p.Owner+"/"+p.Repo, p.SHA())] = true
@@ -136,7 +136,7 @@ func checkSHARecordedRef(pw ParsedWorkflow, wfEntry []string, deps map[string]pa
 // commit SHA — both bare-SHA uses with no lock entry and bare-SHA uses
 // whose lock entry just mirrors the same SHA. The anti-pattern (no
 // human-readable ref) is the same in both cases.
-func checkShaAsRef(pw ParsedWorkflow, depIndex map[string]lockedPin) []Finding {
+func checkShaAsRef(pw ParsedWorkflow, depIndex map[dep.Key]lockedPin) []Finding {
 	var out []Finding
 	for _, ref := range pw.Refs {
 		if !parserlock.IsFullSha(ref.Ref) {
@@ -180,7 +180,7 @@ func checkRefChanged(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 		}
 		match := false
 		for _, p := range candidates {
-			if p.Ref == ref.Ref {
+			if dep.SameRef(p.Ref, ref.Ref) {
 				match = true
 				break
 			}

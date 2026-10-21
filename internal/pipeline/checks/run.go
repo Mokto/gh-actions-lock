@@ -65,9 +65,9 @@ func (lp lockedPin) SHA() string {
 // commit. A root keeps its stored key as Key; its Pin is the identity, a
 // full SHA lowercased, and a root spelling a full SHA in another case than
 // its only entry takes that entry's commit. Unparseable roots are dropped.
-func parseWorkflowDeps(rawDeps []string, deps map[string]parserlock.Action, refs lockfile.RefIndex) ([]lockedPin, map[string]lockedPin) {
+func parseWorkflowDeps(rawDeps []string, deps map[string]parserlock.Action, refs lockfile.RefIndex) ([]lockedPin, map[dep.Key]lockedPin) {
 	pins := make([]lockedPin, 0, len(rawDeps))
-	idx := make(map[string]lockedPin, len(rawDeps))
+	idx := make(map[dep.Key]lockedPin, len(rawDeps))
 	for _, raw := range rawDeps {
 		pin, ok := parserlock.ParsePin(raw)
 		if !ok {
@@ -133,6 +133,6 @@ func formatUseName(owner, repo, path string) string {
 
 // rootKey is ref's identity, the key of the workflow-local root index
 // (see parseWorkflowDeps).
-func rootKey(ref parserlock.ActionRef) string {
+func rootKey(ref parserlock.ActionRef) dep.Key {
 	return dep.RefKey(ref.Owner+"/"+ref.Repo, ref.Ref)
 }

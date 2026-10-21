@@ -1,8 +1,6 @@
 package checks
 
 import (
-	"strings"
-
 	"github.com/github/gh-actions-lock/internal/dep"
 )
 
@@ -55,6 +53,12 @@ func PrunesDependency(f Finding, acceptMoved, relock bool) bool {
 // identity (dep.RefKey), which folds owner/repo and a full SHA but keeps
 // any other ref's case, since refs are case-sensitive, at the commit,
 // folded. Findings and entries come from different sources.
-func PruneKey(nwo, ref, sha string) string {
-	return dep.RefKey(nwo, ref) + ":" + strings.ToLower(sha)
+func PruneKey(nwo, ref, sha string) PruneID {
+	return PruneID{dep.RefKey(nwo, ref), dep.NewCommit(sha)}
+}
+
+// PruneID is a PruneKey: a reference at a commit.
+type PruneID struct {
+	ref    dep.Key
+	commit dep.Ref
 }

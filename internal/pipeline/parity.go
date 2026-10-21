@@ -16,6 +16,14 @@ import (
 	"github.com/github/gh-actions-lock/internal/workflowfile"
 )
 
+// pinCheckKey is one parity check: a reference at its locked commit, and
+// the recorded ref to look up there (head; empty for an own-SHA entry).
+type pinCheckKey struct {
+	ref    dep.Key
+	commit dep.Ref
+	head   string
+}
+
 // checkParity re-checks every locked pin in each workflow's recorded closure
 // the way the runner does at job start: same repository identity, commit
 // still present, and the lock entry's ref (a tag, else a branch) still
@@ -39,7 +47,7 @@ import (
 //
 // Under the Dependabot proxy any inconclusive check is an error: the run
 // aborts so Dependabot retries rather than shipping an unverified lock.
-func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedRefs resolve.RefSet, resolved []dep.Dependency, parents map[string][]string, mode parityMode) error {
+func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.ParsedWorkflow, store *lockfile.State, report *checks.Report, recordedRefs resolve.RefSet, resolved []dep.Dependency, parents dep.ParentMap, mode parityMode) error {
 	gh := r.GHClient()
 	if gh == nil || store == nil {
 		return nil
@@ -49,7 +57,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		reportIdx[wr.Path] = i
 	}
 	var pins []ghapi.PinCheck
-	pinIdx := map[string]int{}
+	pinIdx := map[pinCheckKey]int{}
 	owners := map[int][]parityOwner{}
 	owned := map[[2]int]int{}
 	add := func(o parityOwner) {
@@ -72,7 +80,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		if lockfile.RecordsOwnSHA(o.lp.Pin, head) {
 			head = ""
 		}
-		key := dep.RefKey(o.lp.Pin.Owner+"/"+o.lp.Pin.Repo, o.lp.Pin.Ref) + ":" + strings.ToLower(lockedSHA(o.lp.Action.Commit)) + ":" + head
+		key := pinCheckKey{dep.RefKey(o.lp.Pin.Owner+"/"+o.lp.Pin.Repo, o.lp.Pin.Ref), dep.NewRef(lockedSHA(o.lp.Action.Commit)), head}
 		i, seen := pinIdx[key]
 		if !seen {
 			i = len(pins)
@@ -107,7 +115,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		}
 		// Planning writes a recorded entry back verbatim unless one of
 		// these findings prunes it.
-		effects := map[string]checks.PruneEffect{}
+		effects := map[checks.PruneID]checks.PruneEffect{}
 		for _, f := range report.Workflows[ri].Findings {
 			if checks.PrunesDependency(f, mode.acceptMoved, mode.relock) {
 				k := checks.PruneKey(f.Dependency.NWO, f.Dependency.Ref, f.Dependency.SHA)
@@ -141,7 +149,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			// descendants: the write merges, never drops, recorded edges.
 			// They are recorded pins, checked as such.
 			recorded, ok := store.File().Dependencies[lockfile.EntryKey(o.lp.Pin)]
-			if !ok || !strings.EqualFold(lockedSHA(recorded.Commit), lockedSHA(o.lp.Action.Commit)) {
+			if !ok || dep.NewCommit(lockedSHA(recorded.Commit)) != dep.NewCommit(lockedSHA(o.lp.Action.Commit)) {
 				continue
 			}
 			for _, lp := range store.Descendants(lockfile.EntryKey(o.lp.Pin)) {
@@ -170,7 +178,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	tagMoved := make([]bool, len(states))
 	for i := range states {
 		st, pc := &states[i], pins[i]
-		if pc.Head == "" || st.Err != nil || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
+		if pc.Head == "" || st.Err != nil || !st.CommitFound || st.HeadOID == "" || dep.SameRef(st.HeadOID, pc.SHA) {
 			continue
 		}
 		switch ancestry, detail, cause := r.CheckAncestryCause(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); ancestry {
@@ -318,30 +326,34 @@ func heldBy(lp lockfile.LockedPin, composites []lockfile.LockedPin) string {
 // unrecorded refs from this run's single resolve, so no further requests
 // are made per workflow. A workflow's refs reach what the run resolved by
 // reference identity: the run records each full SHA under one spelling.
-func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(checks.ParsedWorkflow, resolve.RefSet) []parityOwner {
-	children := map[string][]dep.Dependency{}
-	byKey := map[string][]dep.Dependency{}
+func freshClosure(resolved []dep.Dependency, parents dep.ParentMap) func(checks.ParsedWorkflow, resolve.RefSet) []parityOwner {
+	children := map[dep.Key][]dep.Dependency{}
+	byKey := map[dep.Key][]dep.Dependency{}
 	for _, d := range resolved {
 		if d.SHA == "" {
 			continue
 		}
-		keys := []string{d.Key()}
+		keys := []dep.Key{d.ID()}
 		for _, ref := range d.OriginalRefs {
-			keys = append(keys, ref.NWO()+"@"+ref.Ref)
+			keys = append(keys, dep.RefKey(ref.NWO(), ref.Ref))
 		}
 		for _, k := range keys {
-			byKey[dep.RefKeyOf(k)] = append(byKey[dep.RefKeyOf(k)], d)
+			byKey[k] = append(byKey[k], d)
 			for _, p := range parents[k] {
 				children[dep.RefKeyOf(p)] = append(children[dep.RefKeyOf(p)], d)
 			}
 		}
 	}
+	type walked struct {
+		id   dep.Key
+		path string
+	}
 	return func(pw checks.ParsedWorkflow, recorded resolve.RefSet) []parityOwner {
 		var out []parityOwner
-		seen := map[string]bool{}
+		seen := map[walked]bool{}
 		var walk func(d dep.Dependency, ref parserlock.ActionRef, parent string)
 		walk = func(d dep.Dependency, ref parserlock.ActionRef, parent string) {
-			id := dep.RefKeyOf(d.Key()) + "/" + d.Path
+			id := walked{d.ID(), d.Path}
 			if seen[id] {
 				return
 			}
@@ -353,7 +365,7 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 				Parent: parent,
 			}}
 			out = append(out, o)
-			for _, c := range children[dep.RefKeyOf(d.Key())] {
+			for _, c := range children[d.ID()] {
 				co, cr := c.OwnerRepo()
 				walk(c, parserlock.ActionRef{Owner: co, Repo: cr, Path: c.Path, Ref: c.Ref}, d.Key())
 			}

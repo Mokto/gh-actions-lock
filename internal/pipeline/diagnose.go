@@ -154,7 +154,7 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 			Direct: directNWOs[ghapi.ForRepo(owner, repo)],
 		})
 	}
-	parentMap := map[string][]string{}
+	parentMap := dep.ParentMap{}
 	if r != nil {
 		parentMap = resolvedParents
 		populateInventoryParents(wr.Inventory, parentMap)
@@ -174,9 +174,9 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 		}
 		attachParent(&f, depByKey, directNWOs, parentMap)
 		if f.Dependency != nil {
-			d, ok := depByKey[f.Dependency.Key()]
+			d, ok := depByKey[f.Dependency.ID()]
 			if !ok {
-				d = liveByKey[f.Dependency.Key()]
+				d = liveByKey[f.Dependency.ID()]
 			}
 			f.Dependency.Hostname = d.Hostname
 			if f.Category == checks.ShaAsRef && d.Hostname != "" {
@@ -355,10 +355,10 @@ func preserveExistingInventory(wr *checks.WorkflowReport, pw checks.ParsedWorkfl
 	}
 }
 
-func indexDeps(deps []dep.Dependency) map[string]dep.Dependency {
-	out := make(map[string]dep.Dependency, len(deps))
-	for _, dep := range deps {
-		out[dep.Key()] = dep
+func indexDeps(deps []dep.Dependency) map[dep.Key]dep.Dependency {
+	out := make(map[dep.Key]dep.Dependency, len(deps))
+	for _, d := range deps {
+		out[d.ID()] = d
 	}
 	return out
 }

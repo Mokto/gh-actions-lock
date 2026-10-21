@@ -95,12 +95,14 @@ func normalizeRefs(refs []parserlock.ActionRef) []parserlock.ActionRef {
 	return out
 }
 
+// mergeActionRefs keeps one of each literal spelling: rewrites replace
+// bytes, so every spelling a file uses must reach them.
 func mergeActionRefs(groups ...[]parserlock.ActionRef) []parserlock.ActionRef {
-	seen := make(map[string]bool)
+	seen := make(map[dep.Spelling]bool)
 	var refs []parserlock.ActionRef
 	for _, group := range groups {
 		for _, ref := range group {
-			key := ref.FullName() + "@" + ref.Ref
+			key := dep.Spelling(ref.FullName() + "@" + ref.Ref)
 			if seen[key] {
 				continue
 			}

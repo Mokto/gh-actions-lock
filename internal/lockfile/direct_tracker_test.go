@@ -55,5 +55,5 @@ func TestDirectTracker_KeysUseDepSpelling(t *testing.T) {
 
 	keys := NewDirectTracker(refs, deps).Keys(deps)
 
-	assert.Equal(t, map[string]bool{"actions/checkout@v4": true}, keys)
+	assert.Equal(t, map[dep.Key]bool{dep.RefKey("actions/checkout", "v4"): true}, keys)
 }

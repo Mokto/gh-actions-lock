@@ -14,7 +14,7 @@ import (
 // and a Dependency synthesized from the workflow ref / lockfile pin. This
 // is purely about pointing the user at the composite that pulled in a
 // transitively-pinned dep.
-func attachParent(f *checks.Finding, depByKey map[string]dep.Dependency, directNWOs map[ghapi.Repo]bool, parentMap map[string][]string) {
+func attachParent(f *checks.Finding, depByKey map[dep.Key]dep.Dependency, directNWOs map[ghapi.Repo]bool, parentMap dep.ParentMap) {
 	if f.Dependency == nil {
 		return
 	}
@@ -22,39 +22,32 @@ func attachParent(f *checks.Finding, depByKey map[string]dep.Dependency, directN
 	if directNWOs[ghapi.ForRepo(owner, repo)] {
 		return
 	}
-	// Prefer the dep snapshot from the workflow's ExistingDeps (it has the
-	// canonical NWO casing the parent map keys with). Synthesised deps
-	// already match — but the indexed lookup is cheap regardless.
-	key := f.Dependency.Key()
-	if dep, ok := depByKey[key]; ok {
-		key = dep.Key()
-	}
-	if parents := parentMap[key]; len(parents) > 0 {
+	if parents := parentMap[f.Dependency.ID()]; len(parents) > 0 {
 		f.ParentNWO = parents[0]
 	}
 }
 
 // isTransitivePin reports whether the finding refers to a dep reached via
 // composite expansion (i.e. has parents in the parent map).
-func isTransitivePin(f checks.Finding, depByKey map[string]dep.Dependency, parentMap map[string][]string) bool {
+func isTransitivePin(f checks.Finding, depByKey map[dep.Key]dep.Dependency, parentMap dep.ParentMap) bool {
 	if f.Dependency == nil {
 		return false
 	}
-	if _, ok := depByKey[f.Dependency.Key()]; !ok {
+	if _, ok := depByKey[f.Dependency.ID()]; !ok {
 		return false
 	}
-	return len(parentMap[f.Dependency.Key()]) > 0
+	return len(parentMap[f.Dependency.ID()]) > 0
 }
 
 // populateInventoryParents fills in the Parents field for transitive inventory
 // entries (those not marked Direct and without parents yet) by looking up each
 // entry's dep key in parentMap.
-func populateInventoryParents(inventory []checks.InventoryEntry, parentMap map[string][]string) {
+func populateInventoryParents(inventory []checks.InventoryEntry, parentMap dep.ParentMap) {
 	for i := range inventory {
 		if inventory[i].Direct || len(inventory[i].Parents) > 0 {
 			continue
 		}
-		parents := parentMap[inventory[i].Dep.Key()]
+		parents := parentMap[inventory[i].Dep.ID()]
 		if len(parents) > 0 {
 			inventory[i].Parents = append([]string(nil), parents...)
 		}

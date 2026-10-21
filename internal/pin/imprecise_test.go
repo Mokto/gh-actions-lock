@@ -31,8 +31,8 @@ func TestPlan_impreciseTransitivePinDoesNotBlockDirectNarrowing(t *testing.T) {
 		// Direct and imprecise: this one narrowing must still be allowed to fix.
 		{NWO: "actions/setup-go", Ref: "v5", Tag: "v5", Branch: "main", SHA: "3333333333333333333333333333333333333333", HashAlgo: "sha1"},
 	}
-	parents := map[string][]string{"actions/checkout@v6": {"github/go-linter@v2.2.3"}}
-	directKeys := map[string]bool{"github/go-linter@v2.2.3": true, "actions/setup-go@v5": true}
+	parents := dep.ParentMap{dep.RefKeyOf("actions/checkout@v6"): {"github/go-linter@v2.2.3"}}
+	directKeys := map[dep.Key]bool{dep.RefKeyOf("github/go-linter@v2.2.3"): true, dep.RefKeyOf("actions/setup-go@v5"): true}
 	require.NoError(t, store.Set(context.Background(), wfKey, deps, parents, directKeys))
 	require.NoError(t, store.Save())
 

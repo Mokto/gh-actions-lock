@@ -17,8 +17,8 @@ func TestIndexDeps(t *testing.T) {
 	got := indexDeps(deps)
 
 	assert.Len(t, got, 2)
-	assert.Equal(t, "actions/checkout", got["actions/checkout@v4"].NWO)
-	assert.Equal(t, "actions/setup-node", got["actions/setup-node@v3"].NWO)
+	assert.Equal(t, "actions/checkout", got[dep.RefKeyOf("actions/checkout@v4")].NWO)
+	assert.Equal(t, "actions/setup-node", got[dep.RefKeyOf("actions/setup-node@v3")].NWO)
 }
 
 func TestIndexDeps_LastWins(t *testing.T) {
@@ -30,7 +30,7 @@ func TestIndexDeps_LastWins(t *testing.T) {
 	got := indexDeps(deps)
 
 	assert.Len(t, got, 1)
-	assert.Equal(t, "bbb", got["actions/checkout@v4"].SHA)
+	assert.Equal(t, "bbb", got[dep.RefKeyOf("actions/checkout@v4")].SHA)
 }
 
 func TestPrecheckWorkflow_NotPinnedRemediability(t *testing.T) {

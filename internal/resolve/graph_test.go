@@ -66,15 +66,15 @@ func TestGraphFlattenPlanned(t *testing.T) {
 			name:      "$/ sub-action follows its renamed root",
 			uses:      "$/sub",
 			wantDeps:  []string{"o/action@v1.0.0", "vendor/leaf@v1"},
-			wantEdges: dep.ParentMap{"vendor/leaf@v1": {"o/action@v1.0.0"}},
+			wantEdges: dep.ParentMap{dep.RefKeyOf("vendor/leaf@v1"): {"o/action@v1.0.0"}},
 		},
 		{
 			name:     "sub-action named at the old ref keeps its entry",
 			uses:     "o/action/sub@v1",
 			wantDeps: []string{"o/action@v1.0.0", "o/action@v1", "vendor/leaf@v1"},
 			wantEdges: dep.ParentMap{
-				"o/action@v1":    {"o/action@v1.0.0"},
-				"vendor/leaf@v1": {"o/action@v1"},
+				dep.RefKeyOf("o/action@v1"):    {"o/action@v1.0.0"},
+				dep.RefKeyOf("vendor/leaf@v1"): {"o/action@v1"},
 			},
 		},
 	} {
@@ -130,7 +130,7 @@ func TestGraphRewritesBelongToTheReferrer(t *testing.T) {
 		deps := entryDepsOf(entries)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"o/action@v1.0.0", "o/action@v1"}, depKeys(deps))
-		assert.Equal(t, dep.ParentMap{"o/action@v1": {"o/action@v1.0.0"}}, parents)
+		assert.Equal(t, dep.ParentMap{dep.RefKeyOf("o/action@v1"): {"o/action@v1.0.0"}}, parents)
 	})
 	t.Run("redirected repository a composite also names", func(t *testing.T) {
 		old := parserlock.ActionRef{Owner: "old", Repo: "action", Ref: "v1"}
@@ -151,7 +151,7 @@ func TestGraphRewritesBelongToTheReferrer(t *testing.T) {
 		assert.Equal(t, []string{"new/action@v1", "old/action@v1", "c/comp@v1"}, depKeys(deps))
 		assert.Equal(t, []parserlock.ActionRef{old}, deps[0].OriginalRefs, "the workflow root is rewritten to the new name")
 		assert.Empty(t, deps[1].OriginalRefs, "the composite's reference is not")
-		assert.Equal(t, dep.ParentMap{"old/action@v1": {"c/comp@v1"}}, parents)
+		assert.Equal(t, dep.ParentMap{dep.RefKeyOf("old/action@v1"): {"c/comp@v1"}}, parents)
 	})
 }
 

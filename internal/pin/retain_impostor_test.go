@@ -47,12 +47,12 @@ func TestRetainUnresolvablePins_keepsExistingPinOnColocatedRepin(t *testing.T) {
 	deps := []dep.Dependency{
 		{NWO: "actions/checkout", Ref: "v5", Branch: "main", SHA: "3333333333333333333333333333333333333333", HashAlgo: "sha1"},
 	}
-	directKeys := map[string]bool{"actions/checkout@v5": true}
+	directKeys := map[dep.Key]bool{dep.RefKeyOf("actions/checkout@v5"): true}
 
 	got := retainUnresolvablePins(rec, store, wfPath, deps, directKeys)
 
 	require.Len(t, got, 2, "impostor pin must be re-added alongside the bumped pin")
-	assert.True(t, directKeys["bad/impostor@v1"], "retained impostor pin must stay direct")
+	assert.True(t, directKeys[dep.RefKeyOf("bad/impostor@v1")], "retained impostor pin must stay direct")
 
 	// Drive the write as Commit does; the impostor pin must survive on disk.
 	require.NoError(t, store.Set(context.Background(), wfKey, got, buildParentMap(rec, wfPath), directKeys))
@@ -83,7 +83,7 @@ func TestRetainUnresolvablePins_noopWithoutImpostorFinding(t *testing.T) {
 		{NWO: "actions/checkout", Ref: "v5", Resolution: Pinned, Workflows: []string{wfPath}},
 	}}
 	deps := []dep.Dependency{{NWO: "actions/checkout", Ref: "v5"}}
-	directKeys := map[string]bool{"actions/checkout@v5": true}
+	directKeys := map[dep.Key]bool{dep.RefKeyOf("actions/checkout@v5"): true}
 
 	got := retainUnresolvablePins(rec, store, wfPath, deps, directKeys)
 	assert.Len(t, got, 1)
@@ -117,12 +117,12 @@ func TestRetainUnresolvablePins_keepsUnresolvedPin(t *testing.T) {
 	deps := []dep.Dependency{
 		{NWO: "actions/checkout", Ref: "v5", Branch: "main", SHA: "cccccccccccccccccccccccccccccccccccccccc", HashAlgo: "sha1"},
 	}
-	directKeys := map[string]bool{"actions/checkout@v5": true}
+	directKeys := map[dep.Key]bool{dep.RefKeyOf("actions/checkout@v5"): true}
 
 	got := retainUnresolvablePins(rec, store, wfPath, deps, directKeys)
 
 	require.Len(t, got, 2, "unresolved pin must be retained alongside the bumped pin")
-	assert.True(t, directKeys["corp/private@v2"], "retained unresolved pin must stay direct")
+	assert.True(t, directKeys[dep.RefKeyOf("corp/private@v2")], "retained unresolved pin must stay direct")
 
 	// Verify it survives a write round-trip.
 	require.NoError(t, store.Set(context.Background(), wfKey, got, buildParentMap(rec, wfPath), directKeys))

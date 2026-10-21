@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 )
@@ -66,7 +67,7 @@ func carryVerified(preview *lockfile.State, verified map[string]bool, writers []
 	}
 	for _, wp := range writers {
 		for oldUses, newUses := range wp.Rewrites {
-			oldKey, ok := usesKey(oldUses)
+			oldKey, ok := usesKey(string(oldUses))
 			newKey, ok2 := usesKey(newUses)
 			if !ok || !ok2 || oldKey == newKey {
 				continue
@@ -137,11 +138,11 @@ func written(preview *lockfile.State, verified map[string]bool, d checks.Deferre
 		return true
 	}
 	_, sha, _ := strings.Cut(a.Commit, "-")
-	if !strings.EqualFold(sha, d.Commit) {
+	if !dep.SameRef(sha, d.Commit) {
 		return verified[checks.VerifiedKey(d.Key, sha)]
 	}
 	// Planning re-records a full-SHA key's ref only once that ref names the
 	// commit (RefNamesCommit), so a new ref is a repair.
 	pin, ok := parserlock.ParsePin(d.Key)
-	return ok && parserlock.IsFullSha(pin.Ref) && a.Ref != d.Ref
+	return ok && parserlock.IsFullSha(pin.Ref) && !dep.SameRef(a.Ref, d.Ref)
 }

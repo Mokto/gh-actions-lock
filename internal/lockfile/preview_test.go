@@ -37,7 +37,7 @@ func TestPreview(t *testing.T) {
 	newDep := dep.Dependency{NWO: "o/new", Ref: "v1", SHA: b}
 	rootDep := dep.Dependency{NWO: "o/root", Ref: "v1", SHA: b}
 	require.NoError(t, preview.Set(context.Background(), ".github/workflows/ci.yml",
-		[]dep.Dependency{rootDep, newDep}, nil, map[string]bool{rootDep.Key(): true, newDep.Key(): true}))
+		[]dep.Dependency{rootDep, newDep}, nil, map[dep.Key]bool{dep.RefKeyOf(rootDep.Key()): true, dep.RefKeyOf(newDep.Key()): true}))
 	preview.GC()
 
 	got, ok := preview.Entry("o/root@v1")
@@ -84,7 +84,7 @@ func TestPreviewProjectsRealSet(t *testing.T) {
 	preview := store.Preview()
 
 	deps := []dep.Dependency{{NWO: "o/root", Ref: "v1", SHA: b}, {NWO: "o/new", Ref: "v1", SHA: b}}
-	direct := map[string]bool{deps[0].Key(): true, deps[1].Key(): true}
+	direct := map[dep.Key]bool{deps[0].ID(): true, deps[1].ID(): true}
 	ctx := context.Background()
 	require.NoError(t, preview.Set(ctx, ".github/workflows/ci.yml", deps, nil, direct))
 	preview.GC()

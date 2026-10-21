@@ -37,7 +37,7 @@ func TestNarrowDirectDeps_PreservesRefWhenExactTagIsFromAnotherFamily(t *testing
 		[]parserlock.ActionRef{{Owner: "dawidd6", Repo: "action-send-mail", Ref: "v18"}},
 		deps,
 	)
-	rewrites := make(map[string]string)
+	rewrites := idRewrites{}
 
 	narrowDirectDeps(
 		context.Background(),
@@ -93,7 +93,7 @@ func TestNarrowDirectDeps_SameNWOSiblingRefsNormalizeIndependently(t *testing.T)
 		{Owner: "actions", Repo: "checkout", Ref: bareSHA},
 	}
 	direct := lockfile.NewDirectTracker(refs, deps)
-	rewrites := make(map[string]string)
+	rewrites := idRewrites{}
 	preserved := make(map[int]bool)
 	tagger := tag.NewListerForTest(t, reg)
 
@@ -113,7 +113,7 @@ func TestNarrowDirectDeps_SameNWOSiblingRefsNormalizeIndependently(t *testing.T)
 	assert.Empty(t, issues)
 	assert.Equal(t, "v4.2.1", deps[0].Ref)
 	assert.Equal(t, "v21", deps[1].Ref)
-	assert.Equal(t, "actions/checkout@v21", reverseRewrites["actions/checkout@"+bareSHA])
+	assert.Equal(t, "actions/checkout@v21", reverseRewrites[dep.RefKey("actions/checkout", bareSHA)].to)
 }
 
 // An incomplete graph must not become an apparently complete lockfile.
@@ -399,8 +399,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		assert.Equal(t, sha, result.entries[0].AutoFixedRef)
 		require.Len(t, result.wplans, 1)
 		assert.Equal(t,
-			map[string]string{"actions/checkout@" + sha: "actions/checkout@v4.2.1"},
-			result.wplans[0].Rewrites,
+			map[dep.Spelling]string{"actions/checkout@" + sha: "actions/checkout@v4.2.1"}, result.wplans[0].Rewrites,
 		)
 	})
 
@@ -447,8 +446,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		assert.Equal(t, "main", result.entries[0].Ref)
 		assert.Equal(t, sha, result.entries[0].AutoFixedRef)
 		assert.Equal(t,
-			map[string]string{"actions/checkout@" + sha: "actions/checkout@main"},
-			result.wplans[0].Rewrites,
+			map[dep.Spelling]string{"actions/checkout@" + sha: "actions/checkout@main"}, result.wplans[0].Rewrites,
 		)
 	})
 
@@ -488,7 +486,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 
 		require.Len(t, result.entries, 1)
 		assert.Equal(t, "z-129", result.entries[0].Ref)
-		assert.Equal(t, map[string]string{"actions/checkout@" + sha: "actions/checkout@z-129"}, result.wplans[0].Rewrites)
+		assert.Equal(t, map[dep.Spelling]string{"actions/checkout@" + sha: "actions/checkout@z-129"}, result.wplans[0].Rewrites)
 	})
 
 	t.Run("repair preserves source NWO spelling", func(t *testing.T) {
@@ -507,8 +505,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 		require.Len(t, result.entries, 1)
 		assert.Equal(t, "v4.2.1", result.entries[0].Ref)
 		assert.Equal(t,
-			map[string]string{"Actions/Checkout@" + sha: "Actions/Checkout@v4.2.1"},
-			result.wplans[0].Rewrites,
+			map[dep.Spelling]string{"Actions/Checkout@" + sha: "Actions/Checkout@v4.2.1"}, result.wplans[0].Rewrites,
 		)
 	})
 
@@ -523,7 +520,7 @@ func TestNarrowVerifiedEntries_StickyPrecision(t *testing.T) {
 			HashAlgo: "sha1",
 		}
 		require.NoError(t, store.Set(context.Background(), "other.yml",
-			[]dep.Dependency{target}, nil, map[string]bool{target.Key(): true}))
+			[]dep.Dependency{target}, nil, map[dep.Key]bool{dep.RefKeyOf(target.Key()): true}))
 
 		report := fastPathReport(sha)
 		report.Inventory[0].Dep.Tag = target.Ref
@@ -713,7 +710,7 @@ func TestPlanNormalizationRespectsLockedTarget(t *testing.T) {
 			if tt.wantRef == headSHA {
 				assert.Empty(t, record.Workflows[1].Rewrites)
 			} else {
-				assert.Equal(t, map[string]string{tt.nwo + "@" + headSHA: tt.nwo + "@" + tt.wantRef}, record.Workflows[1].Rewrites)
+				assert.Equal(t, map[dep.Spelling]string{dep.Spelling(tt.nwo + "@" + headSHA): tt.nwo + "@" + tt.wantRef}, record.Workflows[1].Rewrites)
 			}
 		})
 	}
@@ -1098,7 +1095,7 @@ func TestNoNarrow_BareSHA(t *testing.T) {
 		assert.Equal(t, "v21", pinned[0].Tag)
 		require.Len(t, result.wplans, 1)
 		assert.Contains(t, result.wplans[0].Rewrites,
-			"actions/checkout@"+sha,
+			dep.Spelling("actions/checkout@"+sha),
 			"rewrite map should record the original SHA ref")
 	})
 
@@ -1293,7 +1290,7 @@ func TestNarrowVerifiedEntries_SHARepairFromAnyCase(t *testing.T) {
 	require.Len(t, result.entries, 1)
 	assert.Equal(t, "v6.1.0", result.entries[0].Ref)
 	require.Len(t, result.wplans, 1)
-	assert.Equal(t, map[string]string{"actions/checkout@" + upper: "actions/checkout@v6.1.0"}, result.wplans[0].Rewrites)
+	assert.Equal(t, map[dep.Spelling]string{dep.Spelling("actions/checkout@" + upper): "actions/checkout@v6.1.0"}, result.wplans[0].Rewrites)
 }
 
 // TestRejectPartialSelfActionRewrites_FullSHAInAnyCase: a rewrite of a full
@@ -1309,7 +1306,7 @@ func TestRejectPartialSelfActionRewrites_FullSHAInAnyCase(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := rejectPartialSelfActionRewrites(PlanOptions{PartialScan: true},
 				[]parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: tt.self}},
-				map[string]string{"actions/checkout@" + tt.rewritten: "actions/checkout@v6.1.0"})
+				idRewrites{dep.RefKey("actions/checkout", tt.rewritten): {from: "actions/checkout@" + tt.rewritten, to: "actions/checkout@v6.1.0"}})
 			require.ErrorContains(t, err, "shared local action during a partial workflow scan")
 		})
 	}

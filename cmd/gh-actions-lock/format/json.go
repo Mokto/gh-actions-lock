@@ -301,8 +301,8 @@ func pinsFromRecord(record *pin.Record, report *checks.Report) []Pin {
 			}
 		}
 	}
-	index := map[string]int{}
-	checked := map[string]bool{}
+	index := map[dep.Key]int{}
+	checked := map[dep.Key]bool{}
 	for _, e := range record.Entries {
 		key := dep.RefKey(e.Hostname+"/"+e.NWO, e.Ref)
 		for _, w := range e.Workflows {

@@ -25,7 +25,7 @@ func gateNoOnboard(report *checks.Report) []string {
 	var refused []string
 	for wi := range report.Workflows {
 		wr := &report.Workflows[wi]
-		refusedKeys := make(map[string]bool)
+		refusedKeys := make(map[dep.Key]bool)
 		for fi := range wr.Findings {
 			f := &wr.Findings[fi]
 			if f.Category != checks.NotPinned || f.TrackedAction {

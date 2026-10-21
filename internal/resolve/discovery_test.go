@@ -101,7 +101,7 @@ func TestResolveLockedRecursiveMissingChildDoesNotResolveLiveRef(t *testing.T) {
 	var missing *UnlockedRefError
 	require.ErrorAs(t, err, &missing)
 	assert.Equal(t, "Main", missing.Ref.Ref)
-	assert.Equal(t, []string{"o/root@v1"}, parents["o/child@Main"])
+	assert.Equal(t, []string{"o/root@v1"}, parents[dep.RefKeyOf("o/child@Main")])
 	assert.Len(t, reg.Requests, 1)
 }
 
@@ -231,7 +231,7 @@ func TestResolveRecursiveMixedCaseSiblingDoesNotCreateSelfEdge(t *testing.T) {
 			require.NoError(t, err)
 			assert.Len(t, deps, 2)
 			assert.Len(t, parents, 1, "same-tarball sibling must not produce a self-edge")
-			assert.Equal(t, []string{"o/action@Main"}, parents["vendor/child@Main"])
+			assert.Equal(t, []string{"o/action@Main"}, parents[dep.RefKeyOf("vendor/child@Main")])
 		})
 	}
 }
@@ -281,7 +281,7 @@ func TestResolveAllRecursiveCanonicalizesParentCasing(t *testing.T) {
 				{Owner: "o", Repo: "parent", Ref: "v1"},
 			})
 			require.NoError(t, err)
-			assert.Equal(t, dep.ParentMap{"vendor/child@" + ref: {"o/parent@v1"}}, parents,
+			assert.Equal(t, dep.ParentMap{dep.RefKeyOf("vendor/child@" + ref): {"o/parent@v1"}}, parents,
 				"edges are keyed by the resolved dependency, so the writer finds them; refs keep their case")
 		})
 	}

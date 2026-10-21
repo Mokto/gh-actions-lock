@@ -35,7 +35,7 @@ func refuseAmbiguousSpellings(parsed []checks.ParsedWorkflow, store *lockfile.St
 			reached = append(reached, lp.Key)
 			reached = append(reached, lp.Action.Uses...)
 		}
-		reported := map[string]bool{}
+		reported := map[dep.Key]bool{}
 		wr := &report.Workflows[i]
 		for _, r := range reached {
 			nwo, ref, _ := strings.Cut(r, "@")

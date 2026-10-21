@@ -172,7 +172,7 @@ func (g *Graph) Flatten() ([]dep.Dependency, dep.ParentMap, error) {
 // FlattenPlanned's result; callers compare them and hand them back in
 // Decisions, and can't build one from a spelling of their own.
 type EntryKey struct {
-	key string
+	key dep.Key
 }
 
 // Entry is one lockfile entry the graph produced.
@@ -337,10 +337,10 @@ func (g *Graph) FlattenPlanned(d Decisions) (entries []Entry, parents dep.Parent
 		for _, c := range children(it) {
 			ck := name(c)
 			// Sub-actions of one owner/repo@ref share its lockfile entry.
-			if sameEntry(ck, pk) || slices.Contains(parents[ck], pk) {
+			if sameEntry(ck, pk) || slices.Contains(parents[dep.RefKeyOf(ck)], pk) {
 				continue
 			}
-			parents[ck] = append(parents[ck], pk)
+			parents[dep.RefKeyOf(ck)] = append(parents[dep.RefKeyOf(ck)], pk)
 		}
 	}
 	entries = make([]Entry, len(deps))

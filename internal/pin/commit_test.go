@@ -78,7 +78,7 @@ func TestBuildParentMap(t *testing.T) {
 	}
 
 	pm := buildParentMap(rec, "ci.yml")
-	assert.Equal(t, []string{"parent/action@v2"}, pm["a/b@v1"])
+	assert.Equal(t, []string{"parent/action@v2"}, pm[dep.RefKeyOf("a/b@v1")])
 	assert.NotContains(t, pm, "c/d@v2", "entries without RequiredBy should not appear")
 	assert.NotContains(t, pm, "e/f@v3", "investigate entries should be excluded")
 }
@@ -104,7 +104,7 @@ func TestBuildDirectKeys(t *testing.T) {
 	}
 
 	keys := buildDirectKeys(rec, "ci.yml")
-	assert.True(t, keys["a/b@v1"])
+	assert.True(t, keys[dep.RefKeyOf("a/b@v1")])
 	assert.NotContains(t, keys, "c/d@v2", "non-direct should be excluded")
 	assert.NotContains(t, keys, "e/f@v3", "wrong workflow should be excluded")
 	assert.NotContains(t, keys, "g/h@v4", "investigate should be excluded")
@@ -178,10 +178,10 @@ func TestCommitSkipNewWorkflowEntriesPreventsRewrites(t *testing.T) {
 	require.NoError(t, err)
 	rec := &Record{Workflows: []WorkflowPlan{{
 		Path:            workflowPath,
-		Rewrites:        map[string]string{oldUses: newUses},
+		Rewrites:        map[dep.Spelling]string{dep.Spelling(oldUses): newUses},
 		SelfActionFiles: []string{actionPath},
 		// A skipped workflow's required rewrites must not fail the run.
-		RequiredRewrites: map[string]string{"gone/action@v1": "new/action@v1"},
+		RequiredRewrites: map[dep.Spelling]string{"gone/action@v1": "new/action@v1"},
 	}}}
 
 	require.NoError(t, Commit(context.Background(), rec, store, &CommitOptions{SkipNewWorkflowEntries: true}))
@@ -211,7 +211,7 @@ func TestValidateRequiredRewritesRecordsFiles(t *testing.T) {
 	plans := []WorkflowPlan{{
 		Path:             workflowPath,
 		SelfActionFiles:  []string{actionPath},
-		RequiredRewrites: map[string]string{"old/action@v1": "new/action@v1"},
+		RequiredRewrites: map[dep.Spelling]string{"old/action@v1": "new/action@v1"},
 	}}
 	require.NoError(t, validateRequiredRewrites(plans))
 	assert.Equal(t, []string{actionPath}, plans[0].RewrittenIn["old/action@v1"])
@@ -236,8 +236,8 @@ jobs:
 	keep := dep.Dependency{NWO: "actions/checkout", Ref: "v7", SHA: strings.Repeat("3", 40), HashAlgo: "sha1"}
 	require.NoError(t, store.Set(context.Background(), workflowfile.KeyFromPath(workflowPath),
 		[]dep.Dependency{oldParent, oldChild, keep},
-		map[string][]string{oldChild.Key(): {oldParent.Key()}},
-		map[string]bool{oldParent.Key(): true, keep.Key(): true}))
+		dep.ParentMap{dep.RefKeyOf(oldChild.Key()): {oldParent.Key()}},
+		map[dep.Key]bool{dep.RefKeyOf(oldParent.Key()): true, dep.RefKeyOf(keep.Key()): true}))
 	require.NoError(t, store.Save())
 
 	rec := &Record{
@@ -292,8 +292,8 @@ jobs:
 	}
 	require.NoError(t, store.Set(context.Background(), workflowfile.KeyFromPath(workflowPath),
 		[]dep.Dependency{parent, child},
-		map[string][]string{child.Key(): {parent.Key()}},
-		map[string]bool{parent.Key(): true}))
+		dep.ParentMap{dep.RefKeyOf(child.Key()): {parent.Key()}},
+		map[dep.Key]bool{dep.RefKeyOf(parent.Key()): true}))
 	require.NoError(t, store.Save())
 
 	rec := &Record{
@@ -308,8 +308,8 @@ jobs:
 		}},
 		Workflows: []WorkflowPlan{{
 			Path: workflowPath,
-			Rewrites: map[string]string{
-				parent.NWO + "@" + tagObjectSHA: parent.NWO + "@v3.2.0",
+			Rewrites: map[dep.Spelling]string{
+				dep.Spelling(parent.NWO + "@" + tagObjectSHA): parent.NWO + "@v3.2.0",
 			},
 		}},
 	}
@@ -342,7 +342,7 @@ func TestCommitRejectedEntryRefWritesNothing(t *testing.T) {
 		}},
 		Workflows: []WorkflowPlan{{
 			Path:     workflowPath,
-			Rewrites: map[string]string{"actions/checkout@" + sha: "actions/checkout@release-g1234"},
+			Rewrites: map[dep.Spelling]string{dep.Spelling("actions/checkout@" + sha): "actions/checkout@release-g1234"},
 		}},
 	}
 
@@ -436,7 +436,7 @@ func TestCommitUsesCycleRewritesNothing(t *testing.T) {
 			{NWO: "acme/a", Ref: "v1", SHA: strings.Repeat("a", 40), Resolution: Pinned, Direct: true, OnBranch: "main", Workflows: []string{workflowPath}, RequiredBy: []string{"acme/b@v1"}},
 			{NWO: "acme/b", Ref: "v1", SHA: strings.Repeat("b", 40), Resolution: Pinned, OnBranch: "main", Workflows: []string{workflowPath}, RequiredBy: []string{"acme/a@v1"}},
 		},
-		Workflows: []WorkflowPlan{{Path: workflowPath, Rewrites: map[string]string{oldUses: "acme/a@v1"}}},
+		Workflows: []WorkflowPlan{{Path: workflowPath, Rewrites: map[dep.Spelling]string{dep.Spelling(oldUses): "acme/a@v1"}}},
 	}
 
 	err = Commit(context.Background(), rec, store, nil)
@@ -460,7 +460,7 @@ func TestRetainUnresolvablePinsKeepsRefCasing(t *testing.T) {
 
 	rec := &Record{Entries: []Entry{{NWO: "O/A", Ref: "main", Resolution: Unresolved, Workflows: []string{wfPath}}}}
 	resolved := dep.Dependency{NWO: "o/a", Ref: "Main", SHA: strings.Repeat("b", 40)}
-	got := retainUnresolvablePins(rec, store, wfPath, []dep.Dependency{resolved}, map[string]bool{resolved.Key(): true})
+	got := retainUnresolvablePins(rec, store, wfPath, []dep.Dependency{resolved}, map[dep.Key]bool{dep.RefKeyOf(resolved.Key()): true})
 
 	var keys []string
 	for _, d := range got {
@@ -487,12 +487,12 @@ func TestCommitRejectsIncompleteClosure(t *testing.T) {
 	child := dep.Dependency{NWO: "o/child", Ref: "v1", Branch: "main", SHA: strings.Repeat("b", 40), HashAlgo: "sha1"}
 	grandchild := dep.Dependency{NWO: "o/grandchild", Ref: "v1", Branch: "main", SHA: strings.Repeat("c", 40), HashAlgo: "sha1"}
 	require.NoError(t, store.Set(context.Background(), ".github/workflows/other.yml", []dep.Dependency{root, child, grandchild},
-		dep.ParentMap{child.Key(): {root.Key()}, grandchild.Key(): {child.Key()}}, map[string]bool{root.Key(): true}))
+		dep.ParentMap{dep.RefKeyOf(child.Key()): {root.Key()}, dep.RefKeyOf(grandchild.Key()): {child.Key()}}, map[dep.Key]bool{dep.RefKeyOf(root.Key()): true}))
 	delete(store.File().Dependencies, "o/grandchild@v1")
 
 	rec := &Record{
 		Entries:   []Entry{{NWO: "o/root", Ref: "v1", SHA: root.SHA, Resolution: Pinned, Direct: true, OnBranch: "main", Workflows: []string{workflowPath}}},
-		Workflows: []WorkflowPlan{{Path: workflowPath, Rewrites: map[string]string{oldUses: "o/root@v1"}}},
+		Workflows: []WorkflowPlan{{Path: workflowPath, Rewrites: map[dep.Spelling]string{dep.Spelling(oldUses): "o/root@v1"}}},
 	}
 	err = Commit(context.Background(), rec, store, nil)
 	require.ErrorIs(t, err, lockfile.ErrIncompleteGraph)
@@ -516,7 +516,7 @@ func TestRetainUnresolvablePinsReachesFullSHAInAnyCase(t *testing.T) {
 	require.NoError(t, store.Set(context.Background(), workflowfile.KeyFromPath(wfPath), []dep.Dependency{recorded}, nil, nil))
 
 	rec := &Record{Entries: []Entry{{NWO: "o/a", Ref: strings.ToUpper(sha), Resolution: Unresolved, Workflows: []string{wfPath}}}}
-	got := retainUnresolvablePins(rec, store, wfPath, nil, map[string]bool{})
+	got := retainUnresolvablePins(rec, store, wfPath, nil, map[dep.Key]bool{})
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "o/a@"+sha, got[0].Key())

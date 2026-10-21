@@ -27,7 +27,7 @@ type DirectTracker struct {
 // NewDirectTracker records which entries of deps match one of the workflow's
 // direct refs, by NWO@Ref, at the deps' current (pre-mutation) refs.
 func NewDirectTracker(refs []parserlock.ActionRef, deps []dep.Dependency) DirectTracker {
-	want := make(map[string]bool, len(refs))
+	want := make(map[dep.Key]bool, len(refs))
 	for _, ref := range refs {
 		want[directKey(ref.NWO(), ref.Ref)] = true
 	}
@@ -44,7 +44,7 @@ func NewDirectTracker(refs []parserlock.ActionRef, deps []dep.Dependency) Direct
 // directKey folds owner/repo case, and ref case only for full SHAs, so a
 // workflow's Actions/Checkout matches the resolver's case-folded
 // actions/checkout dep. Other refs stay case-sensitive like git.
-func directKey(nwo, ref string) string {
+func directKey(nwo, ref string) dep.Key {
 	return dep.RefKey(nwo, ref)
 }
 
@@ -57,11 +57,11 @@ func (t DirectTracker) IsDirect(i int) bool {
 
 // Keys returns the set of workflow-direct NWO@Ref keys, reading each dep's
 // current (post-mutation) Key() from the supplied index-aligned slice.
-func (t DirectTracker) Keys(deps []dep.Dependency) map[string]bool {
-	out := make(map[string]bool, len(deps))
+func (t DirectTracker) Keys(deps []dep.Dependency) map[dep.Key]bool {
+	out := make(map[dep.Key]bool, len(deps))
 	for i, d := range deps {
 		if i < len(t.direct) && t.direct[i] {
-			out[d.Key()] = true
+			out[d.ID()] = true
 		}
 	}
 	return out

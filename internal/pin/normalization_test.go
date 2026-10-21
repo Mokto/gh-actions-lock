@@ -169,7 +169,7 @@ func TestPlanNormalizationRetainsSharedTargets(t *testing.T) {
 			if tt.transitive {
 				root = dep.Dependency{Hostname: "github.com", NWO: "owner/composite", Ref: "v1.0.0", SHA: "cccccccccccccccccccccccccccccccccccccccc"}
 				deps = append(deps, root)
-				parents = dep.ParentMap{locked.Key(): {root.Key()}}
+				parents = dep.ParentMap{dep.RefKeyOf(locked.Key()): {root.Key()}}
 			}
 			require.NoError(t, store.Set(ctx, protected.Path, deps, parents, nil))
 			protected.Inventory = []checks.InventoryEntry{{Dep: root, Direct: true}}

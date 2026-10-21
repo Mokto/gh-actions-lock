@@ -1,6 +1,10 @@
 package checks
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/github/gh-actions-lock/internal/dep"
+)
 
 // Deferred is a finding on a recorded lock entry that parity excused or
 // accepted because the run should replace or remove the entry. It holds
@@ -64,7 +68,7 @@ func sameDependency(a, b Finding) bool {
 	if a.Dependency == nil || b.Dependency == nil {
 		return false
 	}
-	return a.Dependency.Key() == b.Dependency.Key() && a.Dependency.SHA == b.Dependency.SHA
+	return a.Dependency.ID() == b.Dependency.ID() && dep.SameRef(a.Dependency.SHA, b.Dependency.SHA)
 }
 
 // VerifiedKey identifies a commit this run checked for an on-disk key.

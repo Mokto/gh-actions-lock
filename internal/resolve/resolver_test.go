@@ -88,7 +88,7 @@ func TestResolveAllRecursiveWithCacheAndCompositeExpansion(t *testing.T) {
 
 	// Verify parentMap tracks the child dep key → parent dep key.
 	pm := parentMapForTest
-	parents, ok := pm["actions/setup-go@v6"]
+	parents, ok := pm[dep.RefKeyOf("actions/setup-go@v6")]
 	if !ok || len(parents) != 1 || parents[0] != "owner/composite@v1" {
 		t.Fatalf("expected parentMap to map actions/setup-go@v6 → [owner/composite@v1], got %v", pm)
 	}
@@ -136,7 +136,7 @@ jobs:
 	assert.ElementsMatch(t, []string{
 		"actions/checkout@v6", "actions/setup-node@v6", "owner/composite@v1", "actions/setup-go@v6",
 	}, keys)
-	assert.Equal(t, []string{"owner/composite@v1"}, parentMap["actions/setup-go@v6"])
+	assert.Equal(t, []string{"owner/composite@v1"}, parentMap[dep.RefKeyOf("actions/setup-go@v6")])
 }
 
 func TestResolveAllRecursiveMultipleParents(t *testing.T) {
@@ -170,7 +170,7 @@ func TestResolveAllRecursiveMultipleParents(t *testing.T) {
 	}
 
 	pm := parentMapForTest
-	parents, ok := pm["shared/dep@v1"]
+	parents, ok := pm[dep.RefKeyOf("shared/dep@v1")]
 	if !ok {
 		t.Fatal("expected parentMap to contain shared/dep@v1")
 	}
@@ -242,15 +242,15 @@ func TestResolveAllRecursiveDeepNestedComposites(t *testing.T) {
 	}
 
 	pm := parentMapForTest
-	if got := pm["owner/b@v1"]; len(got) != 1 || got[0] != "owner/a@v1" {
+	if got := pm[dep.RefKeyOf("owner/b@v1")]; len(got) != 1 || got[0] != "owner/a@v1" {
 		t.Errorf("expected owner/b@v1 parent = [owner/a@v1], got %v", got)
 	}
-	if got := pm["owner/c@v1"]; len(got) != 1 || got[0] != "owner/b@v1" {
+	if got := pm[dep.RefKeyOf("owner/c@v1")]; len(got) != 1 || got[0] != "owner/b@v1" {
 		t.Errorf("expected owner/c@v1 parent = [owner/b@v1], got %v", got)
 	}
 	// Root has no parents (workflow-direct).
-	if _, ok := pm["owner/a@v1"]; ok {
-		t.Errorf("expected owner/a@v1 to have no parents, got %v", pm["owner/a@v1"])
+	if _, ok := pm[dep.RefKeyOf("owner/a@v1")]; ok {
+		t.Errorf("expected owner/a@v1 to have no parents, got %v", pm[dep.RefKeyOf("owner/a@v1")])
 	}
 }
 
@@ -276,7 +276,7 @@ func TestResolveAllRecursiveSkipsSelfReference(t *testing.T) {
 		t.Fatalf("expected single dep (no self-loop expansion), got %d: %+v", len(deps), deps)
 	}
 	pm := parentMapForTest
-	if parents, ok := pm["owner/repo@main"]; ok {
+	if parents, ok := pm[dep.RefKeyOf("owner/repo@main")]; ok {
 		t.Errorf("expected no self-parent for owner/repo@main, got %v", parents)
 	}
 }
@@ -334,13 +334,13 @@ func TestResolveAllRecursiveSiblingSubpathTransitive(t *testing.T) {
 
 	pm := parentMapForTest
 	// The same-tarball edge must NOT create a self-parent on the tarball.
-	for _, p := range pm["org/fixtures@main"] {
+	for _, p := range pm[dep.RefKeyOf("org/fixtures@main")] {
 		if p == "org/fixtures@main" {
-			t.Errorf("unexpected same-tarball self-parent edge on org/fixtures@main: %v", pm["org/fixtures@main"])
+			t.Errorf("unexpected same-tarball self-parent edge on org/fixtures@main: %v", pm[dep.RefKeyOf("org/fixtures@main")])
 		}
 	}
 	// org/fixtures-b's parent is the shared tarball.
-	if got := pm["org/fixtures-b@main"]; len(got) != 1 || got[0] != "org/fixtures@main" {
+	if got := pm[dep.RefKeyOf("org/fixtures-b@main")]; len(got) != 1 || got[0] != "org/fixtures@main" {
 		t.Errorf("expected org/fixtures-b@main parent = [org/fixtures@main], got %v", got)
 	}
 }
@@ -397,12 +397,12 @@ func TestResolveAllRecursiveSelfRepositoryNestedInComposite(t *testing.T) {
 	}
 
 	pm := parentMapForTest
-	for _, p := range pm["org/fixtures@main"] {
+	for _, p := range pm[dep.RefKeyOf("org/fixtures@main")] {
 		if p == "org/fixtures@main" {
-			t.Errorf("unexpected same-tarball self-parent edge on org/fixtures@main: %v", pm["org/fixtures@main"])
+			t.Errorf("unexpected same-tarball self-parent edge on org/fixtures@main: %v", pm[dep.RefKeyOf("org/fixtures@main")])
 		}
 	}
-	if got := pm["org/fixtures-b@main"]; len(got) != 1 || got[0] != "org/fixtures@main" {
+	if got := pm[dep.RefKeyOf("org/fixtures-b@main")]; len(got) != 1 || got[0] != "org/fixtures@main" {
 		t.Errorf("expected org/fixtures-b@main parent = [org/fixtures@main], got %v", got)
 	}
 }
@@ -579,9 +579,9 @@ func TestResolveAllRecursiveSelfRepositoryDeepMultiLevel(t *testing.T) {
 
 	// `$/` siblings must never manufacture a self-parent edge on their tarball.
 	for _, tarball := range []string{"org/app@main", "vendor/x@main"} {
-		for _, p := range parentMap[tarball] {
+		for _, p := range parentMap[dep.RefKeyOf(tarball)] {
 			if p == tarball {
-				t.Errorf("unexpected self-parent edge on %s: %v", tarball, parentMap[tarball])
+				t.Errorf("unexpected self-parent edge on %s: %v", tarball, parentMap[dep.RefKeyOf(tarball)])
 			}
 		}
 	}
@@ -608,16 +608,16 @@ func keysOf(m map[string]bool) []string {
 func assertParents(t *testing.T, pm dep.ParentMap, child string, want []string) {
 	t.Helper()
 	got := map[string]bool{}
-	for _, p := range pm[child] {
+	for _, p := range pm[dep.RefKeyOf(child)] {
 		got[p] = true
 	}
 	if len(got) != len(want) {
-		t.Errorf("%s: expected parents %v, got %v", child, want, pm[child])
+		t.Errorf("%s: expected parents %v, got %v", child, want, pm[dep.RefKeyOf(child)])
 		return
 	}
 	for _, w := range want {
 		if !got[w] {
-			t.Errorf("%s: expected parent %q among %v", child, w, pm[child])
+			t.Errorf("%s: expected parent %q among %v", child, w, pm[dep.RefKeyOf(child)])
 		}
 	}
 }
@@ -677,11 +677,11 @@ func TestResolveAllRecursiveCrossRefTransitive(t *testing.T) {
 	}
 
 	// org/fixtures@main's parent is org/fixtures@updated
-	if got := pm["org/fixtures@main"]; len(got) != 1 || got[0] != "org/fixtures@updated" {
+	if got := pm[dep.RefKeyOf("org/fixtures@main")]; len(got) != 1 || got[0] != "org/fixtures@updated" {
 		t.Errorf("expected org/fixtures@main parent = [org/fixtures@updated], got %v", got)
 	}
 	// org/fixtures-b@main's parent is org/fixtures@main
-	if got := pm["org/fixtures-b@main"]; len(got) != 1 || got[0] != "org/fixtures@main" {
+	if got := pm[dep.RefKeyOf("org/fixtures-b@main")]; len(got) != 1 || got[0] != "org/fixtures@main" {
 		t.Errorf("expected org/fixtures-b@main parent = [org/fixtures@main], got %v", got)
 	}
 }
@@ -713,12 +713,12 @@ func TestResolveAllRecursiveTerminatesOnCycle(t *testing.T) {
 
 	pm := parentMapForTest
 	// A is parent of B (A uses B).
-	if got := pm["owner/b@v1"]; len(got) != 1 || got[0] != "owner/a@v1" {
+	if got := pm[dep.RefKeyOf("owner/b@v1")]; len(got) != 1 || got[0] != "owner/a@v1" {
 		t.Errorf("expected owner/b@v1 parent = [owner/a@v1], got %v", got)
 	}
 	// B→A edge: B uses A, but A was already resolved at depth 0. The
 	// back-edge is still recorded.
-	if got := pm["owner/a@v1"]; len(got) != 1 || got[0] != "owner/b@v1" {
+	if got := pm[dep.RefKeyOf("owner/a@v1")]; len(got) != 1 || got[0] != "owner/b@v1" {
 		t.Errorf("expected owner/a@v1 parent = [owner/b@v1] (back-edge), got %v", got)
 	}
 }
@@ -1356,7 +1356,7 @@ func TestResolveAllRecursivePartialFailureBFSContinues(t *testing.T) {
 	}
 
 	// ParentMap should record the transitive edge.
-	parents, ok := pm["other/action@main"]
+	parents, ok := pm[dep.RefKeyOf("other/action@main")]
 	if !ok || len(parents) == 0 {
 		t.Fatalf("expected parentMap entry for other/action@main, got %v", pm)
 	}

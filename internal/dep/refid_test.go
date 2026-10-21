@@ -42,6 +42,36 @@ func TestRefKey(t *testing.T) {
 	}
 }
 
+func TestNewRef(t *testing.T) {
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	for _, tt := range []struct {
+		name string
+		a, b string
+		same bool
+	}{
+		{name: "full SHA in any case", a: strings.ToUpper(sha), b: sha, same: true},
+		{name: "mixed-case full SHA", a: "AbCdEf" + sha[6:], b: sha, same: true},
+		{name: "branch case is another ref", a: "Main", b: "main"},
+		{name: "tag case is another ref", a: "V1", b: "v1"},
+		{name: "short hex is a name", a: "ABCDEF0", b: "abcdef0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.same, NewRef(tt.a) == NewRef(tt.b))
+			assert.Equal(t, tt.same, SameRef(tt.a, tt.b))
+		})
+	}
+	assert.Equal(t, sha, NewRef(strings.ToUpper(sha)).String(), "a full SHA is spelled lowercase")
+	assert.Equal(t, "Main", NewRef("Main").String(), "a branch keeps its case")
+	assert.Equal(t, NewCommit("abc"), NewCommit("ABC"), "a commit ID folds at any length")
+}
+
+func TestKeyCompare(t *testing.T) {
+	a, b := RefKey("o/a", "v1"), RefKey("o/b", "v1")
+	assert.Negative(t, a.Compare(b))
+	assert.Zero(t, a.Compare(RefKey("O/A", "v1")))
+	assert.Equal(t, "o/a@v1", RefKey("O/A", "v1").String())
+}
+
 // keyFactories are the exported constructors of a non-E2 key, mapped to the
 // package directories allowed to call them. Any other caller could build a
 // key from one source's spelling and compare it with another source's,

@@ -130,16 +130,16 @@ func TestState_DoesNotMergeImplicitSHAEdges(t *testing.T) {
 		SHA: "2222222222222222222222222222222222222222", HashAlgo: "sha1",
 	}
 	ctx := context.Background()
-	if err := store.Set(ctx, "symbolic.yml", []dep.Dependency{symbolic}, nil, map[string]bool{symbolic.Key(): true}); err != nil {
+	if err := store.Set(ctx, "symbolic.yml", []dep.Dependency{symbolic}, nil, map[dep.Key]bool{dep.RefKeyOf(symbolic.Key()): true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Set(ctx, "sha.yml", []dep.Dependency{shaParent, child},
-		map[string][]string{child.Key(): {shaParent.Key()}},
-		map[string]bool{shaParent.Key(): true}); err != nil {
+		dep.ParentMap{dep.RefKeyOf(child.Key()): {shaParent.Key()}},
+		map[dep.Key]bool{dep.RefKeyOf(shaParent.Key()): true}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := store.Set(ctx, "symbolic.yml", []dep.Dependency{symbolic}, nil, map[string]bool{symbolic.Key(): true}); err != nil {
+	if err := store.Set(ctx, "symbolic.yml", []dep.Dependency{symbolic}, nil, map[dep.Key]bool{dep.RefKeyOf(symbolic.Key()): true}); err != nil {
 		t.Fatal(err)
 	}
 	store.PruneWorkflows(map[string]bool{"symbolic.yml": true})
@@ -259,12 +259,12 @@ func TestState_DiamondTransitiveDepEmittedCorrectly(t *testing.T) {
 		{NWO: "owner/b", Ref: "v1", SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", HashAlgo: "sha1", Branch: "main"},
 		{NWO: "shared/dep", Ref: "v1", SHA: "cccccccccccccccccccccccccccccccccccccccc", HashAlgo: "sha1", Branch: "main"},
 	}
-	parentMap := map[string][]string{
-		"shared/dep@v1": {"owner/a@v1", "owner/b@v1"},
+	parentMap := dep.ParentMap{
+		dep.RefKeyOf("shared/dep@v1"): {"owner/a@v1", "owner/b@v1"},
 	}
-	directKeys := map[string]bool{
-		"owner/a@v1": true,
-		"owner/b@v1": true,
+	directKeys := map[dep.Key]bool{
+		dep.RefKeyOf("owner/a@v1"): true,
+		dep.RefKeyOf("owner/b@v1"): true,
 	}
 
 	if err := store.Set(context.Background(), ".github/workflows/ci.yml", deps, parentMap, directKeys); err != nil {
@@ -341,12 +341,12 @@ func TestState_SaveRejectsCyclicUses(t *testing.T) {
 		{NWO: "owner/b", Ref: "v1", SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", HashAlgo: "sha1", Branch: "main"},
 	}
 	// Cyclic parentMap: A is parent of B, B is parent of A.
-	parentMap := map[string][]string{
-		"owner/b@v1": {"owner/a@v1"},
-		"owner/a@v1": {"owner/b@v1"},
+	parentMap := dep.ParentMap{
+		dep.RefKeyOf("owner/b@v1"): {"owner/a@v1"},
+		dep.RefKeyOf("owner/a@v1"): {"owner/b@v1"},
 	}
-	directKeys := map[string]bool{
-		"owner/a@v1": true,
+	directKeys := map[dep.Key]bool{
+		dep.RefKeyOf("owner/a@v1"): true,
 	}
 
 	if err := store.Set(context.Background(), ".github/workflows/ci.yml", deps, parentMap, directKeys); err != nil {
@@ -383,13 +383,13 @@ func TestState_SaveIsByteDeterministic(t *testing.T) {
 		{NWO: "shared/dep", Ref: "v3", SHA: "cccccccccccccccccccccccccccccccccccccccc", HashAlgo: "sha1", Branch: "main"},
 		{NWO: "owner/extra", Ref: "v4", SHA: "dddddddddddddddddddddddddddddddddddddddd", HashAlgo: "sha1", Branch: "main"},
 	}
-	parentMap := map[string][]string{
-		"shared/dep@v3": {"owner/a@v1", "owner/b@v2"},
+	parentMap := dep.ParentMap{
+		dep.RefKeyOf("shared/dep@v3"): {"owner/a@v1", "owner/b@v2"},
 	}
-	directKeys := map[string]bool{
-		"owner/a@v1":     true,
-		"owner/b@v2":     true,
-		"owner/extra@v4": true,
+	directKeys := map[dep.Key]bool{
+		dep.RefKeyOf("owner/a@v1"):     true,
+		dep.RefKeyOf("owner/b@v2"):     true,
+		dep.RefKeyOf("owner/extra@v4"): true,
 	}
 
 	build := func() []byte {
@@ -527,8 +527,8 @@ func setupClosure(t *testing.T, dir string) {
 		{NWO: "actions/setup-go", Ref: "v6", Branch: "main", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", HashAlgo: "sha1"},
 		{NWO: "actions/cache", Ref: "v4", Branch: "main", SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", HashAlgo: "sha1"},
 	}
-	parentMap := map[string][]string{"actions/cache@v4": {"actions/setup-go@v6"}}
-	directKeys := map[string]bool{"actions/setup-go@v6": true}
+	parentMap := dep.ParentMap{dep.RefKeyOf("actions/cache@v4"): {"actions/setup-go@v6"}}
+	directKeys := map[dep.Key]bool{dep.RefKeyOf("actions/setup-go@v6"): true}
 	if err := store.Set(context.Background(), ".github/workflows/ci.yml", deps, parentMap, directKeys); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -539,7 +539,7 @@ func setupClosure(t *testing.T, dir string) {
 
 // resaveBumped reloads the store from disk (as `update` does), replaces the
 // given workflow's closure, and saves — returning the new on-disk bytes.
-func resaveBumped(t *testing.T, dir, wfKey string, deps []dep.Dependency, pm map[string][]string, direct map[string]bool) []byte {
+func resaveBumped(t *testing.T, dir, wfKey string, deps []dep.Dependency, pm dep.ParentMap, direct map[dep.Key]bool) []byte {
 	t.Helper()
 	store, err := LoadState(dir, fakeMetadataResolver{})
 	if err != nil {
@@ -581,7 +581,7 @@ func TestState_BumpYieldsMinimalDiff(t *testing.T) {
 		{NWO: "owner/b", Ref: "v2", SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", HashAlgo: "sha1", Branch: "main"},
 		{NWO: "owner/c", Ref: "v3", SHA: "cccccccccccccccccccccccccccccccccccccccc", HashAlgo: "sha1", Branch: "main"},
 	}
-	direct := map[string]bool{"owner/a@v1": true, "owner/b@v2": true, "owner/c@v3": true}
+	direct := map[dep.Key]bool{dep.RefKeyOf("owner/a@v1"): true, dep.RefKeyOf("owner/b@v2"): true, dep.RefKeyOf("owner/c@v3"): true}
 
 	store, err := LoadState(dir, fakeMetadataResolver{})
 	if err != nil {
@@ -603,7 +603,7 @@ func TestState_BumpYieldsMinimalDiff(t *testing.T) {
 		{NWO: "owner/b", Ref: "v6", SHA: "9999999999999999999999999999999999999999", HashAlgo: "sha1", Branch: "main"},
 		base[2],
 	}
-	bumpedDirect := map[string]bool{"owner/a@v1": true, "owner/b@v6": true, "owner/c@v3": true}
+	bumpedDirect := map[dep.Key]bool{dep.RefKeyOf("owner/a@v1"): true, dep.RefKeyOf("owner/b@v6"): true, dep.RefKeyOf("owner/c@v3"): true}
 	after := resaveBumped(t, dir, ".github/workflows/ci.yml", bumped, nil, bumpedDirect)
 
 	beforeLines := lineSet(before)
@@ -638,8 +638,8 @@ func TestState_BumpTransitiveRemoval(t *testing.T) {
 			{NWO: "owner/a", Ref: "v1", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", HashAlgo: "sha1", Branch: "main"},
 			{NWO: "trans/x", Ref: "v1", SHA: "1111111111111111111111111111111111111111", HashAlgo: "sha1", Branch: "main"},
 		}
-		pm := map[string][]string{"trans/x@v1": {"owner/a@v1"}}
-		direct := map[string]bool{"owner/a@v1": true}
+		pm := dep.ParentMap{dep.RefKeyOf("trans/x@v1"): {"owner/a@v1"}}
+		direct := map[dep.Key]bool{dep.RefKeyOf("owner/a@v1"): true}
 		if err := store.Set(context.Background(), ".github/workflows/ci.yml", deps, pm, direct); err != nil {
 			t.Fatal(err)
 		}
@@ -651,7 +651,7 @@ func TestState_BumpTransitiveRemoval(t *testing.T) {
 		bumped := []dep.Dependency{
 			{NWO: "owner/a", Ref: "v2", SHA: "2222222222222222222222222222222222222222", HashAlgo: "sha1", Branch: "main"},
 		}
-		after := resaveBumped(t, dir, ".github/workflows/ci.yml", bumped, nil, map[string]bool{"owner/a@v2": true})
+		after := resaveBumped(t, dir, ".github/workflows/ci.yml", bumped, nil, map[dep.Key]bool{dep.RefKeyOf("owner/a@v2"): true})
 		if strings.Contains(string(after), "trans/x@v1") {
 			t.Fatalf("expected orphaned transitive trans/x@v1 to be GC'd, got:\n%s", after)
 		}
@@ -675,10 +675,10 @@ func TestState_BumpTransitiveRemoval(t *testing.T) {
 			{NWO: "owner/b", Ref: "v1", SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", HashAlgo: "sha1", Branch: "main"},
 			shared,
 		}
-		if err := store.Set(context.Background(), ".github/workflows/ci.yml", ci, map[string][]string{"shared/s@v1": {"owner/a@v1"}}, map[string]bool{"owner/a@v1": true}); err != nil {
+		if err := store.Set(context.Background(), ".github/workflows/ci.yml", ci, dep.ParentMap{dep.RefKeyOf("shared/s@v1"): {"owner/a@v1"}}, map[dep.Key]bool{dep.RefKeyOf("owner/a@v1"): true}); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Set(context.Background(), ".github/workflows/release.yml", rel, map[string][]string{"shared/s@v1": {"owner/b@v1"}}, map[string]bool{"owner/b@v1": true}); err != nil {
+		if err := store.Set(context.Background(), ".github/workflows/release.yml", rel, dep.ParentMap{dep.RefKeyOf("shared/s@v1"): {"owner/b@v1"}}, map[dep.Key]bool{dep.RefKeyOf("owner/b@v1"): true}); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.Save(); err != nil {
@@ -694,7 +694,7 @@ func TestState_BumpTransitiveRemoval(t *testing.T) {
 		bumped := []dep.Dependency{
 			{NWO: "owner/a", Ref: "v2", SHA: "2222222222222222222222222222222222222222", HashAlgo: "sha1", Branch: "main"},
 		}
-		after := resaveBumped(t, dir, ".github/workflows/ci.yml", bumped, nil, map[string]bool{"owner/a@v2": true})
+		after := resaveBumped(t, dir, ".github/workflows/ci.yml", bumped, nil, map[dep.Key]bool{dep.RefKeyOf("owner/a@v2"): true})
 
 		if !strings.Contains(string(after), sharedPin) {
 			t.Fatalf("shared transitive still used by release.yml must be preserved, got:\n%s", after)
@@ -721,11 +721,11 @@ func TestState_BumpTransitiveRemoval(t *testing.T) {
 			{NWO: "mid/m", Ref: "v1", SHA: "3333333333333333333333333333333333333333", HashAlgo: "sha1", Branch: "main"},
 			{NWO: "leaf/l", Ref: "v1", SHA: "4444444444444444444444444444444444444444", HashAlgo: "sha1", Branch: "main"},
 		}
-		pm := map[string][]string{
-			"mid/m@v1":  {"owner/a@v1"},
-			"leaf/l@v1": {"mid/m@v1"},
+		pm := dep.ParentMap{
+			dep.RefKeyOf("mid/m@v1"):  {"owner/a@v1"},
+			dep.RefKeyOf("leaf/l@v1"): {"mid/m@v1"},
 		}
-		if err := store.Set(context.Background(), ".github/workflows/ci.yml", deps, pm, map[string]bool{"owner/a@v1": true}); err != nil {
+		if err := store.Set(context.Background(), ".github/workflows/ci.yml", deps, pm, map[dep.Key]bool{dep.RefKeyOf("owner/a@v1"): true}); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.Save(); err != nil {
@@ -735,7 +735,7 @@ func TestState_BumpTransitiveRemoval(t *testing.T) {
 		bumped := []dep.Dependency{
 			{NWO: "owner/a", Ref: "v2", SHA: "2222222222222222222222222222222222222222", HashAlgo: "sha1", Branch: "main"},
 		}
-		after := resaveBumped(t, dir, ".github/workflows/ci.yml", bumped, nil, map[string]bool{"owner/a@v2": true})
+		after := resaveBumped(t, dir, ".github/workflows/ci.yml", bumped, nil, map[dep.Key]bool{dep.RefKeyOf("owner/a@v2"): true})
 		if strings.Contains(string(after), "mid/m@v1") || strings.Contains(string(after), "leaf/l@v1") {
 			t.Fatalf("expected whole orphaned subgraph (mid/m, leaf/l) to be GC'd, got:\n%s", after)
 		}
@@ -790,8 +790,8 @@ func TestState_SaveFormatIsStable(t *testing.T) {
 		{NWO: "actions/setup-go", Ref: "v5", SHA: "22222222222222222222222222222222222222bb", HashAlgo: "sha1", Branch: "main"},
 		{NWO: "shared/dep", Ref: "v1", SHA: "33333333333333333333333333333333333333cc", HashAlgo: "sha1", Branch: "main"},
 	}
-	pm := map[string][]string{"shared/dep@v1": {"actions/checkout@v4"}}
-	direct := map[string]bool{"actions/checkout@v4": true, "actions/setup-go@v5": true}
+	pm := dep.ParentMap{dep.RefKeyOf("shared/dep@v1"): {"actions/checkout@v4"}}
+	direct := map[dep.Key]bool{dep.RefKeyOf("actions/checkout@v4"): true, dep.RefKeyOf("actions/setup-go@v5"): true}
 	if err := store.Set(context.Background(), ".github/workflows/ci.yml", deps, pm, direct); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -902,15 +902,15 @@ func TestState_TransitiveClosureGolden(t *testing.T) {
 	//            composite-c (direct) → composite-b → leaf
 	if err := store.Set(ctx, ".github/workflows/workflow-a.yml",
 		[]dep.Dependency{checkout, compositeA, compositeB, leaf, compositeC, external},
-		map[string][]string{
-			"my-org/composite-b@v2": {"my-org/composite-a@v1", "my-org/composite-c@v1"},
-			"other-org/external@v1": {"my-org/composite-a@v1"},
-			"my-org/leaf@main":      {"my-org/composite-b@v2"},
+		dep.ParentMap{
+			dep.RefKeyOf("my-org/composite-b@v2"): {"my-org/composite-a@v1", "my-org/composite-c@v1"},
+			dep.RefKeyOf("other-org/external@v1"): {"my-org/composite-a@v1"},
+			dep.RefKeyOf("my-org/leaf@main"):      {"my-org/composite-b@v2"},
 		},
-		map[string]bool{
-			"actions/checkout@v4":   true,
-			"my-org/composite-a@v1": true,
-			"my-org/composite-c@v1": true,
+		map[dep.Key]bool{
+			dep.RefKeyOf("actions/checkout@v4"):   true,
+			dep.RefKeyOf("my-org/composite-a@v1"): true,
+			dep.RefKeyOf("my-org/composite-c@v1"): true,
 		},
 	); err != nil {
 		t.Fatalf("Set workflow-a: %v", err)
@@ -924,9 +924,9 @@ func TestState_TransitiveClosureGolden(t *testing.T) {
 	if err := store.Set(ctx, ".github/workflows/workflow-b.yml",
 		[]dep.Dependency{checkout, compositeB},
 		nil,
-		map[string]bool{
-			"actions/checkout@v4":   true,
-			"my-org/composite-b@v2": true,
+		map[dep.Key]bool{
+			dep.RefKeyOf("actions/checkout@v4"):   true,
+			dep.RefKeyOf("my-org/composite-b@v2"): true,
 		},
 	); err != nil {
 		t.Fatalf("Set workflow-b: %v", err)
@@ -938,7 +938,7 @@ func TestState_TransitiveClosureGolden(t *testing.T) {
 	if err := store.Set(ctx, ".github/workflows/workflow-c.yml",
 		[]dep.Dependency{leaf},
 		nil,
-		map[string]bool{"my-org/leaf@main": true},
+		map[dep.Key]bool{dep.RefKeyOf("my-org/leaf@main"): true},
 	); err != nil {
 		t.Fatalf("Set workflow-c: %v", err)
 	}
@@ -1186,14 +1186,14 @@ func TestPrepareRefreshPreservesUnselectedWorkflows(t *testing.T) {
 			require.NoError(t, err)
 			root := dep.Dependency{NWO: "o/root", Ref: "Main", SHA: sha}
 			child := dep.Dependency{NWO: "o/child", Ref: "v2", SHA: sha}
-			pm := dep.ParentMap{child.Key(): {root.Key()}}
-			require.NoError(t, store.Set(context.Background(), selected, []dep.Dependency{root, child}, pm, map[string]bool{root.Key(): true}))
+			pm := dep.ParentMap{dep.RefKeyOf(child.Key()): {root.Key()}}
+			require.NoError(t, store.Set(context.Background(), selected, []dep.Dependency{root, child}, pm, map[dep.Key]bool{dep.RefKeyOf(root.Key()): true}))
 			otherDep := dep.Dependency{NWO: "o/unrelated", Ref: "v1", SHA: sha}
 			if tt.shared {
 				otherDep = root
 			}
 
-			require.NoError(t, store.Set(context.Background(), other, []dep.Dependency{otherDep}, nil, map[string]bool{otherDep.Key(): true}))
+			require.NoError(t, store.Set(context.Background(), other, []dep.Dependency{otherDep}, nil, map[dep.Key]bool{dep.RefKeyOf(otherDep.Key()): true}))
 			if tt.missingChild {
 				delete(store.File().Dependencies, child.Key())
 			}
@@ -1232,11 +1232,11 @@ func TestPrepareRefreshClearsDetachedRediscoveredEdges(t *testing.T) {
 	child := dep.Dependency{NWO: "o/child", Ref: "v2", SHA: sha}
 	obsolete := dep.Dependency{NWO: "o/obsolete", Ref: "v1", SHA: sha}
 	require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{root, child, obsolete},
-		dep.ParentMap{child.Key(): {root.Key()}, obsolete.Key(): {child.Key()}}, map[string]bool{root.Key(): true}))
+		dep.ParentMap{dep.RefKeyOf(child.Key()): {root.Key()}, dep.RefKeyOf(obsolete.Key()): {child.Key()}}, map[dep.Key]bool{dep.RefKeyOf(root.Key()): true}))
 	// The deleted root leaves the recorded graph unable to reach child.
 	delete(store.File().Dependencies, root.Key())
 
-	require.NoError(t, store.PrepareRefresh([]string{wf}, []dep.Dependency{root, child}, dep.ParentMap{child.Key(): {root.Key()}}))
+	require.NoError(t, store.PrepareRefresh([]string{wf}, []dep.Dependency{root, child}, dep.ParentMap{dep.RefKeyOf(child.Key()): {root.Key()}}))
 	assert.Empty(t, store.File().Dependencies[child.Key()].Uses, "a rediscovered entry must not keep its obsolete edges")
 }
 
@@ -1255,7 +1255,7 @@ func TestPrepareRefreshLeavesNewEntriesToSet(t *testing.T) {
 
 	require.NoError(t, store.PrepareRefresh([]string{wf}, []dep.Dependency{public}, nil))
 	assert.NotContains(t, store.File().Dependencies, "actions/checkout@v4")
-	require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{public}, nil, map[string]bool{public.Key(): true}))
+	require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{public}, nil, map[dep.Key]bool{dep.RefKeyOf(public.Key()): true}))
 }
 
 func TestPrepareRefreshRejectsIncompleteOrConflictingPlans(t *testing.T) {
@@ -1268,13 +1268,13 @@ func TestPrepareRefreshRejectsIncompleteOrConflictingPlans(t *testing.T) {
 		{
 			name:    "missing child",
 			deps:    []dep.Dependency{{NWO: "o/root", Ref: "Main", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
-			parents: dep.ParentMap{"o/child@v2": {"o/root@Main"}},
+			parents: dep.ParentMap{dep.RefKeyOf("o/child@v2"): {"o/root@Main"}},
 			wantErr: "missing child",
 		},
 		{
 			name:    "missing parent",
 			deps:    []dep.Dependency{{NWO: "o/child", Ref: "v2", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
-			parents: dep.ParentMap{"o/child@v2": {"o/root@Main"}},
+			parents: dep.ParentMap{dep.RefKeyOf("o/child@v2"): {"o/root@Main"}},
 			wantErr: "missing parent",
 		},
 		{
@@ -1292,7 +1292,7 @@ func TestPrepareRefreshRejectsIncompleteOrConflictingPlans(t *testing.T) {
 			root := dep.Dependency{NWO: "o/root", Ref: "Main", SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 			child := dep.Dependency{NWO: "o/child", Ref: "v2", SHA: root.SHA}
 			require.NoError(t, store.Set(context.Background(), "ci.yml", []dep.Dependency{root, child},
-				dep.ParentMap{child.Key(): {root.Key()}}, map[string]bool{root.Key(): true}))
+				dep.ParentMap{dep.RefKeyOf(child.Key()): {root.Key()}}, map[dep.Key]bool{dep.RefKeyOf(root.Key()): true}))
 			err = store.PrepareRefresh([]string{"ci.yml"}, tt.deps, tt.parents)
 			require.ErrorContains(t, err, tt.wantErr)
 			assert.Equal(t, "sha1-"+root.SHA, store.File().Dependencies[root.Key()].Commit)

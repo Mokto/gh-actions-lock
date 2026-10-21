@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
@@ -56,7 +57,7 @@ func TestCarryVerified(t *testing.T) {
 		checks.VerifiedKey("o/child@v4", a): true,
 		checks.VerifiedKey("o/child@v4", b): true,
 	}
-	writers := []WorkflowPlan{{Rewrites: map[string]string{"o/child@v4": "o/child@v4.2.1"}}}
+	writers := []WorkflowPlan{{Rewrites: map[dep.Spelling]string{"o/child@v4": "o/child@v4.2.1"}}}
 
 	got := carryVerified(preview, verified, writers)
 	assert.True(t, got[checks.VerifiedKey("o/child@v4.2.1", b)], "a narrowed use carries the proof for the commit it's written at")

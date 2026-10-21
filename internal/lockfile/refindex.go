@@ -15,7 +15,7 @@ type RefIndex struct {
 	// entries, workflow roots and uses edges, including dangling ones.
 	spelled map[string]bool
 	// entries maps dep.RefKey to the dependency entries in that class.
-	entries map[string][]string
+	entries map[dep.Key][]string
 }
 
 // RefMatch is what a lockfile records for one reference.
@@ -32,7 +32,7 @@ type RefMatch struct {
 
 // NewRefIndex indexes file's recorded keys.
 func NewRefIndex(file parserlock.File) RefIndex {
-	x := RefIndex{spelled: map[string]bool{}, entries: map[string][]string{}}
+	x := RefIndex{spelled: map[string]bool{}, entries: map[dep.Key][]string{}}
 	for key, action := range file.Dependencies {
 		x.spelled[key] = true
 		x.entries[dep.RefKeyOf(key)] = append(x.entries[dep.RefKeyOf(key)], key)

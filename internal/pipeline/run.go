@@ -104,7 +104,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 	refs, _ := CollectUnrecordedResolvable(unresolved, recordedRefs)
 	var resolved []dep.Dependency
-	var parents map[string][]string
+	var parents dep.ParentMap
 
 	// Phase 2: Resolve.
 	if r != nil {
