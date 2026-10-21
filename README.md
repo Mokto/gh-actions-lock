@@ -61,7 +61,7 @@ gh actions-lock --verify
 ```
 
 If the GitHub API is unreachable or rate-limited, `--verify` retries for up to
-about 5 minutes in CI (a few seconds elsewhere), then fails (exit 1) with the pins it couldn't verify. Their
+about 2 minutes in CI (a few seconds elsewhere), then fails (exit 1) with the pins it couldn't verify. Their
 `--json` findings carry `"retryable": true`; re-run the check once the API is
 reachable. An untrusted TLS certificate or a rejected token stops the run
 instead (exit 2).

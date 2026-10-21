@@ -44,7 +44,7 @@ type retryPolicy struct {
 var (
 	// patientPolicy is for CI: nobody is watching, and a job that waits
 	// out a short outage or rate limit beats a red check.
-	patientPolicy = retryPolicy{attempts: 8, backoffCap: 30 * time.Second, window: 5 * time.Minute}
+	patientPolicy = retryPolicy{attempts: 8, backoffCap: 30 * time.Second, window: 2 * time.Minute}
 	// quickPolicy is for a terminal: retry a blip, then report and exit
 	// so the user can decide.
 	quickPolicy = retryPolicy{attempts: 3, backoffCap: 2 * time.Second, window: 10 * time.Second}
