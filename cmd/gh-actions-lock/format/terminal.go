@@ -3,8 +3,8 @@ package format
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -369,7 +369,7 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 	for _, cat := range []checks.Category{
 		checks.RepoReplaced, checks.RepoUnavailable, checks.RepoRenamed, checks.UnreachablePin, checks.TagCommitMismatch,
 		checks.RefChanged, checks.NotPinned, checks.OnboardingRequired,
-		checks.LocalAction, checks.InvalidSelfRepositoryRef,
+		checks.InvalidSelfRepositoryRef,
 		checks.Stale, checks.MisleadingSHA, checks.IncompleteLockfile,
 	} {
 		if n, ok := catCounts[cat]; ok {
@@ -441,8 +441,21 @@ type warningGroup struct {
 func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 	var warnOrder []string
 	warnMap := map[string]*warningGroup{}
+	localByWorkflow := map[string][]string{}
+	localDocURL := ""
+	localCount := 0
 	for _, wr := range report.Workflows {
 		for _, f := range wr.Findings {
+			if f.Category == checks.LocalAction {
+				use := f.LocalPath
+				if f.ParentNWO != "" {
+					use += " (in " + f.ParentNWO + ")"
+				}
+				localByWorkflow[wr.Path] = append(localByWorkflow[wr.Path], use)
+				localDocURL = f.DocURL
+				localCount++
+				continue
+			}
 			if f.IsWarning() {
 				key := f.DepKey()
 				if key == "" {
@@ -463,13 +476,11 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 	}
 
 	// Triage warnings into buckets.
-	var unpinnedWorkflows, localActionWorkflows, bareSHADeps, otherDetailWarnings []string
+	var unpinnedWorkflows, bareSHADeps, otherDetailWarnings []string
 	for _, key := range warnOrder {
 		wg := warnMap[key]
 		f := wg.finding
 		switch {
-		case f.Category == checks.LocalAction:
-			localActionWorkflows = append(localActionWorkflows, f.WorkflowPath)
 		case f.Category == checks.NotPinned && f.ActionRef == nil:
 			unpinnedWorkflows = append(unpinnedWorkflows, f.WorkflowPath)
 		case f.Category == checks.ShaAsRef:
@@ -488,16 +499,14 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 		}
 	}
 
-	if len(localActionWorkflows) > 0 {
-		out.TermCaution("%d %s skipped — local path actions are not yet supported",
-			len(localActionWorkflows),
-			ui.Pluralize(len(localActionWorkflows), "workflow", "workflows"))
-		var localNames []string
-		for _, p := range localActionWorkflows {
-			localNames = append(localNames, p)
+	if localCount > 0 {
+		out.TermWarn("Cannot follow %d workspace-local %s", localCount, ui.Pluralize(localCount, "action", "actions"))
+		for _, p := range slices.Sorted(maps.Keys(localByWorkflow)) {
+			out.TermDetail("↳ %s: %s", p, strings.Join(localByWorkflow[p], ", "))
 		}
-		sort.Strings(localNames)
-		out.TermDetail("↳ %s", strings.Join(localNames, ", "))
+		if localDocURL != "" {
+			out.TermDetail("↳ %s", localDocURL)
+		}
 	}
 	if len(unpinnedWorkflows) > 0 {
 		out.TermWarn("%d %s not yet pinned",
@@ -605,7 +614,7 @@ func IsAlertedCategory(c checks.Category) bool {
 // re-pins the finding without operator intervention. Only structural drift
 // qualifies: a missing, changed, or orphaned lock entry. Integrity failures
 // (unreachable-pin, misleading-sha) need investigation or --accept-moved, and
-// local-path actions aren't supported at all — so none of those should
+// local-action warnings need no fix — so none of those should
 // trigger the "Re-run without --no-fix to apply fixes" hint.
 func IsAutoFixable(c checks.Category) bool {
 	switch c {

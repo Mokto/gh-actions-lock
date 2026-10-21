@@ -72,10 +72,7 @@ jobs:
 	t.Chdir(dir)
 
 	_, _, err := runCommandWithHTTP(t, transport, workflowPath)
-	// Migration runs by default and validates self repository refs first, so an
-	// invalid `$/…` ref aborts the run before any dependency resolution.
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid self repository reference")
+	require.ErrorIs(t, err, errSilent)
 	assert.Zero(t, transport.calls.Load(), "invalid syntax should be rejected before dependency resolution")
 
 	gotWorkflow, err := os.ReadFile(workflowPath)
@@ -90,7 +87,7 @@ jobs:
 	}
 }
 
-func TestInvalidSelfRepositoryRefPreventsMigrationAndNetwork(t *testing.T) {
+func TestInvalidSelfRepositoryRefPreventsNetwork(t *testing.T) {
 	transport := &requestCountingTransport{}
 
 	dir := t.TempDir()
@@ -117,7 +114,7 @@ jobs:
 	_, _, err := runCommandWithHTTP(t, transport, workflowPath)
 
 	require.Error(t, err)
-	assert.Zero(t, transport.calls.Load(), "invalid syntax should stop migration before dependency resolution")
+	assert.Zero(t, transport.calls.Load(), "invalid syntax should stop the run before dependency resolution")
 	gotWorkflow, readErr := os.ReadFile(workflowPath)
 	require.NoError(t, readErr)
 	assert.Equal(t, workflow, gotWorkflow)

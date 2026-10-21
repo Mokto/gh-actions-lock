@@ -226,30 +226,20 @@ func TestVerifyLocalCoverage_DepsError(t *testing.T) {
 	assert.Contains(t, report.Workflows[0].Findings[0].Detail, "failed to read dependencies")
 }
 
-func TestVerifyLocalCoverage_LocalPathsMatchVerify(t *testing.T) {
+func TestVerifyLocalCoverage_LocalPathsWarnAndRemoteRefsStayChecked(t *testing.T) {
 	store := writeTestLockfile(t, t.TempDir(), testLockfileContent)
-
-	for _, tc := range []struct {
-		path     string
-		severity checks.Severity
-	}{
-		{".github/workflows/ci.yml", checks.SeverityError},
-		{".github/workflows/new.yml", checks.SeverityWarning},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			pw := checks.ParsedWorkflow{
-				Path:       tc.path,
-				Refs:       []parserlock.ActionRef{{Owner: "actions", Repo: "checkout", Ref: "v4"}},
-				LocalPaths: []string{"./my-action"},
-			}
-			report := VerifyLocalCoverage([]checks.ParsedWorkflow{pw}, store)
-			require.Len(t, report.Workflows[0].Findings, 1)
-			f := report.Workflows[0].Findings[0]
-			assert.Equal(t, checks.LocalAction, f.Category)
-			assert.Equal(t, tc.severity, f.Severity)
-			assert.Equal(t, localActionFinding(pw, store), f)
-		})
+	pw := checks.ParsedWorkflow{
+		Path:       ".github/workflows/ci.yml",
+		Refs:       []parserlock.ActionRef{{Owner: "actions", Repo: "missing", Ref: "v1"}},
+		LocalPaths: []string{"./my-action"},
 	}
+	wr := VerifyLocalCoverage([]checks.ParsedWorkflow{pw}, store).Workflows[0]
+
+	assert.Equal(t, localActionFindings(pw), wr.Findings[:1])
+	assert.Equal(t, checks.SeverityWarning, wr.Findings[0].Severity)
+	require.Greater(t, len(wr.Findings), 1, "the remote ref is still checked")
+	assert.Equal(t, checks.NotPinned, wr.Findings[1].Category)
+	assert.False(t, wr.IsValid())
 }
 
 func TestVerifyLocalCoverage_ValidFollowsSeverity(t *testing.T) {

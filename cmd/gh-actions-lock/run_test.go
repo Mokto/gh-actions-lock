@@ -14,6 +14,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/pipeline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -359,6 +360,27 @@ func TestRun_LockedManifests(t *testing.T) {
 	}
 }
 
+// TestRun_LockedManifestsDiscloseLocalActions: a run that keeps a recorded
+// composite still discloses the `./…` uses in its locked manifest.
+func TestRun_LockedManifestsDiscloseLocalActions(t *testing.T) {
+	for _, mode := range [][]string{{"--verify"}, {"--no-fix"}, {}} {
+		t.Run(strings.Join(append([]string{"default"}, mode...)[min(len(mode), 1):], ""), func(t *testing.T) {
+			writeManifestRepo(t, map[string][]string{"ci.yml": {"acme/comp@v1"}}, map[string][]string{"acme/comp@v1": nil})
+			reg := &httpmock.Registry{}
+			registerLockedManifests(reg, map[string]string{"acme/comp": composite("./local")})
+
+			p, err := runParity(t, reg, mode...)
+			require.NoError(t, err)
+			assert.True(t, p.Valid, "%+v", p.Findings)
+			local := localActionFindings(p.Findings)
+			require.Len(t, local, 1, "%+v", p.Findings)
+			assert.Equal(t, "warning", local[0].Severity)
+			assert.Equal(t, "acme/comp@v1", local[0].RequiredBy)
+			assert.Contains(t, local[0].Detail, "cannot follow workspace-local action ./local used by acme/comp@v1")
+		})
+	}
+}
+
 // TestRun_LockedManifestsOneBatchPerLevel: reads are batched across
 // workflows, one request per composite nesting level.
 func TestRun_LockedManifestsOneBatchPerLevel(t *testing.T) {
@@ -668,4 +690,127 @@ func TestRun_ContainerImages(t *testing.T) {
 			assert.Equal(t, "acme/build@v1", build.RequiredBy)
 		})
 	}
+}
+
+// TestRun_LocalActionsAreOpaque: a fix run locks the workflow's remote refs,
+// leaves `./…` uses and their action files byte-identical, and reports each
+// local action as a non-blocking warning. --no-migrate-local-actions changes nothing.
+func TestRun_LocalActionsAreOpaque(t *testing.T) {
+	for name, extra := range map[string][]string{"default": nil, "no-migrate flag": {"--no-migrate-local-actions"}} {
+		t.Run(name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			writeTempWorkflow(t, "name: ci\non: push\n")
+			clean := writeCleanWorkflow(t, reg, true)
+			before := snapshotWorkflows(t)
+
+			p, err := runParity(t, reg, append(extra, clean)...)
+			require.NoError(t, err)
+			local := localActionFindings(p.Findings)
+			require.Len(t, local, 1, "%+v", p.Findings)
+			assert.Equal(t, "warning", local[0].Severity)
+			assert.Equal(t, "cannot follow workspace-local action ./.github/actions/local", local[0].Detail)
+			assert.Equal(t, pipeline.LocalActionDocURL, local[0].DocURL)
+
+			assert.Contains(t, readTempLockfilePins(t), "actions/setup-go")
+			after := snapshotWorkflows(t)
+			assert.Contains(t, after[filepath.FromSlash(clean)], "uses: ./.github/actions/local")
+			action := filepath.Join(".github", "actions", "local", "action.yml")
+			assert.Equal(t, before[action], after[action])
+		})
+	}
+}
+
+// TestRun_RemoteCompositeLocalActionWarns: a remote composite's `./…` use
+// is not followed; the composite is still locked and the warning names it.
+func TestRun_RemoteCompositeLocalActionWarns(t *testing.T) {
+	const sha = "76f52bc884231f62b9a034ebfe128415bbaabdfc"
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQLForRepo("octo", "publish"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("octo/publish", sha,
+			"name: Publish\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/.tmp/run-in-docker\n")},
+	}))
+	reg.Register(httpmock.REST("GET", `repos/octo/publish$`), httpmock.JSONResponse(map[string]any{
+		"default_branch": "main", "id": 2, "owner": map[string]any{"id": 1},
+	}))
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/publish@release/v1
+`)
+
+	p, err := runParity(t, reg, "--no-interactive", "--no-narrow", path)
+	require.NoError(t, err)
+	local := localActionFindings(p.Findings)
+	require.Len(t, local, 1, "%+v", p.Findings)
+	f := local[0]
+	assert.Equal(t, "warning", f.Severity)
+	assert.Equal(t, "octo/publish@release/v1", f.RequiredBy)
+	assert.Contains(t, f.Detail, "cannot follow workspace-local action ./.github/.tmp/run-in-docker used by octo/publish@release/v1")
+	assert.Contains(t, readTempLockfilePins(t), "octo/publish@release/v1")
+}
+
+func localActionFindings(ff []format.Finding) []format.Finding {
+	return slices.DeleteFunc(slices.Clone(ff), func(f format.Finding) bool { return f.Category != "local-action" })
+}
+
+// TestRun_RefusesWorkflowSymlinkOutsideCheckout: pinning rewrites workflow
+// files in place, so a workflow symlinked outside the checkout stops the run
+// before any request or write, whether discovered or named.
+func TestRun_RefusesWorkflowSymlinkOutsideCheckout(t *testing.T) {
+	const body = "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-go@v5\n"
+	for name, explicit := range map[string]bool{"discovered": false, "named": true} {
+		t.Run(name, func(t *testing.T) {
+			writeTempWorkflow(t, "name: other\non: push\n")
+			require.NoError(t, os.Mkdir(".git", 0o755))
+			victim := filepath.Join(t.TempDir(), "victim.yml")
+			require.NoError(t, os.WriteFile(victim, []byte(body), 0o600))
+			link := filepath.Join(".github", "workflows", "escape.yml")
+			require.NoError(t, os.Symlink(victim, link))
+
+			var args []string
+			if explicit {
+				args = []string{link}
+			}
+			// setup-go resolves and its v5 narrows to v5.0.0, so an unguarded run
+			// would rewrite the symlink's target.
+			reg := &httpmock.Registry{}
+			registerSetupGo(reg)
+			_, _, err := runCommandWithHTTP(t, reg, append(args, "--no-interactive")...)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "refusing to use workflow")
+			got, rerr := os.ReadFile(victim)
+			require.NoError(t, rerr)
+			assert.Equal(t, body, string(got), "the target outside the checkout is untouched")
+			assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
+		})
+	}
+}
+
+// TestRun_SelfRepositoryLocalActionNamesItsParent: a `./…` use inside a
+// `$/…` action names that action, once per containing action.
+func TestRun_SelfRepositoryLocalActionNamesItsParent(t *testing.T) {
+	writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: $/actions/build\n      - uses: $/actions/test\n")
+	require.NoError(t, os.Mkdir(".git", 0o755))
+	for _, a := range []string{"build", "test"} {
+		require.NoError(t, os.MkdirAll(filepath.Join("actions", a), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join("actions", a, "action.yml"),
+			[]byte("runs:\n  using: composite\n  steps:\n    - uses: ./helper\n"), 0o600))
+	}
+
+	p, err := runParity(t, &httpmock.Registry{}, "--no-interactive")
+	require.NoError(t, err)
+	var parents []string
+	for _, f := range localActionFindings(p.Findings) {
+		assert.Equal(t, "cannot follow workspace-local action ./helper used by "+f.RequiredBy, f.Detail)
+		parents = append(parents, f.RequiredBy)
+	}
+	assert.ElementsMatch(t, []string{"$/actions/build", "$/actions/test"}, parents)
+
+	_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--no-interactive")
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "./helper (in $/actions/build), ./helper (in $/actions/test)")
 }

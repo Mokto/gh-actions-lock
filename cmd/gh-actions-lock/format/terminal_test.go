@@ -393,10 +393,10 @@ func TestPresentResults_ExcludeKeepsOtherFindings(t *testing.T) {
 					},
 					{
 						WorkflowPath: ".github/workflows/ci.yml",
-						Category:     checks.LocalAction,
+						Category:     checks.InvalidSelfRepositoryRef,
 						Severity:     checks.SeverityError,
 						Confidence:   checks.ConfidenceHigh,
-						Detail:       "local action ./my-action",
+						Detail:       "self repository actions must not carry an @ref",
 					},
 				},
 			},
@@ -420,10 +420,10 @@ func TestPresentResults_ExcludeKeepsOtherFindings(t *testing.T) {
 	if strings.Contains(got, "Pinned commit not in upstream history") {
 		t.Errorf("excluded unreachable-pin should not appear:\n%s", got)
 	}
-	if !strings.Contains(got, "✗ local action") {
-		t.Errorf("non-excluded local-action should still appear:\n%s", got)
+	if !strings.Contains(got, "✗ invalid self repository ref") {
+		t.Errorf("non-excluded finding should still appear:\n%s", got)
 	}
-	if !strings.Contains(got, "1 of 2 workflows failed: 1 local-action") {
+	if !strings.Contains(got, "1 of 2 workflows failed: 1 invalid-self-repository-ref") {
 		t.Errorf("excluded findings should not count as failed:\n%s", got)
 	}
 	if strings.Contains(got, "not-pinned") {
@@ -483,9 +483,9 @@ func TestPresentResults_ExcludedNotPinnedDropsRemediableWorkflowErrors(t *testin
 			{
 				Path: ".github/workflows/blocked.yml",
 				Findings: []checks.Finding{{
-					Category: checks.LocalAction,
+					Category: checks.InvalidSelfRepositoryRef,
 					Severity: checks.SeverityError,
-					Detail:   "local action ./my-action",
+					Detail:   "self repository actions must not carry an @ref",
 				}},
 			},
 		},
@@ -494,7 +494,7 @@ func TestPresentResults_ExcludedNotPinnedDropsRemediableWorkflowErrors(t *testin
 	PresentResults(ui.NewPlain(&buf), report, false, false, checks.NotPinned)
 
 	got := buf.String()
-	if !strings.Contains(got, "1 of 2 workflows failed: 1 local-action") {
+	if !strings.Contains(got, "1 of 2 workflows failed: 1 invalid-self-repository-ref") {
 		t.Errorf("repaired dependency error should not remain after remediation:\n%s", got)
 	}
 	if strings.Contains(got, "not-pinned") || strings.Contains(got, "failed to read dependencies") {
@@ -631,31 +631,31 @@ func TestPresentReadOnlyFailures_ValidReportSilent(t *testing.T) {
 	}
 }
 
-// TestPresentReadOnlyFailures_LocalActionNotFixable guards the inference bug
-// where hasFixable was derived from !IsAlertedCategory: local-action is an
-// error the tool can't auto-remediate, so the "Re-run without --no-fix" hint
-// must not be offered for it.
-func TestPresentReadOnlyFailures_LocalActionNotFixable(t *testing.T) {
+// TestPresentReadOnlyFailures_InvalidSelfRepositoryRefNotFixable guards the
+// inference bug where hasFixable was derived from !IsAlertedCategory: an
+// invalid `$/…` ref is an error the tool can't auto-remediate, so the
+// "Re-run without --no-fix" hint must not be offered for it.
+func TestPresentReadOnlyFailures_InvalidSelfRepositoryRefNotFixable(t *testing.T) {
 	u, buf := newTestUI()
 	report := &checks.Report{
 		Workflows: []checks.WorkflowReport{{
 			Path: ".github/workflows/ci.yml",
 			Findings: []checks.Finding{{
 				WorkflowPath: ".github/workflows/ci.yml",
-				Category:     checks.LocalAction,
+				Category:     checks.InvalidSelfRepositoryRef,
 				Severity:     checks.SeverityError,
 				Confidence:   checks.ConfidenceHigh,
-				Detail:       "local action ./my-action",
+				Detail:       "self repository actions must not carry an @ref",
 			}},
 		}},
 	}
 
 	hasFixable := PresentReadOnlyFailures(u, report)
-	if got := buf.String(); !strings.Contains(got, "local action ./my-action") {
-		t.Errorf("expected local-action detail in output:\n%s", got)
+	if got := buf.String(); !strings.Contains(got, "must not carry an @ref") {
+		t.Errorf("expected finding detail in output:\n%s", got)
 	}
 	if hasFixable {
-		t.Errorf("local-action is not auto-fixable; hasFixable should be false")
+		t.Errorf("invalid-self-repository-ref is not auto-fixable; hasFixable should be false")
 	}
 }
 
@@ -856,4 +856,33 @@ func TestPresentReadOnlyFailures_GroupsRetryable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRenderWarnings_LocalActions(t *testing.T) {
+	const doc = "https://docs.github.com/actions/reference/security/workflow-dependency-lockfile-troubleshooting#local-action"
+	local := func(wf, path, parent string) checks.Finding {
+		return checks.Finding{WorkflowPath: wf, Category: checks.LocalAction, Severity: checks.SeverityWarning, LocalPath: path, ParentNWO: parent, DocURL: doc}
+	}
+	t.Run("one action", func(t *testing.T) {
+		u, buf := newTestUI()
+		renderWarnings(u, &checks.Report{Workflows: []checks.WorkflowReport{{
+			Path: ".github/workflows/ci.yml", Findings: []checks.Finding{local(".github/workflows/ci.yml", "./.github/actions/setup", "")},
+		}}}, false)
+		got := buf.String()
+		assert.Contains(t, got, "Cannot follow 1 workspace-local action\n")
+		assert.Contains(t, got, "↳ .github/workflows/ci.yml: ./.github/actions/setup\n")
+		assert.Contains(t, got, "↳ "+doc+"\n")
+	})
+	t.Run("several actions, one nested", func(t *testing.T) {
+		u, buf := newTestUI()
+		renderWarnings(u, &checks.Report{Workflows: []checks.WorkflowReport{{
+			Path: ".github/workflows/ci.yml", Findings: []checks.Finding{
+				local(".github/workflows/ci.yml", "./a", ""),
+				local(".github/workflows/ci.yml", "./b", "octo/tool@v2"),
+			},
+		}}}, false)
+		got := buf.String()
+		assert.Contains(t, got, "Cannot follow 2 workspace-local actions\n")
+		assert.Contains(t, got, "↳ .github/workflows/ci.yml: ./a, ./b (in octo/tool@v2)\n")
+	})
 }

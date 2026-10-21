@@ -9,6 +9,7 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,36 +20,42 @@ func (noopMeta) RepoIDs(context.Context, string, string, string) (int64, int64, 
 	return 0, 0, nil
 }
 
-func TestDiagnoseOneParsed_LocalAction_NotOnboarded(t *testing.T) {
-	pw := checks.ParsedWorkflow{
-		Path:       ".github/workflows/ci.yml",
-		LocalPaths: []string{"./my-local-action"},
-	}
-	wr := diagnoseOneParsed(context.Background(), pw, nil, nil, nil)
+func TestDiagnoseOneParsed_LocalActionWarnsWithoutBlocking(t *testing.T) {
+	const wfKey = ".github/workflows/ci.yml"
+	onboarded, err := lockfile.LoadState(t.TempDir(), noopMeta{})
+	require.NoError(t, err)
+	require.NoError(t, onboarded.Set(context.Background(), wfKey, nil, nil, nil))
 
-	assert.Len(t, wr.Findings, 1)
-	assert.Equal(t, checks.LocalAction, wr.Findings[0].Category)
-	assert.Equal(t, checks.SeverityWarning, wr.Findings[0].Severity)
+	for name, store := range map[string]*lockfile.State{"not onboarded": nil, "onboarded": onboarded} {
+		t.Run(name, func(t *testing.T) {
+			pw := checks.ParsedWorkflow{Path: wfKey, LocalPaths: []string{"./a", "./b"}}
+			wr := diagnoseOneParsed(context.Background(), pw, nil, store, nil)
+
+			var local []checks.Finding
+			for _, f := range wr.Findings {
+				if f.Category == checks.LocalAction {
+					local = append(local, f)
+				}
+			}
+			require.Len(t, local, 2)
+			assert.Equal(t, checks.SeverityWarning, local[0].Severity)
+			assert.Contains(t, local[0].Detail, "cannot follow workspace-local action ./a")
+			assert.Contains(t, local[1].Detail, "./b")
+			assert.True(t, wr.IsValid())
+			assert.False(t, wr.NeedsAttention())
+		})
+	}
 }
 
-func TestDiagnoseOneParsed_LocalAction_AlreadyOnboarded(t *testing.T) {
-	dir := t.TempDir()
-	store, err := lockfile.LoadState(dir, noopMeta{})
-	require.NoError(t, err)
+func TestNestedLocalActionFindings(t *testing.T) {
+	l := &resolve.CompositeLocalPathError{Parent: "octo/tool@v2", LocalPath: "./helper"}
+	got := nestedLocalActionFindings("ci.yml", []*resolve.CompositeLocalPathError{l, l})
 
-	wfKey := ".github/workflows/ci.yml"
-	require.NoError(t, store.Set(context.Background(), wfKey, nil, nil, nil))
-
-	pw := checks.ParsedWorkflow{
-		Path:       wfKey,
-		LocalPaths: []string{"./my-local-action"},
-	}
-	wr := diagnoseOneParsed(context.Background(), pw, nil, store, nil)
-
-	assert.Len(t, wr.Findings, 1)
-	assert.Equal(t, checks.LocalAction, wr.Findings[0].Category)
-	assert.Equal(t, checks.SeverityError, wr.Findings[0].Severity)
-	assert.Contains(t, wr.Findings[0].Remediation, "remove")
+	require.Len(t, got, 1, "one warning per composite and path")
+	assert.Equal(t, checks.LocalAction, got[0].Category)
+	assert.Equal(t, checks.SeverityWarning, got[0].Severity)
+	assert.Equal(t, "octo/tool@v2", got[0].ParentNWO)
+	assert.Contains(t, got[0].Detail, "cannot follow workspace-local action ./helper used by octo/tool@v2")
 }
 
 func TestDiagnoseOneParsed_SelfRepositoryOnly(t *testing.T) {

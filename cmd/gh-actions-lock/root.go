@@ -199,6 +199,13 @@ func newRun(workflowPaths []string, hostname string, pool *pinpool.Pool, newReso
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// Pinning rewrites workflow files in place, so a workflow that resolves
+	// outside the checkout must stop the run before anything is written.
+	for _, p := range paths {
+		if err := workflowfile.ValidateInRepo(p); err != nil {
+			return nil, nil, nil, fmt.Errorf("refusing to use workflow %s: %w", p, err)
+		}
+	}
 
 	// Load lockfile before auth so version/parse errors surface before
 	// "token not found" — a future-version lockfile should tell the user

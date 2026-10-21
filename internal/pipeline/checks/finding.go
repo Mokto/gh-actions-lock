@@ -30,6 +30,8 @@ type Finding struct {
 	Dependency *dep.Dependency
 	// ParentNWO is the dep key of the direct action that pulls in this transitive dep (empty if direct).
 	ParentNWO string
+	// LocalPath is the `./…` value a LocalAction warning names.
+	LocalPath string
 	// Detail is a human-readable explanation.
 	Detail string
 	// Remediation describes what the check command can do about it.

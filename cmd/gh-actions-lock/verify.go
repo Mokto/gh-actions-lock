@@ -7,7 +7,7 @@ package main
 //
 //   --verify-local Offline static coverage check. Every action ref must have
 //                  a lockfile entry. No network, no auth, no writes — ideal for
-//                  pre-commit. Same-repo `./…` refs are reported, not migrated.
+//                  pre-commit. Local `./…` actions are reported as warnings.
 
 import (
 	"errors"
@@ -77,7 +77,7 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 
 	if !valid {
 		if opts.jsonFields == "" && hasAutoFixable(report) {
-			console.TermDetail("Run without --verify-local to resolve and pin missing actions and migrate `./…` refs to `$/…`.")
+			console.TermDetail("Run without --verify-local to resolve and pin missing actions.")
 		}
 		return errSilent
 	}

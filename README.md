@@ -153,17 +153,19 @@ jobs:
 A trailing `@ref` (e.g. `$/actions/my-action@v1`) is rejected — the ref is always
 the running commit.
 
-Same-repo `./…` composite action references are automatically converted to `$/…`
-on fix runs. The migration rewrites `./…` steps both in your workflows and in
-your in-repo composite action definitions (`action.yml`). Only `./…` paths that
-resolve to an in-repo action file are rewritten. `--verify` and `--verify-local`
-never migrate; they report `./…` refs as `local-action` findings instead. To
-leave `./…` refs untouched on fix runs, opt out with
-`--no-migrate-local-actions`:
+### Local actions
 
-```bash
-gh actions-lock --no-migrate-local-actions
-```
+`uses: ./…` names a path in the runner workspace, which checkouts and scripts
+can change, so `gh actions-lock` cannot follow it, and never locks or rewrites
+it. That includes `./…` steps inside remote composite actions. A
+workspace-local action's own `uses:` dependencies are **outside lockfile coverage**.
+
+Every mode reports each workspace-local action as a `local-action` warning, in
+terminal and `--json` output, with a link to the
+[troubleshooting docs](https://docs.github.com/actions/reference/security/workflow-dependency-lockfile-troubleshooting#local-action).
+The warning never fails a run or makes it invalid. The workflow's other
+dependencies are locked and checked as usual. `--no-migrate-local-actions` is
+accepted for compatibility and has no effect.
 
 ## How it works
 
@@ -175,8 +177,8 @@ Finally, locked actions must have a branch that the commit being locked exists w
 
 ## Limitations
 
-There are currently eligibility limitations for workflows that can be onboarded to lockfiles:
-- Workflows in the lockfile cannot use local-path actions, these will be skipped for onboarding. This is also a short-term gap.
+- Local `./…` actions and their dependencies are outside lockfile coverage; see
+  [Local actions](#local-actions).
 
 The lockfile pins action commits, not the container images that workflows and Docker actions pull or build. Any image not pinned by `@sha256:` digest (a `docker://` step, a job `container:` or `services:` image, or a Docker action's `runs.image`) is reported as a non-blocking `container-image` warning. This includes images chosen by a `${{ }}` expression and Docker actions built from a Dockerfile, whose base image the lockfile doesn't cover.
 

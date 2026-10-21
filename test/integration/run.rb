@@ -701,8 +701,8 @@ STUB_WIRING = {
   cooldown_ignored_keys_suppressed_in_readonly: ->(s) {
     wire_checkout_success(s, "gho_fake_cooldown_ignored_token")
   },
-  migrate_local_actions_rewrite: ->(s) {
-    wire_checkout_success(s, "gho_fake_migrate_token")
+  local_actions_opaque: ->(s) {
+    wire_checkout_success(s, "gho_fake_local_actions_token")
   },
   self_repository_shared_dependency: ->(s) {
     wire_checkout_success(s, "gho_fake_self_repository_token")

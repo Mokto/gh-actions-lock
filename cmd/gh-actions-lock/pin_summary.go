@@ -19,10 +19,9 @@ import (
 // reportHasUnfixableErrors returns true when the report contains error-
 // severity findings that the autofix cannot resolve. Pinning resolves
 // not-pinned findings, so those are expected in the pre-fix report and
-// don't count. LocalAction and UnreachablePin errors are unfixable --
-// the workflow or lockfile must be investigated. ReachabilityUnknown and
-// AncestryUnknown are errors when GitHub didn't answer: only a later run can
-// verify the pin.
+// don't count. UnreachablePin errors are unfixable -- the workflow or
+// lockfile must be investigated. ReachabilityUnknown and AncestryUnknown are
+// errors when GitHub didn't answer: only a later run can verify the pin.
 func reportHasUnfixableErrors(report *checks.Report, acceptMoved bool) bool {
 	for _, wr := range report.Workflows {
 		for _, f := range wr.Findings {
@@ -30,7 +29,7 @@ func reportHasUnfixableErrors(report *checks.Report, acceptMoved bool) bool {
 				continue
 			}
 			switch f.Category {
-			case checks.LocalAction, checks.InvalidSelfRepositoryRef, checks.RepoRenamed, checks.RepoReplaced, checks.RepoUnavailable, checks.ReachabilityUnknown, checks.AncestryUnknown:
+			case checks.InvalidSelfRepositoryRef, checks.RepoRenamed, checks.RepoReplaced, checks.RepoUnavailable, checks.ReachabilityUnknown, checks.AncestryUnknown:
 				return true
 			case checks.NotPinned:
 				if !f.IsRemediableNotPinned() {
@@ -76,7 +75,7 @@ func withoutPendingPins(report *checks.Report) *checks.Report {
 
 // reportHasNonInvestigatedUnfixableErrors is like reportHasUnfixableErrors
 // but only matches categories that renderInvestigationAlerts does NOT
-// handle (LocalAction). Use this to gate the PresentResults call so
+// handle. Use this to gate the PresentResults call so
 // unreachable-pin findings don't trigger a redundant (and stale) error
 // summary.
 func reportHasNonInvestigatedUnfixableErrors(report *checks.Report) bool {
@@ -85,8 +84,7 @@ func reportHasNonInvestigatedUnfixableErrors(report *checks.Report) bool {
 			if f.Severity != checks.SeverityError {
 				continue
 			}
-			if f.Category == checks.LocalAction ||
-				f.Category == checks.InvalidSelfRepositoryRef ||
+			if f.Category == checks.InvalidSelfRepositoryRef ||
 				f.Category == checks.RepoRenamed ||
 				f.Category == checks.RepoReplaced ||
 				f.Category == checks.RepoUnavailable ||

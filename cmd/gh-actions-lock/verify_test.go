@@ -11,6 +11,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
+	"github.com/github/gh-actions-lock/internal/pipeline"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -111,7 +112,7 @@ func TestValidateOutputFlags_VerifyConflicts(t *testing.T) {
 	}
 }
 
-func TestVerifyLocalReportsLocalActionsWithoutWriting(t *testing.T) {
+func TestVerifyLocalWarnsAboutLocalActions(t *testing.T) {
 	for _, extra := range [][]string{nil, {"--no-migrate-local-actions"}, {"--no-fix"}} {
 		for _, jsonOut := range []bool{true, false} {
 			t.Run(strings.Join(append(extra, fmt.Sprintf("json=%v", jsonOut)), " "), func(t *testing.T) {
@@ -141,16 +142,15 @@ jobs:
 				}
 				stdout, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, append(args, path)...)
 
-				require.ErrorIs(t, err, errSilent)
+				require.NoError(t, err, stderr)
 				if jsonOut {
-					assert.Contains(t, stdout, `"valid": false`)
+					assert.Contains(t, stdout, `"valid": true`)
 					assert.Contains(t, stdout, `"category": "local-action"`)
-					assert.Contains(t, stdout, `"severity": "error"`)
+					assert.Contains(t, stdout, `"severity": "warning"`)
 				} else {
-					out := stdout + stderr
-					assert.Contains(t, out, "local path actions")
-					assert.Contains(t, out, "Run without --verify-local")
-					assert.NotContains(t, out, "Migrated")
+					assert.Contains(t, stdout+stderr, "./my-action")
+					assert.Contains(t, stdout+stderr, "Cannot follow 1 workspace-local action")
+					assert.Contains(t, stdout+stderr, pipeline.LocalActionDocURL)
 				}
 				after, err := os.ReadFile(path)
 				require.NoError(t, err)
@@ -250,62 +250,22 @@ jobs:
 	}
 }
 
-// TestVerifyLocal_LocalActionVerdictFollowsSeverity: a local-action warning
-// on a workflow the lockfile doesn't cover yet is not a failure; once the
-// workflow is onboarded the same step is an error. JSON omits the warning
-// (skipFindingInJSON), so the terminal run proves it is still surfaced.
-func TestVerifyLocal_LocalActionVerdictFollowsSeverity(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		body    string
-		pins    []string
-		other   bool // lockfile exists but covers another workflow
-		wantErr bool
-	}{
-		{
-			name:  "not onboarded warns and passes",
-			body:  "      - uses: ./my-action\n",
-			other: true,
-		},
-		{
-			name:    "onboarded errors and fails",
-			body:    "      - uses: actions/checkout@v4.2.1\n      - uses: ./my-action\n",
-			pins:    []string{"actions/checkout@v4.2.1=sha1-" + parityTestSHA},
-			wantErr: true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+tc.body, tc.pins...)
-			if tc.other {
-				writeTempLockfile(t, ".", "other.yml", []string{"actions/checkout@v4.2.1=sha1-" + parityTestSHA})
-			}
-			require.NoError(t, os.Mkdir(".git", 0o755))
-			require.NoError(t, os.Mkdir("my-action", 0o755))
-			require.NoError(t, os.WriteFile(filepath.Join("my-action", "action.yml"), []byte("runs:\n  using: composite\n  steps: []\n"), 0o644))
-			checkErr := func(err error) {
-				if tc.wantErr {
-					require.ErrorIs(t, err, errSilent)
-				} else {
-					require.NoError(t, err)
-				}
-			}
+// TestVerifyLocal_LocalActionDoesNotExcuseMissingPins: a local action is
+// only a warning; the workflow's remote refs are still enforced.
+func TestVerifyLocal_LocalActionDoesNotExcuseMissingPins(t *testing.T) {
+	writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+
+		"      - uses: actions/checkout@v4.2.1\n      - uses: actions/setup-go@v5\n      - uses: ./my-action\n",
+		"actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 
-			p, err := runParity(t, &httpmock.Registry{}, "--verify-local", "--no-interactive")
-			checkErr(err)
-			assert.Equal(t, !tc.wantErr, p.Valid)
-			if tc.wantErr {
-				require.Len(t, p.Findings, 1, "%+v", p.Findings)
-				assert.Equal(t, string(checks.LocalAction), p.Findings[0].Category)
-				assert.Equal(t, string(checks.SeverityError), p.Findings[0].Severity)
-			} else {
-				assert.Empty(t, p.Findings, "non-error local-action is omitted from JSON")
-			}
-
-			stdout, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", "--no-interactive")
-			checkErr(err)
-			assert.Contains(t, stdout+stderr, "local path actions")
-		})
+	p, err := runParity(t, &httpmock.Registry{}, "--verify-local", "--no-interactive")
+	require.ErrorIs(t, err, errSilent)
+	assert.False(t, p.Valid)
+	categories := map[string]string{}
+	for _, f := range p.Findings {
+		categories[f.Category] = f.Severity
 	}
+	assert.Equal(t, string(checks.SeverityWarning), categories[string(checks.LocalAction)])
+	assert.Equal(t, string(checks.SeverityError), categories[string(checks.NotPinned)])
 }
 
 // TestEmptyWorkflow_LockfileEntryRequired: enforcement requires every
@@ -471,4 +431,21 @@ func TestSHARecordedRef_DeletedWorkflowBlocks(t *testing.T) {
 			assert.Equal(t, lock, string(got))
 		})
 	}
+}
+
+// TestVerify_PassesWithLocalActions: an onboarded workflow that also uses a
+// `./…` action passes --verify; the local action is only a warning.
+func TestVerify_PassesWithLocalActions(t *testing.T) {
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOK)
+	path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+
+		"      - uses: actions/checkout@v4.2.1\n      - uses: ./my-action\n",
+		"actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+
+	p, err := runParity(t, reg, "--verify", path)
+	require.NoError(t, err)
+	assert.True(t, p.Valid)
+	require.Len(t, p.Findings, 1, "%+v", p.Findings)
+	assert.Equal(t, string(checks.LocalAction), p.Findings[0].Category)
+	assert.Equal(t, string(checks.SeverityWarning), p.Findings[0].Severity)
 }

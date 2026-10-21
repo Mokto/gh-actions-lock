@@ -209,6 +209,9 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// Resolve live state for unrecorded refs only.
 	status("resolving " + wr.Path)
 	deps, parentMap, resolveErr := opts.Resolver.ResolveAllRecursive(ctx, unrecordedRefs)
+	// `./…` uses inside remote composites are never followed; diagnose
+	// reports them.
+	_, resolveErr = resolve.SplitLocalPaths(resolveErr)
 	if resolveErr != nil {
 		// A resolved root is not pinnable when its transitive graph is incomplete.
 		for _, ref := range unrecordedRefs {

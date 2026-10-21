@@ -75,7 +75,8 @@ func ParseAll(paths []string, store *lockfile.State) []checks.ParsedWorkflow {
 		pw.RewriteRefs = pw.Refs
 		pw.SelfActionFiles = selfScan.ActionFiles
 		pw.SelfActionRefs = selfScan.Refs
-		pw.LocalPaths = mergeStrings(scan.LocalPaths, selfScan.LocalPaths)
+		pw.LocalPaths = scan.LocalPaths
+		pw.NestedLocalUses = selfScan.LocalUses
 		pw.SelfRepositoryRefs = mergeStrings(scan.SelfRepositoryRefs, selfScan.SelfRepositoryRefs)
 		pw.SelfRepositoryRefErrs = mergeStrings(scan.SelfRepositoryRefErrs, selfScan.SelfRepositoryRefErrs)
 		pw.SelfRepositoryResolutionErrs = selfScan.Errors

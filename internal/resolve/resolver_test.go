@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -724,7 +725,7 @@ func TestResolveAllRecursiveTerminatesOnCycle(t *testing.T) {
 	}
 }
 
-func TestResolveAllRecursiveCompositeLocalPathError(t *testing.T) {
+func TestResolveAllRecursiveSkipsCompositeLocalPath(t *testing.T) {
 	r := seedCache(&Resolver{
 		MaxRecursionDepth: DefaultMaxRecursionDepth,
 	}, map[ghapi.ActionRef]resolvedEntry{
@@ -741,26 +742,18 @@ func TestResolveAllRecursiveCompositeLocalPathError(t *testing.T) {
 	deps, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
 		{Owner: "owner", Repo: "composite", Ref: "v1"},
 	})
-	if err == nil {
-		t.Fatal("expected CompositeLocalPathError, got nil")
-	}
-	if !IsCompositeLocalPath(err) {
-		t.Fatalf("expected CompositeLocalPathError, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "./helper") {
-		t.Errorf("error should mention the local path, got: %v", err)
-	}
-	// Partial results should still be returned (checkout resolved).
-	if len(deps) < 2 {
-		t.Errorf("expected partial results with at least 2 deps, got %d", len(deps))
-	}
+	local, rest := SplitLocalPaths(err)
+	require.NoError(t, rest)
+	require.Len(t, local, 1)
+	assert.Equal(t, "owner/composite@v1", local[0].Parent)
+	assert.Equal(t, "./helper", local[0].LocalPath)
+	// The local path is skipped, not followed; its siblings still resolve.
+	assert.Len(t, deps, 2)
 }
 
-func TestResolveAllRecursiveCompositeLocalPathErrorDeep(t *testing.T) {
+func TestResolveAllRecursiveSkipsDeepCompositeLocalPath(t *testing.T) {
 	// A `$/` self repository chain three levels deep whose leaf uses a `./`
-	// local path. Every hop before the leaf is a valid same-tarball self
-	// reference, so the block must surface transitively rather than at the
-	// entry action. Mirrors the deep-blocked fixture in actions-test-fixtures.
+	// local path: the warning surfaces transitively, not at the entry action.
 	const appSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	step := func(uses string) string { return "    - uses: " + uses + "\n" }
 
@@ -784,15 +777,28 @@ func TestResolveAllRecursiveCompositeLocalPathErrorDeep(t *testing.T) {
 	_, _, err := r.ResolveAllRecursive(context.Background(), []parserlock.ActionRef{
 		{Owner: "owner", Repo: "app", Path: "l0", Ref: "main"},
 	})
-	if err == nil {
-		t.Fatal("expected CompositeLocalPathError, got nil")
-	}
-	if !IsCompositeLocalPath(err) {
-		t.Fatalf("expected CompositeLocalPathError, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "./leaf-helper") {
-		t.Errorf("error should mention the transitive local path, got: %v", err)
-	}
+	local, rest := SplitLocalPaths(err)
+	require.NoError(t, rest)
+	require.Len(t, local, 1)
+	assert.Equal(t, "./leaf-helper", local[0].LocalPath)
+}
+
+func TestSplitLocalPaths(t *testing.T) {
+	other := errors.New("boom")
+	l1 := &CompositeLocalPathError{Parent: "o/a@v1", LocalPath: "./x"}
+	l2 := &CompositeLocalPathError{Parent: "o/b@v1", LocalPath: "./y"}
+
+	t.Run("nil stays nil", func(t *testing.T) {
+		local, rest := SplitLocalPaths(nil)
+		assert.Empty(t, local)
+		assert.NoError(t, rest)
+	})
+	t.Run("nested joins yield every local path and keep the rest", func(t *testing.T) {
+		local, rest := SplitLocalPaths(errors.Join(errors.Join(l1, other), l2))
+		assert.Equal(t, []*CompositeLocalPathError{l1, l2}, local)
+		assert.ErrorIs(t, rest, other)
+		assert.NotContains(t, rest.Error(), "./x")
+	})
 }
 
 func TestNewAndLatestRef(t *testing.T) {
