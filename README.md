@@ -67,11 +67,9 @@ way the Actions backend resolver does. Every pin, whether an exact tag
 owner/repo@<sha>`), must have its commit in that ref's history, so a fork
 commit can't pass as upstream. An exact tag means exactly one commit: if the
 entry locks an older commit in the tag's history, for example because a
-publisher re-pointed the tag, every mode fails with `tag-commit-mismatch`.
-For the workflow's own `uses:`, `gh actions-lock --relock` locks the tag's
-commit. An entry a composite action pins stays as that composite recorded it,
-so upgrade or replace the composite; `--relock` helps only once the composite
-itself advances. Floating refs (`v4`,
+publisher re-pointed the tag, every mode fails with `tag-commit-mismatch`
+until `gh actions-lock --relock` locks the tag's commit, including for an
+entry a composite action pins. Floating refs (`v4`,
 `main`) accept any commit in the ref's history, so a lockfile change that moves
 one to an older commit isn't detected. Review lockfile diffs or pin exact tags.
 A full-SHA `uses:` whose recorded tag moved ahead only warns under `--verify`
