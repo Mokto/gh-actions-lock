@@ -98,6 +98,9 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 			if err != nil {
 				return fmt.Errorf("planning %s: %w", iwr.wr.Path, err)
 			}
+			for i := range pr.wplans {
+				respellRewrites(&pr.wplans[i], iwr.wr.SHASpellings)
+			}
 			results[iwr.idx] = pr
 			return nil
 		},
@@ -318,6 +321,20 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	entries = append(entries, informationalEntries(wr, opts)...)
 
 	return planResult{entries: entries, wplans: wplans}, nil
+}
+
+// respellRewrites keys planned rewrites of a full-SHA `uses:` by the
+// spelling the source has, since planning keys them by the lowercase one.
+func respellRewrites(wp *WorkflowPlan, spellings map[string]string) {
+	for source, canon := range spellings {
+		if target, ok := workflowfile.LookupRewrite(canon, wp.Rewrites); ok {
+			wp.Rewrites[source] = target
+		}
+		if required, ok := wp.RequiredRewrites[canon]; ok {
+			wp.RequiredRewrites[source] = required
+			delete(wp.RequiredRewrites, canon)
+		}
+	}
 }
 
 // transferRewrites moves each redirected root's `uses:` in this workflow

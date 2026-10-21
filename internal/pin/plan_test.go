@@ -3,6 +3,7 @@ package pin
 import (
 	"context"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -1214,4 +1215,39 @@ func tagResolver(t *testing.T, owner, repo string, tags ...string) *resolve.Reso
 	r, err := resolve.New("github.com", pinpool.New(2, nil), resolve.WithTransport(reg))
 	require.NoError(t, err)
 	return r
+}
+
+func TestRespellRewrites(t *testing.T) {
+	upper := "o/a@" + strings.Repeat("A", 40)
+	lower := "o/a@" + strings.Repeat("a", 40)
+	moved := "n/a@" + strings.Repeat("a", 40)
+	tests := map[string]struct {
+		planned  map[string]string
+		required map[string]string
+		want     map[string]string
+		wantReq  map[string]string
+	}{
+		"leaves an unplanned use as written": {
+			planned: map[string]string{},
+			want:    map[string]string{},
+		},
+		"applies the planned rewrite to the source spelling": {
+			planned: map[string]string{lower: "o/a@v1"},
+			want:    map[string]string{lower: "o/a@v1", upper: "o/a@v1"},
+		},
+		"keys a required rewrite by the source spelling": {
+			planned:  map[string]string{lower: moved},
+			required: map[string]string{lower: moved},
+			want:     map[string]string{lower: moved, upper: moved},
+			wantReq:  map[string]string{upper: moved},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			wp := WorkflowPlan{Rewrites: tt.planned, RequiredRewrites: tt.required}
+			respellRewrites(&wp, map[string]string{upper: lower})
+			assert.Equal(t, tt.want, wp.Rewrites)
+			assert.Equal(t, tt.wantReq, wp.RequiredRewrites)
+		})
+	}
 }

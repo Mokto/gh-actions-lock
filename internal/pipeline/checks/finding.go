@@ -106,6 +106,9 @@ type WorkflowReport struct {
 	// RewriteRefs are the refs eligible for source rewriting: workflow YAML
 	// plus the in-repo `$/…` action files listed in SelfActionFiles.
 	RewriteRefs []parserlock.ActionRef
+	// SHASpellings are the source spellings of uppercase full-SHA refs
+	// (see ParsedWorkflow).
+	SHASpellings map[string]string
 	// SelfActionFiles are in-repo action definition files reached via `$/…`.
 	SelfActionFiles []string
 	// SelfActionRefs are the remote refs found specifically inside SelfActionFiles.

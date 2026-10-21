@@ -1511,7 +1511,7 @@ jobs:
 // parser rejects is never skipped, in a workflow or a $/ composite, in
 // any mode or transport. Nothing is fetched or written.
 func TestFreshMalformedRemoteRefCannotOnboard(t *testing.T) {
-	for _, rejected := range []string{"actions/checkout@main:action.yml", "actions/checkout/.github/workflows/ci.yml@v4"} {
+	for _, rejected := range []string{"actions/checkout@main:action.yml", "actions/checkout/.github/workflows/ci.yml@v4", "actions/checkout@rel@1"} {
 		t.Run(rejected, func(t *testing.T) { testMalformedRemoteRefCannotOnboard(t, rejected) })
 	}
 }
@@ -1573,6 +1573,7 @@ func TestRemoteCompositeMalformedRefBlocks(t *testing.T) {
 	tests := map[string]string{
 		"actions/checkout@main:action.yml":             "uses: actions/checkout@main:action.yml is not an action reference the Actions backend accepts",
 		"actions/checkout/.github/workflows/ci.yml@v4": "reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps",
+		"actions/checkout@rel@1":                       "uses: actions/checkout@rel@1 has more than one @",
 	}
 	for use, want := range tests {
 		t.Run(use, func(t *testing.T) { testRemoteCompositeMalformedRef(t, use, want) })
@@ -1600,4 +1601,86 @@ jobs:
 	require.ErrorIs(t, err, errSilent, stderr)
 	assert.Contains(t, stderr, want)
 	assert.NoFileExists(t, filepath.Join(filepath.Dir(path), "actions.lock"))
+}
+
+// TestUppercaseSHAUseMatchesLowercaseKey: the lockfile spells full SHAs in
+// lowercase and a workflow may not; the workflow is left as written.
+func TestUppercaseSHAUseMatchesLowercaseKey(t *testing.T) {
+	lower := "94de994a9f6fffee200243214e17002e2920bb59"
+	upper := strings.ToUpper(lower)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/action@`+upper+`
+`, "octo/action@"+upper+"=sha1-"+upper+"=v1")
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", path)
+	require.NoError(t, err, stderr)
+
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQLForRepo("octo", "action"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("octo/action", lower, nodeActionYAML)},
+	}))
+	_, stderr, err = runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
+	require.NoError(t, err, stderr)
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after))
+	lock := readTempLockfilePins(t)
+	assert.Contains(t, lock, "'octo/action@"+lower+"':")
+	assert.NotContains(t, lock, upper)
+
+	_, stderr, err = runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", path)
+	require.NoError(t, err, stderr)
+}
+
+// TestRemoteCompositeUppercaseSHAChildLocksLowercase: a composite's child
+// pinned by an uppercase full SHA is locked under the lowercase key.
+func TestRemoteCompositeUppercaseSHAChildLocksLowercase(t *testing.T) {
+	const sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	child := "94de994a9f6fffee200243214e17002e2920bb59"
+	composite := "name: c\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@" + strings.ToUpper(child) + "\n"
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQLForRepo("octo", "composite"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("octo/composite", sha, composite)},
+	}))
+	reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("actions/checkout", child, nodeActionYAML)},
+	}))
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v4.2.0", child)))
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/git/ref/heads/main`),
+		httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": child, "type": "commit"}}))
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", child)))
+	reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
+		httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+	reg.Register(httpmock.REST("GET", `repos/octo/composite$`),
+		httpmock.JSONResponse(map[string]any{"full_name": "octo/composite", "default_branch": "main", "id": 2, "owner": map[string]any{"id": 2}}))
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
+	isolateRunLogs(t)
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octo/composite@v1
+`)
+
+	_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-narrow", "--no-interactive", path)
+	require.NoError(t, err, stderr)
+	lock := readTempLockfilePins(t)
+	assert.Contains(t, lock, "- 'actions/checkout@"+child+"'")
+	assert.Contains(t, lock, "'actions/checkout@"+child+"':")
+	assert.NotContains(t, lock, strings.ToUpper(child))
+
+	_, stderr, err = runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", path)
+	require.NoError(t, err, stderr)
 }
