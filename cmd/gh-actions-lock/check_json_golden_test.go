@@ -34,6 +34,7 @@ const goldenFixtureDir = "testdata/golden-json"
 
 func TestCheckCommand_JSONGolden(t *testing.T) {
 	reg := &httpmock.Registry{}
+	registerLockedManifests(reg, nil)
 	defer reg.Verify(t)
 
 	const (

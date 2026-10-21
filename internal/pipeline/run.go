@@ -28,6 +28,9 @@ type RunOptions struct {
 	// Verify also checks that each pin on a mutable ref is still in that
 	// ref's history, at one Compare call per ref that moved.
 	Verify bool
+	// ReadOnly runs never write, so recorded entries are checked even under
+	// Relock.
+	ReadOnly bool
 
 	// Resolver UX hooks — set these for interactive spinner mode.
 	OnResolveProgress func(done, total int)
@@ -136,7 +139,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	// Phase 4: Parity.
 	if r != nil {
-		mode := parityMode{verify: opts.Verify, relock: opts.Relock, acceptMoved: opts.AcceptMoved}
+		mode := parityMode{verify: opts.Verify, relock: opts.Relock, acceptMoved: opts.AcceptMoved, readOnly: opts.ReadOnly}
 		endParity := prof.Phase("  parity check")
 		err := checkParity(ctx, r, parsed, opts.Store, report, recordedKeys, resolved, parents, mode)
 		endParity()

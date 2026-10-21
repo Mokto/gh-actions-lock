@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -42,6 +43,7 @@ func TestCheckCommand_HelpExplainsHostAndAuthOverrides(t *testing.T) {
 
 func TestCheckCommand_JSONWithHTTPMocks(t *testing.T) {
 	reg := &httpmock.Registry{}
+	registerLockedManifests(reg, nil)
 	defer reg.Verify(t)
 
 	reg.Register(
@@ -231,9 +233,100 @@ func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 	}
 }
 
-// registerParity stubs one parity query that reports every pin intact.
+// registerParity stubs one parity query that reports every pin intact, and
+// answers locked-manifest reads with node actions.
 func registerParity(reg *httpmock.Registry) {
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOK)
+	registerLockedManifests(reg, nil)
+}
+
+// lockedManifestRead matches an action-file query whose every ref is a full
+// SHA: the read of locked manifests at their commits.
+func lockedManifestRead(req *http.Request) bool {
+	if !httpmock.GraphQL(`file: file\(path`)(req) {
+		return false
+	}
+	var body struct {
+		Variables map[string]any `json:"variables"`
+	}
+	_ = json.NewDecoder(bytes.NewReader(mustReadBody(req))).Decode(&body)
+	n := 0
+	for k, v := range body.Variables {
+		if !strings.HasPrefix(k, "expr") {
+			continue
+		}
+		s, _ := v.(string)
+		if !parserlock.IsFullSha(strings.TrimSuffix(s, "^{commit}")) {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}
+
+// registerLockedManifests answers locked-manifest reads from manifests,
+// keyed by owner/repo[/path]; any other action is a node action. It
+// returns the number of requests served.
+func registerLockedManifests(reg *httpmock.Registry, manifests map[string]string) *atomic.Int64 {
+	var reads atomic.Int64
+	respond := actionFiles(manifests, nil)
+	reg.RegisterReusable(lockedManifestRead, func(req *http.Request) (*http.Response, error) {
+		reads.Add(1)
+		return respond(req)
+	})
+	return &reads
+}
+
+// actionFiles answers action-file reads from manifests. A ref that is not a
+// full SHA resolves to commits[owner/repo].
+func actionFiles(manifests, commits map[string]string) httpmock.Responder {
+	return func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		data := map[string]any{}
+		for i := 0; ; i++ {
+			owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+			if !ok {
+				break
+			}
+			nwo := owner + "/" + body.Variables[fmt.Sprintf("name%d", i)].(string)
+			name := nwo
+			if yml := body.Variables[fmt.Sprintf("yml%d", i)].(string); yml != "action.yml" {
+				name += "/" + strings.TrimSuffix(yml, "/action.yml")
+			}
+			text, ok := manifests[name]
+			if !ok {
+				text = nodeActionYAML
+			}
+			sha := strings.TrimSuffix(body.Variables[fmt.Sprintf("expr%d", i)].(string), "^{commit}")
+			if !parserlock.IsFullSha(sha) {
+				sha = commits[nwo]
+			}
+			data[fmt.Sprintf("a%d", i)] = testRepoResponse(nwo, sha, text)
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	}
+}
+
+// registerLockedManifestsREST answers the REST-only reads of a manifest at
+// a full SHA: the commit lookup, then a node action's action.yml.
+func registerLockedManifestsREST(reg *httpmock.Registry) {
+	reg.RegisterReusable(httpmock.REST("GET", `/commits/[0-9a-f]{40}$`), func(req *http.Request) (*http.Response, error) {
+		return httpmock.JSONResponse(map[string]any{"sha": req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:]})(req)
+	})
+	reg.RegisterReusable(httpmock.RESTWithQuery("GET", `/contents/(.+/)?action\.yml$`, "ref="), func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(nodeActionYAML)), Header: http.Header{}}, nil
+	})
+}
+
+func mustReadBody(req *http.Request) []byte {
+	b, _ := io.ReadAll(req.Body)
+	req.Body = io.NopCloser(bytes.NewReader(b))
+	return b
 }
 
 // parityOK answers a parity query as if every locked pin still matches.
@@ -452,6 +545,7 @@ func runCommandWithHTTPContext(t *testing.T, ctx context.Context, rt http.RoundT
 // resolution and is reachable — validation passes with no errors or warnings.
 func TestCheck_Reachable(t *testing.T) {
 	reg := &httpmock.Registry{}
+	registerLockedManifests(reg, nil)
 	defer reg.Verify(t)
 
 	sha := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"

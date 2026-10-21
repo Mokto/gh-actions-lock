@@ -12,6 +12,8 @@ import "github.com/github/gh-actions-lock/internal/dep"
 type resolvedEntry struct {
 	dep       dep.Dependency
 	actionYML string
+	// seeded marks an entry copied from the lockfile: no manifest was read.
+	seeded bool
 }
 
 // tagPeel records the outcome of a PeelTagObject lookup so repeated checks

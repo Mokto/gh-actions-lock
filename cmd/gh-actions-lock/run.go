@@ -315,6 +315,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		// read-only run never does.
 		AcceptMoved: opts.acceptMoved && !opts.noFix,
 		Verify:      opts.verify,
+		ReadOnly:    opts.noFix,
 		Profile:     prof,
 	}
 	// Defer spinner start until actual network work begins. The fast path
