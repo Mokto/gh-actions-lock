@@ -40,18 +40,18 @@ jobs:
 		return replacing
 	}
 
-	inspections, owners := lockedManifestInspections(opts, parsed, report, nil, proof, inspected)
+	inspections, owners := lockedManifestInspections(opts, parsed, report, nil, proof, inspected, nil)
 	require.Len(t, inspections, 1)
 	assert.Empty(t, inspections[0].keys, "actual replacement requires no retained-manifest read")
 	assert.Empty(t, owners)
 
 	replacing = false
-	inspections, owners = lockedManifestInspections(opts, parsed, report, nil, proof, inspected)
+	inspections, owners = lockedManifestInspections(opts, parsed, report, nil, proof, inspected, nil)
 	require.Len(t, inspections, 1, "a writer dropped by Audit makes its inputs retained again")
 	assert.True(t, inspections[0].keys["o/a@v1"])
 	assert.Len(t, owners, 1)
 
-	inspections, owners = lockedManifestInspections(opts, parsed, report, nil, proof, inspected)
+	inspections, owners = lockedManifestInspections(opts, parsed, report, nil, proof, inspected, nil)
 	assert.Empty(t, inspections, "unchanged retained inputs do not repeat immutable traversal")
 	assert.Empty(t, owners)
 }

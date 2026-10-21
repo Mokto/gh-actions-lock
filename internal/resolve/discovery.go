@@ -297,10 +297,18 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 	for len(pending) > 0 {
 		if depth >= r.MaxRecursionDepth {
 			err := fmt.Errorf("composite action recursion exceeded max depth %d", r.MaxRecursionDepth)
+			exceeded := false
 			for _, request := range pending {
+				if seen[cacheKey(request.ref)] {
+					continue
+				}
 				g.addError(request.ref, err)
+				exceeded = true
 			}
-			return g, err
+			if exceeded {
+				return g, errors.Join(resolveErr, err)
+			}
+			break
 		}
 
 		var toResolve []resolutionRequest

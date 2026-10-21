@@ -36,6 +36,36 @@ func TestRemoteCompositeRejectsMalformedRemoteRef(t *testing.T) {
 	assert.Contains(t, err.Error(), rejected)
 }
 
+func TestDiscoveryDepthDoesNotFailVisitedRoots(t *testing.T) {
+	for _, unseen := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unseen-child=%v", unseen), func(t *testing.T) {
+			yml := "runs:\n  using: composite\n  steps:\n    - uses: o/b@v1\n"
+			if unseen {
+				yml += "    - uses: o/c@v1\n"
+			}
+			r := seedCache(&Resolver{MaxRecursionDepth: 1}, map[ghapi.ActionRef]resolvedEntry{
+				ghapi.ForActionRef("o", "a", "", "v1"): {
+					dep: dep.Dependency{NWO: "o/a", Ref: "v1", SHA: strings.Repeat("a", 40)}, actionYML: yml,
+				},
+				ghapi.ForActionRef("o", "b", "", "v1"): {
+					dep: dep.Dependency{NWO: "o/b", Ref: "v1", SHA: strings.Repeat("b", 40)}, actionYML: "runs:\n  using: node20\n",
+				},
+			})
+			root := parserlock.ActionRef{Owner: "o", Repo: "b", Ref: "v1"}
+			graph, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{
+				{Owner: "o", Repo: "a", Ref: "v1"}, root,
+			})
+			if unseen {
+				require.ErrorContains(t, err, "max depth")
+			} else {
+				require.NoError(t, err)
+			}
+			_, _, err = graph.Inspect([]parserlock.ActionRef{root})
+			require.NoError(t, err, "another root's depth limit must not taint a visited root")
+		})
+	}
+}
+
 func TestResolveLockedRecursiveCachesContentWithoutLosingLogicalRefs(t *testing.T) {
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	reg := &httpmock.Registry{}

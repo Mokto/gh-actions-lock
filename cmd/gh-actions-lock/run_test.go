@@ -86,6 +86,7 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 			ref := strings.TrimSuffix(body.Variables[fmt.Sprintf("expr%d", i)], "^{commit}")
 			sha, yml := graphLeafSHA, nodeActionYAML
+			responseNWO := "acme/" + name
 			switch strings.ToLower(name) {
 			case "parent":
 				sha = graphParentSHA
@@ -126,8 +127,7 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			case "fresh":
 				yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/child@v2\n"
 			case "old", "new":
-				data[fmt.Sprintf("a%d", i)] = testRepoResponse("acme/new", graphLeafSHA, nodeActionYAML)
-				continue
+				responseNWO = "acme/new"
 			case "leaf":
 				if g.leafUsesParent {
 					yml = "runs:\n  using: composite\n  steps:\n    - uses: acme/parent@v1.0.0\n"
@@ -147,7 +147,7 @@ func (g *graphTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if manifest, ok := g.manifests[fullName+"@"+ref]; ok {
 				yml = manifest
 			}
-			data[fmt.Sprintf("a%d", i)] = testRepoResponse("acme/"+name, sha, yml)
+			data[fmt.Sprintf("a%d", i)] = testRepoResponse(responseNWO, sha, yml)
 		}
 		return httpmock.JSONResponse(map[string]any{"data": data})(req)
 	}
@@ -838,6 +838,105 @@ func TestCompleteness_MissingMetadataIsNotARetry(t *testing.T) {
 			assert.Equal(t, 1, missing)
 			assert.Equal(t, before, snapshotWorkflows(t))
 		})
+	}
+}
+
+func TestCompleteness_EveryOwnerRetainsCoverage(t *testing.T) {
+	for _, broken := range []string{"deleted", "changed", "transitive-failure"} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reverse=%v", broken, reverse), func(t *testing.T) {
+				path := writeTempWorkflow(t, strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/tools/a@v1", 1))
+				other := ".github/workflows/aaa.yml"
+				if reverse {
+					other = ".github/workflows/zzz.yml"
+				}
+				ref := "acme/tools/b@v1"
+				if broken == "transitive-failure" {
+					ref = "acme/other@v1"
+				}
+				require.NoError(t, os.WriteFile(other, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", ref, 1)), 0o600))
+				transport := &graphTransport{manifests: map[string]string{
+					"acme/tools/b@v1":              "runs:\n  using: composite\n  steps:\n    - uses: acme/leaf@v3\n",
+					"acme/tools/b@" + graphLeafSHA: "runs:\n  using: composite\n  steps:\n    - uses: acme/leaf@v3\n",
+					"acme/other@v1":                "runs:\n  using: composite\n  steps:\n    - uses: acme/tools/b@v1\n",
+					"acme/other@" + graphLeafSHA:   "runs:\n  using: composite\n  steps:\n    - uses: acme/tools/b@v1\n",
+				}}
+				_, stderr, err := runCommandWithHTTP(t, transport, "--no-narrow", path, other)
+				require.NoError(t, err, stderr)
+				file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+				require.NoError(t, err)
+				action := file.Dependencies["acme/tools@v1"]
+				action.Uses = nil
+				file.Dependencies["acme/tools@v1"] = action
+				writeGraph(t, file)
+				switch broken {
+				case "deleted":
+					require.NoError(t, os.Remove(other))
+				case "changed":
+					require.NoError(t, os.WriteFile(other, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", "acme/leaf@v3", 1)), 0o600))
+				case "transitive-failure":
+					transport.manifests["acme/tools/b@"+graphLeafSHA] = "runs: ["
+				}
+				before := snapshotWorkflows(t)
+				p, err := runParity(t, transport, "--verify", path)
+				require.ErrorIs(t, err, errSilent)
+				assert.False(t, p.Valid)
+				assert.True(t, slices.ContainsFunc(p.Findings, func(f format.Finding) bool {
+					return f.Workflow == path && f.Severity == "error"
+				}), "%+v", p.Findings)
+				assert.Equal(t, before, snapshotWorkflows(t))
+			})
+		}
+	}
+}
+
+func TestCompleteness_PlannedIdentityRetainsOtherPaths(t *testing.T) {
+	for _, redirect := range []bool{false, true} {
+		for _, damaged := range []bool{false, true} {
+			t.Run(fmt.Sprintf("redirect=%v/damaged=%v", redirect, damaged), func(t *testing.T) {
+				owned := "acme/new/b@v1.0.0"
+				fresh := "acme/new/a@v1"
+				key := "acme/new@v1.0.0"
+				if redirect {
+					owned, fresh, key = "acme/new/b@v1", "acme/old/a@v1", "acme/new@v1"
+				}
+				path := writeTempWorkflow(t, strings.Replace(graphWorkflow, "acme/parent@v1.0.0", owned, 1))
+				nwoPath, _, _ := strings.Cut(owned, "@")
+				transport := &graphTransport{manifests: map[string]string{
+					owned:                        "runs:\n  using: composite\n  steps:\n    - uses: acme/leaf@v3\n",
+					nwoPath + "@" + graphLeafSHA: "runs:\n  using: composite\n  steps:\n    - uses: acme/leaf@v3\n",
+				}}
+				_, stderr, err := runCommandWithHTTP(t, transport, "--no-narrow", path)
+				require.NoError(t, err, stderr)
+				file, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+				require.NoError(t, err)
+				require.Contains(t, file.Dependencies, key)
+				if damaged {
+					action := file.Dependencies[key]
+					action.Uses = nil
+					file.Dependencies[key] = action
+					writeGraph(t, file)
+				}
+				const added = ".github/workflows/new.yml"
+				require.NoError(t, os.WriteFile(added, []byte(strings.Replace(graphWorkflow, "acme/parent@v1.0.0", fresh, 1)), 0o600))
+				before := snapshotWorkflows(t)
+				p, err := runParity(t, transport, added)
+				if damaged {
+					require.ErrorIs(t, err, errSilent)
+					assert.False(t, p.Valid)
+					assert.True(t, slices.ContainsFunc(p.Findings, func(f format.Finding) bool {
+						return f.Category == "not-pinned" && f.Dependency == "acme/leaf@v3" && f.RequiredBy == key
+					}), "%+v", p.Findings)
+					assert.Equal(t, before, snapshotWorkflows(t))
+				} else {
+					require.NoError(t, err, "%+v", p.Findings)
+					after, err := parserlock.Parse([]byte(readTempLockfilePins(t)))
+					require.NoError(t, err)
+					assert.Equal(t, []string{key}, after.Workflows[added])
+					assert.Equal(t, file.Workflows[path], after.Workflows[path])
+				}
+			})
+		}
 	}
 }
 

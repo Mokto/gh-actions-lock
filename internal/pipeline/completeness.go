@@ -16,7 +16,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/resolve"
 )
 
-func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, resolvedGraph *resolve.Graph, replaced checks.ReplacementProof, inspected map[int]map[string]bool) error {
+func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, resolvedGraph *resolve.Graph, replaced checks.ReplacementProof, inspected map[int]map[string]bool, planned map[string][]string) error {
 	if opts.Resolver == nil || opts.Store == nil {
 		return nil
 	}
@@ -24,7 +24,7 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 	file := opts.Store.File()
 	deps := opts.Store.AllDeps()
 	refs := lockfile.NewRefIndex(file)
-	inspections, owners := lockedManifestInspections(opts, parsed, report, resolvedGraph, replaced, inspected)
+	inspections, owners := lockedManifestInspections(opts, parsed, report, resolvedGraph, replaced, inspected, planned)
 	var roots []parserlock.ActionRef
 	for _, owner := range owners {
 		roots = append(roots, owner.roots...)
@@ -38,37 +38,66 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 	if err != nil && ghapi.DependabotProxy() && ghapi.IsTransient(err) {
 		return fmt.Errorf("could not verify locked dependency manifests: %w", err)
 	}
+	for i := range owners {
+		owners[i].manifests, owners[i].err = graph.Manifests(owners[i].roots)
+	}
 	for _, inspection := range inspections {
 		pw := parsed[inspection.workflow]
 		wr := &report.Workflows[inspection.workflow]
 		var retained []parserlock.ActionRef
 		var discoveryErr error
 		covered := map[string]bool{}
+		unproven := map[string][]string{}
+		coveredByOwner := map[string]map[string]bool{}
+		requiredByOwner := map[string]map[string]bool{}
 		for _, owner := range owners {
+			localCoverage := coveredByOwner[owner.path]
+			if localCoverage == nil {
+				localCoverage = map[string]bool{}
+				coveredByOwner[owner.path] = localCoverage
+				requiredByOwner[owner.path] = map[string]bool{}
+			}
 			for _, root := range owner.roots {
 				for _, key := range refs.Lookup(root.NWO(), root.Ref).Candidates {
 					if inspection.keys[key] {
 						retained = append(retained, root)
 						covered[key] = true
+						localCoverage[key] = true
 					}
 				}
 			}
-			manifests, manifestErr := graph.Manifests(owner.roots)
-			for _, manifest := range manifests {
+			for _, manifest := range owner.manifests {
 				d := manifest.Entry.Dep
 				for _, key := range refs.Lookup(d.NWO, d.Ref).Candidates {
 					if inspection.keys[key] {
 						retained = append(retained, manifest.Ref)
 						covered[key] = true
+						localCoverage[key] = true
 					}
 				}
 			}
-			if manifestErr != nil && slices.ContainsFunc(slices.Collect(maps.Keys(inspection.keys)), func(key string) bool {
-				return owner.keys[key] && !covered[key]
-			}) {
-				retained = append(retained, owner.roots...)
-				discoveryErr = errors.Join(discoveryErr, manifestErr)
+			relevant := false
+			for key := range inspection.keys {
+				if owner.keys[key] {
+					relevant = true
+					if owner.unproven[key] || owner.required[key] {
+						requiredByOwner[owner.path][key] = true
+					}
+				}
 			}
+			if relevant {
+				discoveryErr = errors.Join(discoveryErr, owner.err)
+			}
+		}
+		for path, keys := range requiredByOwner {
+			for key := range keys {
+				if !coveredByOwner[path][key] {
+					unproven[key] = append(unproven[key], path)
+				}
+			}
+		}
+		for key := range unproven {
+			slices.Sort(unproven[key])
 		}
 		_, parents, err := graph.Inspect(resolve.DedupRequests(retained))
 		err = errors.Join(discoveryErr, err)
@@ -79,8 +108,12 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 			if err != nil && !onlyExplained(err) {
 				continue
 			}
-			if !covered[key] {
-				appendUnprovenOwner(pw.Path, wr, key, inspection.owners[key])
+			if !covered[key] || len(unproven[key]) > 0 {
+				paths := inspection.owners[key]
+				if len(unproven[key]) > 0 {
+					paths = unproven[key]
+				}
+				appendUnprovenOwner(pw.Path, wr, key, paths)
 				continue
 			}
 			for _, child := range file.Dependencies[key].Uses {
@@ -104,11 +137,16 @@ type lockedInspection struct {
 }
 
 type manifestOwner struct {
-	roots []parserlock.ActionRef
-	keys  map[string]bool
+	path      string
+	roots     []parserlock.ActionRef
+	keys      map[string]bool
+	required  map[string]bool
+	unproven  map[string]bool
+	manifests []resolve.Manifest
+	err       error
 }
 
-func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, fresh *resolve.Graph, replaced checks.ReplacementProof, inspected map[int]map[string]bool) ([]lockedInspection, []manifestOwner) {
+func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, report *checks.Report, fresh *resolve.Graph, replaced checks.ReplacementProof, inspected map[int]map[string]bool, planned map[string][]string) ([]lockedInspection, []manifestOwner) {
 	file := opts.Store.File()
 	if opts.RecordedWorkflows != nil {
 		file.Workflows = opts.RecordedWorkflows
@@ -130,6 +168,11 @@ func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, 
 		recorded := lockedManifestRoots(pw)
 		for _, ref := range recorded {
 			add(ref)
+		}
+		for _, key := range planned[pw.Path] {
+			if ref := parserlock.ParseActionRef(key); ref != nil {
+				add(*ref)
+			}
 		}
 		var manifestErr error
 		if fresh != nil {
@@ -154,6 +197,9 @@ func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, 
 			manifestErr = err
 			for _, manifest := range manifests {
 				add(manifest.Ref)
+				d := manifest.Entry.Dep
+				owner, repo := d.OwnerRepo()
+				add(parserlock.ActionRef{Owner: owner, Repo: repo, Ref: d.Ref})
 			}
 		}
 		if replaced != nil {
@@ -212,11 +258,7 @@ func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, 
 			continue
 		}
 		owner := ParseAll([]string{path}, opts.Store)[0]
-		if owner.LoadErr != nil || owner.DepsErr != nil || isBlocked(owner) {
-			continue
-		}
 		use := lockfile.RootUse(owner.Refs)
-		var roots []parserlock.ActionRef
 		for _, key := range slices.Sorted(maps.Keys(relevant)) {
 			pin, ok := parserlock.ParsePin(key)
 			if !ok {
@@ -226,7 +268,13 @@ func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, 
 			if !ok {
 				continue
 			}
-			if _, ok := use(pin, action.Commit); !ok {
+			_, matches := use(pin, action.Commit)
+			entryOwner := manifestOwner{
+				path: path, keys: rootKeys[key], required: map[string]bool{key: true},
+			}
+			if !matches || owner.LoadErr != nil || owner.DepsErr != nil || isBlocked(owner) {
+				entryOwner.unproven = rootKeys[key]
+				owners = append(owners, entryOwner)
 				continue
 			}
 			// Keep every declared path that names this owned root. A full
@@ -234,17 +282,12 @@ func lockedManifestInspections(opts RunOptions, parsed []checks.ParsedWorkflow, 
 			for _, ref := range owner.Refs {
 				if _, ok := lockfile.RootUse([]parserlock.ActionRef{ref})(pin, action.Commit); ok {
 					ref.Ref = pin.Ref
-					roots = append(roots, ref)
+					entryOwner.roots = append(entryOwner.roots, ref)
 				}
 			}
+			entryOwner.roots = resolve.DedupRequests(entryOwner.roots)
+			owners = append(owners, entryOwner)
 		}
-		keys := map[string]bool{}
-		for key := range relevant {
-			for reached := range rootKeys[key] {
-				keys[reached] = true
-			}
-		}
-		owners = append(owners, manifestOwner{roots: resolve.DedupRequests(roots), keys: keys})
 	}
 	return inspections, owners
 }

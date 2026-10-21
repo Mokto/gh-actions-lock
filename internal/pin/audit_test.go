@@ -39,7 +39,7 @@ func TestAuditInspectsWritePreview(t *testing.T) {
 			rec := &Record{Workflows: []WorkflowPlan{{Path: "ci.yml"}}}
 			report := &checks.Report{Workflows: []checks.WorkflowReport{{Path: "ci.yml"}}}
 			calls := 0
-			err = Audit(context.Background(), rec, store, report, nil, func(ctx context.Context, replaced checks.ReplacementProof) error {
+			err = Audit(context.Background(), rec, store, report, nil, func(ctx context.Context, replaced checks.ReplacementProof, _ map[string][]string) error {
 				require.NoError(t, ctx.Err())
 				calls++
 				assert.Equal(t, calls == 1, replaced(checks.Deferred{
@@ -125,7 +125,7 @@ func TestAuditInspectionFollowsEntryRepairScope(t *testing.T) {
 			report := &checks.Report{Workflows: []checks.WorkflowReport{{Path: "new.yml"}}}
 			var inspected bool
 			err = Audit(context.Background(), rec, store, report, &CommitOptions{SkipNewWorkflowEntries: skipNew},
-				func(_ context.Context, replaced checks.ReplacementProof) error {
+				func(_ context.Context, replaced checks.ReplacementProof, _ map[string][]string) error {
 					inspected = true
 					entry := checks.Deferred{Key: key, Ref: "old", Commit: sha}
 					assert.Equal(t, !skipNew, replaced(entry), "only a surviving writer applies the entry repair")
@@ -166,7 +166,7 @@ func TestAuditRestoresParityBeforeManifestInspection(t *testing.T) {
 	}}}
 	var calls int
 	err = Audit(context.Background(), rec, store, report, nil,
-		func(_ context.Context, replaced checks.ReplacementProof) error {
+		func(_ context.Context, replaced checks.ReplacementProof, _ map[string][]string) error {
 			calls++
 			assert.True(t, report.Workflows[0].Deferred[0].Restored)
 			assert.True(t, report.Workflows[0].SkipCommit)

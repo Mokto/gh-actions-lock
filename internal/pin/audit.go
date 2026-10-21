@@ -21,7 +21,7 @@ import (
 // blocks no further workflow.
 // If inspect is non-nil, it checks retained manifests against that same
 // preview. Writers it blocks are removed before the next pass.
-func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *checks.Report, copts *CommitOptions, inspect func(context.Context, checks.ReplacementProof) error) error {
+func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *checks.Report, copts *CommitOptions, inspect func(context.Context, checks.ReplacementProof, map[string][]string) error) error {
 	deferred := false
 	for _, wr := range report.Workflows {
 		deferred = deferred || len(wr.Deferred) > 0
@@ -62,7 +62,7 @@ func Audit(ctx context.Context, rec *Record, store *lockfile.State, report *chec
 		}
 		if err := inspect(ctx, func(d checks.Deferred) bool {
 			return written(preview, verified, d)
-		}); err != nil {
+		}, preview.File().Workflows); err != nil {
 			return err
 		}
 		for i, wr := range report.Workflows {
