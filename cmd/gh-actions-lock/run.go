@@ -19,6 +19,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pinpool"
@@ -125,6 +126,8 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	errOut := cmd.ErrOrStderr()
 	console := ui.NewWithWriter(errOut)
 	defer console.StopProgress()
+	ghapi.SetRetryNotifier(func(msg string) { console.TermNotice("%s", msg) })
+	defer ghapi.SetRetryNotifier(nil)
 
 	// Expand verify mode flags (see verify.go for both modes).
 	applyVerifyFlags(opts)

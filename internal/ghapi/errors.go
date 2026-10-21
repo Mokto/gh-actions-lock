@@ -42,7 +42,7 @@ func IsPermissionDenied(err error) bool {
 
 // IsRateLimited reports whether err is a rate-limit response: HTTP 429, or a
 // 403 with the budget exhausted or a Retry-After (secondary rate limit), the
-// same rule retryTransport.shouldRetry uses.
+// same rule the retry transport uses.
 func IsRateLimited(err error) bool {
 	var httpErr *api.HTTPError
 	if !errors.As(err, &httpErr) {
@@ -51,14 +51,14 @@ func IsRateLimited(err error) bool {
 	if httpErr.StatusCode == http.StatusTooManyRequests {
 		return true
 	}
-	return httpErr.StatusCode == http.StatusForbidden &&
-		(httpErr.Headers.Get("X-RateLimit-Remaining") == "0" || httpErr.Headers.Get("Retry-After") != "")
+	return rateLimited403(httpErr.StatusCode, httpErr.Headers)
 }
 
 // IsTransient reports whether err is a failure a retry may fix: a rate
-// limit, a 5xx, or a transport error. 404s, 422s and permission errors are
-// answers, not outages. A joined error is transient when any branch is, so
-// one 404 can't mask an outage elsewhere in the batch.
+// limit, a 5xx, or a transport error other than an untrusted certificate.
+// 401s, 404s, 422s and permission errors are answers, not outages. A joined
+// error is transient when any branch is, so one 404 can't mask an outage
+// elsewhere in the batch. It follows the rules the retry transport uses.
 func IsTransient(err error) bool {
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		for _, e := range joined.Unwrap() {
@@ -68,14 +68,29 @@ func IsTransient(err error) bool {
 		}
 		return false
 	}
-	if IsRateLimited(err) {
+	if IsRateLimited(err) || graphQLRateLimited(err) || errors.As(err, new(*UnknownOutcomeError)) {
 		return true
 	}
 	if code, ok := StatusCode(err); ok {
 		return code >= http.StatusInternalServerError
 	}
 	var urlErr *url.Error
-	return errors.As(err, &urlErr)
+	return errors.As(err, &urlErr) && retryableTransportErr(urlErr.Err)
+}
+
+// graphQLRateLimited reports a GraphQL response rejected by the rate limit.
+// GitHub sends it as HTTP 200 with a RATE_LIMITED error.
+func graphQLRateLimited(err error) bool {
+	var gqlErr *api.GraphQLError
+	if !errors.As(err, &gqlErr) {
+		return false
+	}
+	for _, e := range gqlErr.Errors {
+		if e.Type == "RATE_LIMITED" {
+			return true
+		}
+	}
+	return false
 }
 
 // RefNotFoundError reports a ref that does not exist in a repository that
@@ -87,3 +102,12 @@ type RefNotFoundError struct {
 
 func (e *RefNotFoundError) Error() string { return e.Err.Error() }
 func (e *RefNotFoundError) Unwrap() error { return e.Err }
+
+// errHeaders returns the response headers carried by a REST error.
+func errHeaders(err error) (http.Header, bool) {
+	var httpErr *api.HTTPError
+	if errors.As(err, &httpErr) && httpErr.Headers != nil {
+		return httpErr.Headers, true
+	}
+	return nil, false
+}

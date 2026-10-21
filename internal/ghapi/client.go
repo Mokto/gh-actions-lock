@@ -5,15 +5,9 @@
 package ghapi
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
-	"fmt"
-	"io"
-	"math"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +69,7 @@ type clientConfig struct {
 	authToken string // non-empty → use explicit token (tests)
 	logIgnore bool   // suppress log env vars (tests)
 	anonymous bool
+	budget    *retryBudget
 }
 
 // WithClientTransport overrides the HTTP transport. Use in tests with httpmock.
@@ -99,6 +94,9 @@ func New(hostname string, opts ...ClientOption) (*Client, error) {
 	if hostname == "" {
 		hostname = "github.com"
 	}
+	// One retry budget per run: the public fallback client shares it.
+	budget := newRetryBudget()
+	opts = append(opts[:len(opts):len(opts)], func(c *clientConfig) { c.budget = budget })
 	local, err := newClient(hostname, opts...)
 	if err != nil || !IsProxima(hostname) {
 		return local, err
@@ -140,14 +138,10 @@ func newClient(hostname string, opts ...ClientOption) (*Client, error) {
 		apiOpts.AuthToken = cfg.authToken
 		apiOpts.LogIgnoreEnv = cfg.logIgnore
 	default:
-		base := http.DefaultTransport
 		// Integration tests: skip TLS verification when GH_ACTIONS_LOCK_INSECURE is set.
-		if os.Getenv("GH_ACTIONS_LOCK_INSECURE") != "" {
-			base = &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // integration tests only
-			}
-		}
-		var t http.RoundTripper = newRetryTransport(base, 3)
+		retry := newRetryTransport(apiTransport(os.Getenv("GH_ACTIONS_LOCK_INSECURE") != ""), cfg.budget)
+		c.anonHTTP = &http.Client{Transport: retry}
+		var t http.RoundTripper = retry
 		if cfg.profile != nil {
 			t = cfg.profile.WrapTransport(t)
 		}
@@ -172,15 +166,9 @@ func newClient(hostname string, opts ...ClientOption) (*Client, error) {
 	c.graphql = gql
 	c.rest = rest
 
-	// Build anonymous HTTP client for SSO fallback. Respects the same
-	// insecure TLS setting as the main client for integration tests.
-	if os.Getenv("GH_ACTIONS_LOCK_INSECURE") != "" {
-		c.anonHTTP = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // integration tests only
-			},
-		}
-	} else {
+	// The anonymous SSO-fallback client shares the retry transport; test
+	// transports leave it on http.DefaultClient so tests can stub it.
+	if c.anonHTTP == nil {
 		c.anonHTTP = http.DefaultClient
 	}
 	if cfg.anonymous {
@@ -197,130 +185,6 @@ func (t anonymousTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	req.Header.Del("Authorization")
 	req.Header.Del("Cookie")
 	return t.inner.RoundTrip(req)
-}
-
-// retryTransport wraps an http.RoundTripper with retry logic for transient
-// server errors (5xx), explicit rate limits (429), and GitHub secondary
-// rate limits (403 with Retry-After or X-RateLimit-Reset headers).
-type retryTransport struct {
-	inner      http.RoundTripper
-	maxRetries int
-	sleepFn    func(context.Context, time.Duration) // for testing; defaults to DefaultSleep
-}
-
-func newRetryTransport(t http.RoundTripper, maxRetries int) http.RoundTripper {
-	if t == nil {
-		t = http.DefaultTransport
-	}
-	return &retryTransport{inner: t, maxRetries: maxRetries}
-}
-
-func (rt *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Snapshot the body so POST requests can be replayed on retry.
-	var bodyBytes []byte
-	if req.Body != nil {
-		var err error
-		bodyBytes, err = io.ReadAll(req.Body)
-		req.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("reading request body for retry: %w", err)
-		}
-		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		req.ContentLength = int64(len(bodyBytes))
-	}
-
-	var resp *http.Response
-	var err error
-
-	for attempt := 0; attempt <= rt.maxRetries; attempt++ {
-		if attempt > 0 && bodyBytes != nil {
-			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			req.ContentLength = int64(len(bodyBytes))
-		}
-		resp, err = rt.inner.RoundTrip(req)
-		if err != nil {
-			if req.Context().Err() != nil {
-				return nil, err
-			}
-			if attempt < rt.maxRetries {
-				rt.backoff(req.Context(), attempt)
-				if req.Context().Err() != nil {
-					return nil, req.Context().Err()
-				}
-				continue
-			}
-			return nil, err
-		}
-		if rt.shouldRetry(resp) {
-			if attempt < rt.maxRetries {
-				wait := rt.retryWait(resp, attempt)
-				resp.Body.Close()
-				rt.sleep(req.Context(), wait)
-				if req.Context().Err() != nil {
-					return nil, req.Context().Err()
-				}
-				continue
-			}
-		}
-		return resp, nil
-	}
-	return resp, err
-}
-
-// shouldRetry returns true for responses that warrant a retry: 5xx server
-// errors, 429 explicit rate limits, and 403 secondary rate limits (indicated
-// by Retry-After or X-RateLimit-Remaining: 0).
-func (rt *retryTransport) shouldRetry(resp *http.Response) bool {
-	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
-		return true
-	}
-	if resp.StatusCode == http.StatusForbidden {
-		if resp.Header.Get("Retry-After") != "" {
-			return true
-		}
-		if resp.Header.Get("X-RateLimit-Reset") != "" && resp.Header.Get("X-RateLimit-Remaining") == "0" {
-			return true
-		}
-	}
-	return false
-}
-
-// retryWait picks the sleep duration before the next attempt, honoring
-// Retry-After and X-RateLimit-Reset headers when present.
-func (rt *retryTransport) retryWait(resp *http.Response, attempt int) time.Duration {
-	if ra := resp.Header.Get("Retry-After"); ra != "" {
-		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 && secs <= 120 {
-			return time.Duration(secs) * time.Second
-		}
-	}
-	if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
-		if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
-			if d := time.Until(time.Unix(ts, 0)) + time.Second; d > 0 && d <= 120*time.Second {
-				return d
-			}
-		}
-	}
-	delay := time.Duration(math.Pow(2, float64(attempt))) * time.Second
-	if delay > 10*time.Second {
-		delay = 10 * time.Second
-	}
-	return delay
-}
-
-func (rt *retryTransport) sleep(ctx context.Context, d time.Duration) {
-	if rt.sleepFn != nil {
-		rt.sleepFn(ctx, d)
-		return
-	}
-	DefaultSleep(ctx, d)
-}
-
-func (rt *retryTransport) backoff(ctx context.Context, attempt int) {
-	delay := time.Duration(math.Pow(2, float64(attempt))) * time.Second
-	if delay > 10*time.Second {
-		delay = 10 * time.Second
-	}
-	rt.sleep(ctx, delay)
 }
 
 // DefaultSleep waits d but returns early when ctx is canceled. Useful for

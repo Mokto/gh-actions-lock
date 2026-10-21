@@ -1,9 +1,15 @@
 package ghapi
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"syscall"
 	"testing"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -79,6 +85,12 @@ func TestIsTransient(t *testing.T) {
 		{"404 joined before 5xx", errors.Join(notFound, unavailable), true},
 		{"nested joins", errors.Join(errors.Join(notFound), errors.Join(unavailable)), true},
 		{"only answers", errors.Join(notFound, httpErr(http.StatusUnprocessableEntity, nil)), false},
+		{"401", httpErr(http.StatusUnauthorized, nil), false},
+		{"connection refused", &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}}, true},
+		{"untrusted certificate", &url.Error{Op: "Get", URL: "https://api.github.com", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}}, false},
+		{"retries ran out", &url.Error{Op: "Get", URL: "https://api.github.com", Err: &UnknownOutcomeError{Cause: io.ErrUnexpectedEOF}}, true},
+		{"graphql rate limited", &api.GraphQLError{Errors: []api.GraphQLErrorItem{{Type: "RATE_LIMITED", Message: "API rate limit exceeded"}}}, true},
+		{"graphql not found", &api.GraphQLError{Errors: []api.GraphQLErrorItem{{Type: "NOT_FOUND", Path: []any{"a0"}}}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

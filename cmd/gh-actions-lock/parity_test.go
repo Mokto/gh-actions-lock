@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -816,6 +818,42 @@ jobs:
 	_, stderr, err := runCommandWithHTTP(t, parityDown{reg}, "--verify", path)
 	require.ErrorIs(t, err, errSilent, stderr)
 	assert.Contains(t, stderr, "could not verify locked actions/checkout")
+}
+
+// TestParity_UnreachableAPIBlocks is #199's repro: with the API unreachable
+// (connection refused on every request), --verify must not report the
+// lockfile valid.
+func TestParity_UnreachableAPIBlocks(t *testing.T) {
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+
+	stdout, stderr, err := runCommandWithHTTP(t, unreachable{}, "--verify", "--json=valid,findings", path)
+	require.ErrorIs(t, err, errSilent, stderr)
+	var p parityPayload
+	require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout+stderr)
+	assert.False(t, p.Valid)
+	require.NotEmpty(t, p.Findings)
+	for _, f := range p.Findings {
+		assert.Equal(t, "reachability-unknown", f.Category)
+		assert.Equal(t, "error", f.Severity)
+		assert.Contains(t, f.Detail, "connection refused")
+	}
+}
+
+// unreachable fails every request the way a refused connection does.
+type unreachable struct{}
+
+func (unreachable) raw() {}
+
+func (unreachable) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
 }
 
 // TestParity_DependabotProxyKeepsRenamedName: Dependabot reads back only

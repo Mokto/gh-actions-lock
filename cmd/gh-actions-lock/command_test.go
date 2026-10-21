@@ -368,6 +368,10 @@ func parityOKWithIDs(ids map[string]int) httpmock.Responder {
 	}
 }
 
+// rawTransport opts a test transport out of parityFallback, for tests whose
+// parity query must itself fail at the transport.
+type rawTransport interface{ raw() }
+
 // parityFallback answers parity queries and locked-manifest reads the test
 // did not stub as intact, since both fail closed when unanswered.
 type parityFallback struct{ rt http.RoundTripper }
@@ -500,8 +504,12 @@ func runCommandWithHTTPContext(t *testing.T, ctx context.Context, rt http.RoundT
 	}
 	stdoutCh, stderrCh := drain(stdoutR), drain(stderrR)
 
+	var tr http.RoundTripper = parityFallback{rt}
+	if _, ok := rt.(rawTransport); ok {
+		tr = rt
+	}
 	newResolver := func(hostname string, pool *pinpool.Pool) (*resolve.Resolver, error) {
-		return resolve.New(hostname, pool, resolve.WithTransport(parityFallback{rt}))
+		return resolve.New(hostname, pool, resolve.WithTransport(tr))
 	}
 
 	cmd := newRootCmd(newResolver)

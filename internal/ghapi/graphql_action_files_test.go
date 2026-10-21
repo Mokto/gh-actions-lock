@@ -454,6 +454,33 @@ func TestResolveActionFiles_AdaptiveSplit(t *testing.T) {
 	}
 }
 
+// TestResolveActionFiles_OutageIsNotSplit: a transport failure rejects every
+// half of a batch alike, so it costs one request, not one per split.
+func TestResolveActionFiles_OutageIsNotSplit(t *testing.T) {
+	calls := 0
+	tr := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, io.ErrUnexpectedEOF
+	})
+	c, err := New("github.com", WithClientTransport(tr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := make([]ActionFileRequest, 50)
+	for i := range refs {
+		refs[i] = ActionFileRequest{Owner: "actions", Repo: "checkout", Ref: fmt.Sprintf("v%d", i)}
+	}
+	results := c.ResolveActionFiles(context.Background(), refs)
+	if calls != 1 {
+		t.Fatalf("expected 1 request, got %d", calls)
+	}
+	for _, r := range results {
+		if !IsTransient(r.Err) {
+			t.Fatalf("expected a transient error, got %v", r.Err)
+		}
+	}
+}
+
 func TestResolveActionFiles_SingleRefBatchErrorSurfaced(t *testing.T) {
 	// A single-ref batch can't be split further, so a batch-level cost error
 	// must surface on the ref rather than being mislabeled "not found".
