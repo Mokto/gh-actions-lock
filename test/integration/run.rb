@@ -666,7 +666,7 @@ STUB_WIRING = {
   fresh_tag_zero_days_still_warns: ->(s) {
     wire_checkout_fresh(s, "gho_fake_fresh_zero_token")
   },
-  cooldown_ignored_keys_surface_in_readonly: ->(s) {
+  cooldown_ignored_keys_suppressed_in_readonly: ->(s) {
     wire_checkout_success(s, "gho_fake_cooldown_ignored_token")
   },
   migrate_local_actions_rewrite: ->(s) {

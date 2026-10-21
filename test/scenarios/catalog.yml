@@ -2179,9 +2179,9 @@ scenarios:
         - "fresh-tag"
         - "pinned to a very recent tag with no Dependabot cooldown configured"
 
-  - name: cooldown_ignored_keys_surface_in_readonly
+  - name: cooldown_ignored_keys_suppressed_in_readonly
     category: cooldown
-    description: "Read-only (--no-fix): unsupported Dependabot cooldown keys surface in JSON even when the run fails on an unpinned action"
+    description: "Real binary --no-fix keeps unpinned-action errors and exit status without irrelevant cooldown configuration warnings"
     needs_stub: true
     tags: [stub]
     flags: ["--no-fix", "--no-narrow", "--json=findings"]
@@ -2202,5 +2202,7 @@ scenarios:
       exit: 1
       stdout_is_json: true
       stdout_contains:
+        - "not-pinned"
+      stdout_excludes:
         - "cooldown-config-ignored"
         - "not supported and were ignored"
