@@ -36,6 +36,7 @@ type manifestRead struct {
 	missing bool
 	edges   []manifestEdge
 	images  []uses.Image
+	local   []*resolve.CompositeLocalPathError
 }
 
 // checkManifests reads each root's action.yml at its locked commit, then
@@ -114,6 +115,11 @@ func checkManifests(ctx context.Context, r *resolve.Resolver, file parserlock.Fi
 			if rd == nil {
 				continue
 			}
+			for _, f := range nestedLocalActionFindings(wr.Path, rd.local) {
+				if !slices.ContainsFunc(wr.Findings, func(g checks.Finding) bool { return g.Detail == f.Detail }) {
+					wr.Findings = append(wr.Findings, f)
+				}
+			}
 			for _, f := range manifestFindings(wr.Path, n, file.Dependencies[n.key], rd) {
 				if f.Severity == checks.SeverityError {
 					wr.Findings = dropValid(wr.Findings)
@@ -154,10 +160,12 @@ func readManifest(n manifestNode, file parserlock.File, byKey map[string]string,
 		}
 	}
 	self := pinKey(p.NWO, p.Ref)
-	// Malformed and local uses are diagnosed when the composite is first
-	// resolved; the edges that remain are what the lockfile must record.
-	uses, _ := resolve.CompositeUses(dep.Dependency{NWO: p.NWO, Ref: p.Ref, SHA: lockedSHA(entry.Commit)}, res.ActionYML)
+	// Malformed uses are diagnosed when the composite is first resolved; the
+	// edges that remain are what the lockfile must record. Local uses are
+	// kept so a run that keeps the pin still discloses them.
+	uses, err := resolve.CompositeUses(dep.Dependency{NWO: p.NWO, Ref: p.Ref, SHA: lockedSHA(entry.Commit)}, res.ActionYML)
 	rd := &manifestRead{images: resolve.ManifestImages(res.ActionYML, nodeName(n))}
+	rd.local, _ = resolve.SplitLocalPaths(err)
 	for _, u := range uses {
 		k := pinKey(u.Ref.NWO(), u.Ref.Ref)
 		e := manifestEdge{use: u.Ref}

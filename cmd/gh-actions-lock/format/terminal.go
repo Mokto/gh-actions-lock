@@ -3,8 +3,8 @@ package format
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -82,6 +82,7 @@ func findingExcluded(f checks.Finding, exclude map[checks.Category]bool, willRem
 // investigation-only category) so the caller can decide whether the
 // "re-run to fix" hint is honest.
 func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool) {
+	report = blockingFirst(report)
 	type depGroup struct {
 		findings  []checks.Finding
 		workflows []string
@@ -303,9 +304,37 @@ func categoryLabel(c checks.Category) string {
 	return strings.ReplaceAll(string(c), "-", " ")
 }
 
+// blockingFirst returns report with workflows blocked by a local-action error
+// first, and those errors first within each workflow, so the run's real cause
+// and its flags lead the output instead of an unrelated finding.
+func blockingFirst(report *checks.Report) *checks.Report {
+	isLocal := func(f checks.Finding) bool {
+		return f.Category == checks.LocalAction && f.Severity == checks.SeverityError
+	}
+	out := *report
+	out.Workflows = slices.Clone(report.Workflows)
+	for i := range out.Workflows {
+		ff := slices.Clone(out.Workflows[i].Findings)
+		slices.SortStableFunc(ff, func(a, b checks.Finding) int { return boolRank(isLocal(a)) - boolRank(isLocal(b)) })
+		out.Workflows[i].Findings = ff
+	}
+	slices.SortStableFunc(out.Workflows, func(a, b checks.WorkflowReport) int {
+		return boolRank(slices.ContainsFunc(a.Findings, isLocal)) - boolRank(slices.ContainsFunc(b.Findings, isLocal))
+	})
+	return &out
+}
+
+func boolRank(b bool) int {
+	if b {
+		return 0
+	}
+	return 1
+}
+
 // renderErrorFindings groups error-level findings by dependency and prints
 // per-dep detail lines followed by a category-count summary.
 func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked int, exclude map[checks.Category]bool, willRemediate bool) {
+	report = blockingFirst(report)
 	type depGroup struct {
 		dep      string
 		findings []checks.Finding
@@ -441,8 +470,24 @@ type warningGroup struct {
 func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 	var warnOrder []string
 	warnMap := map[string]*warningGroup{}
+	localByWorkflow := map[string][]string{}
+	localDocURL := ""
+	localCount := 0
 	for _, wr := range report.Workflows {
 		for _, f := range wr.Findings {
+			if f.Category == checks.LocalAction {
+				if f.Severity == checks.SeverityError {
+					continue
+				}
+				use := f.LocalPath
+				if f.ParentNWO != "" {
+					use += " (in " + f.ParentNWO + ")"
+				}
+				localByWorkflow[wr.Path] = append(localByWorkflow[wr.Path], use)
+				localDocURL = f.DocURL
+				localCount++
+				continue
+			}
 			if f.IsWarning() {
 				key := f.DepKey()
 				if key == "" {
@@ -463,13 +508,11 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 	}
 
 	// Triage warnings into buckets.
-	var unpinnedWorkflows, localActionWorkflows, bareSHADeps, otherDetailWarnings []string
+	var unpinnedWorkflows, bareSHADeps, otherDetailWarnings []string
 	for _, key := range warnOrder {
 		wg := warnMap[key]
 		f := wg.finding
 		switch {
-		case f.Category == checks.LocalAction:
-			localActionWorkflows = append(localActionWorkflows, f.WorkflowPath)
 		case f.Category == checks.NotPinned && f.ActionRef == nil:
 			unpinnedWorkflows = append(unpinnedWorkflows, f.WorkflowPath)
 		case f.Category == checks.ShaAsRef:
@@ -488,16 +531,14 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 		}
 	}
 
-	if len(localActionWorkflows) > 0 {
-		out.TermCaution("%d %s skipped — local path actions are not yet supported",
-			len(localActionWorkflows),
-			ui.Pluralize(len(localActionWorkflows), "workflow", "workflows"))
-		var localNames []string
-		for _, p := range localActionWorkflows {
-			localNames = append(localNames, p)
+	if localCount > 0 {
+		out.TermWarn("Cannot follow %d workspace-local %s", localCount, ui.Pluralize(localCount, "action", "actions"))
+		for _, p := range slices.Sorted(maps.Keys(localByWorkflow)) {
+			out.TermDetail("↳ %s: %s", p, strings.Join(localByWorkflow[p], ", "))
 		}
-		sort.Strings(localNames)
-		out.TermDetail("↳ %s", strings.Join(localNames, ", "))
+		if localDocURL != "" {
+			out.TermDetail("↳ %s", localDocURL)
+		}
 	}
 	if len(unpinnedWorkflows) > 0 {
 		out.TermWarn("%d %s not yet pinned",
@@ -605,7 +646,7 @@ func IsAlertedCategory(c checks.Category) bool {
 // re-pins the finding without operator intervention. Only structural drift
 // qualifies: a missing, changed, or orphaned lock entry. Integrity failures
 // (unreachable-pin, misleading-sha) need investigation or --accept-moved, and
-// local-path actions aren't supported at all — so none of those should
+// a blocking local action needs a source change — so none of those should
 // trigger the "Re-run without --no-fix to apply fixes" hint.
 func IsAutoFixable(c checks.Category) bool {
 	switch c {

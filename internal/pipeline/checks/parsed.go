@@ -6,6 +6,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/uses"
+	"github.com/github/gh-actions-lock/internal/workflowfile"
 )
 
 // ParsedWorkflow holds the per-workflow parse result that both phases need.
@@ -27,8 +28,12 @@ type ParsedWorkflow struct {
 	// SHASpellings maps each `uses:` value that spells a full SHA in
 	// uppercase, as the source has it, to its lowercase form, which Refs
 	// carry so lockfile lookups see one spelling.
-	SHASpellings       map[string]string
-	LocalPaths         []string
+	SHASpellings map[string]string
+	// LocalPaths are the workflow's own `./…` uses.
+	LocalPaths []string
+	// NestedLocalUses are `./…` uses inside the in-repo `$/…` actions it
+	// reaches, with the action that contains each.
+	NestedLocalUses    []workflowfile.LocalUse
 	SelfRepositoryRefs []string
 	// SelfRepositoryRefErrs holds malformed `$/…@ref` values (the invalid form).
 	SelfRepositoryRefErrs        []string

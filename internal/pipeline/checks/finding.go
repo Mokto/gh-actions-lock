@@ -30,6 +30,12 @@ type Finding struct {
 	Dependency *dep.Dependency
 	// ParentNWO is the dep key of the direct action that pulls in this transitive dep (empty if direct).
 	ParentNWO string
+	// LocalPath is the `./…` value a LocalAction warning names.
+	LocalPath string
+	// LocalRemoteUses are the remote actions the LocalPath composite uses in
+	// the checkout. The runner needs a pin for each, which the lockfile
+	// can't record, so the CLI blocks on them.
+	LocalRemoteUses []string
 	// Detail is a human-readable explanation.
 	Detail string
 	// Remediation describes what the check command can do about it.

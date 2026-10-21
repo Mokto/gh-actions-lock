@@ -78,10 +78,9 @@ const (
 	// tags (v4.2.1) each resolve to exactly one commit, making the lock
 	// comment durable across re-pins.
 	VersionRef Category = "version-ref"
-	// LocalAction means the workflow uses at least one local path action
-	// (uses: ./some-path). Lockfile onboarding is not supported for
-	// workflows that reference local actions — the entire workflow is
-	// skipped.
+	// LocalAction is a non-blocking warning for a local `./…` action. It
+	// names the runner workspace, so it is never followed or locked, and its
+	// own dependencies are not covered by the lockfile.
 	LocalAction Category = "local-action"
 	// StaleWorkflow is an informational, repo-level notice: the lockfile
 	// records a workflow entry whose file no longer exists on disk. On a

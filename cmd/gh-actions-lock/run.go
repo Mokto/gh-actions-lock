@@ -70,10 +70,12 @@ type checkOptions struct {
 	// in scanned workflows must have a corresponding lockfile entry.
 	// No auth, no resolution, no reachability — ideal for pre-commit hooks.
 	verifyLocal bool
-	// noMigrateLocalActions opts out of rewriting same-repo `./…` composite
-	// action refs to the inherently-pinned `$/…` form. Migration runs by
-	// default on fix runs; set this to leave `./…` refs on disk untouched.
-	noMigrateLocalActions bool
+	// ignoreLocalActions keeps a `./…` action that uses remote actions a
+	// warning instead of a blocking error.
+	ignoreLocalActions bool
+	// migrateLocalActions rewrites same-repo `./…` action refs to the
+	// inherently-pinned `$/…` form on fix runs. Opt-in.
+	migrateLocalActions bool
 }
 
 // bindCheckFlags registers the run flags on the root command.
@@ -97,9 +99,13 @@ func bindCheckFlags(cmd *cobra.Command, opts *checkOptions) {
 			"No network calls, no authentication, no file writes — ideal for pre-commit hooks.\n"+
 			"It does not check that the entries are trustworthy; use --verify in CI for that.")
 	cmd.Flags().StringVar(&opts.profileDir, "profile", "", "Enable profiling: write trace, CPU profile, and HTTP log to `dir`")
-	cmd.Flags().BoolVar(&opts.noMigrateLocalActions, "no-migrate-local-actions", false,
-		"Do not rewrite same-repo `uses: ./…` actions to the inherently-pinned `uses: $/…` form.\n"+
-			"Migration runs by default on fix runs (never under --verify or --verify-local); this leaves `./…` refs on disk untouched.")
+	cmd.Flags().BoolVar(&opts.ignoreLocalActions, "ignore-local-actions", false,
+		"Warn instead of failing when a local `./…` action uses remote actions the lockfile can't cover")
+	cmd.Flags().BoolVar(&opts.migrateLocalActions, "migrate-local-actions", false,
+		"Rewrite same-repo `uses: ./…` actions to the inherently-pinned `uses: $/…` form, in workflows and in-repo action files")
+	// Older releases spelled the opt-out this way; keep those commands working.
+	cmd.Flags().BoolVar(&opts.ignoreLocalActions, "no-migrate-local-actions", false, "Alias for --ignore-local-actions")
+	_ = cmd.Flags().MarkHidden("no-migrate-local-actions")
 }
 
 // validateOutputFlags rejects incoherent structured-output flag combinations.
@@ -218,13 +224,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 					return fmt.Errorf("scanning %s: %w", pw.Path, pw.LoadErr)
 				}
 				scanErrors := append(pw.SelfRepositoryRefErrs, pw.SelfRepositoryResolutionErrs...)
-				localRefs, warnings := workflowfile.ExtractLocalCompositeRefs(pw.Path, pw.LocalPaths)
-				scanErrors = append(scanErrors, warnings...)
 				if len(scanErrors) > 0 {
 					return fmt.Errorf("scanning %s: %s", pw.Path, strings.Join(scanErrors, "; "))
 				}
 				refs = append(refs, pw.Refs...)
-				refs = append(refs, localRefs...)
 			}
 			// Drop obsolete pins before binding hosts or verifying identities.
 			// This is in-memory only; a failed run leaves the file untouched.
@@ -262,11 +265,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	committed := false
 
 	// Rewrite same-repo `./…` action refs to the inherently-pinned `$/…` form
-	// before scanning, so the diagnosis sees compliant refs. Runs by default on
-	// fix runs; opt out with --no-migrate-local-actions. Read-only runs
-	// (--no-fix) never touch disk.
+	// before scanning, so the diagnosis sees compliant refs. Opt in with
+	// --migrate-local-actions; read-only runs (--no-fix) never touch disk.
 	migrated := 0
-	if !opts.noMigrateLocalActions && !opts.noFix {
+	if opts.migrateLocalActions && !opts.noFix {
 		var undo func()
 		var err error
 		migrated, undo, err = migrateLocalActions(opts.workflowPaths)
@@ -347,6 +349,9 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 
 	report := result.Report
 	valid := result.Valid
+	if blockLocalActions(report, opts.ignoreLocalActions) {
+		valid = false
+	}
 	// A read-only run writes nothing, so a finding deferred on a write stands.
 	if opts.noFix {
 		report.RestoreDeferred()
@@ -755,4 +760,39 @@ type plannedMigration struct {
 	original []byte
 	content  []byte
 	changed  int
+}
+
+// blockLocalActions turns each local-action warning whose checked-in
+// composite uses remote actions into a blocking error: the runner needs a pin
+// for each, and the lockfile can't record one for a `./…` action, so the job
+// would fail once the lockfile is enforced. The message doesn't name those
+// actions, since the workspace may hold something else at run time. It
+// reports whether any finding was blocked.
+func blockLocalActions(report *checks.Report, ignore bool) bool {
+	if ignore {
+		return false
+	}
+	blocked := false
+	for i := range report.Workflows {
+		for j := range report.Workflows[i].Findings {
+			f := &report.Workflows[i].Findings[j]
+			if f.Category != checks.LocalAction || len(f.LocalRemoteUses) == 0 {
+				continue
+			}
+			subject := f.LocalPath
+			fix := "Pass --migrate-local-actions to lock this repo's copy as $/, or --ignore-local-actions to keep ./."
+			if f.ParentNWO != "" {
+				subject += " (in " + f.ParentNWO + ")"
+				if !strings.HasPrefix(f.ParentNWO, "$/") {
+					fix = "Pass --ignore-local-actions to keep ./."
+				}
+			}
+			cause := subject + " runs whatever is in the workspace, so the lockfile can't cover it or the actions it uses; they'll fail when the lockfile is enforced."
+			f.Severity = checks.SeverityError
+			f.Detail = cause + " " + fix
+			f.TermDetail = cause + "\n    " + fix
+			blocked = true
+		}
+	}
+	return blocked
 }

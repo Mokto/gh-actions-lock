@@ -49,6 +49,7 @@ func DiagnoseParsed(ctx context.Context, parsed []checks.ParsedWorkflow, r *reso
 
 func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve.Resolver, store *lockfile.State, pool *pinpool.Pool) checks.WorkflowReport {
 	wr, done := precheckWorkflow(pw, store)
+	wr.Findings = append(wr.Findings, localActionFindings(pw)...)
 	if done {
 		return wr
 	}
@@ -70,23 +71,15 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 	var resolvedParents dep.ParentMap
 	if r != nil {
 		var resolveErr error
+		var nestedLocal []*resolve.CompositeLocalPathError
 		liveDeps, resolvedParents, resolveErr = r.ResolveAllRecursive(ctx, pw.Refs)
+		nestedLocal, resolveErr = resolve.SplitLocalPaths(resolveErr)
+		wr.Findings = append(wr.Findings, nestedLocalActionFindings(pw.Path, nestedLocal)...)
 		for _, img := range r.ContainerImages(pw.Refs) {
 			checks.AddContainerImage(&wr, img)
 		}
 		if resolveErr != nil {
 			blockingResolverError := false
-			if resolve.IsCompositeLocalPath(resolveErr) {
-				wr.Findings = append(wr.Findings, checks.Finding{
-					WorkflowPath: pw.Path,
-					Category:     checks.LocalAction,
-					Severity:     checks.SeverityError,
-					Confidence:   checks.ConfidenceHigh,
-					Detail:       fmt.Sprintf("a composite action uses local path actions whose transitive dependencies cannot be resolved: %s", resolveErr),
-					Remediation:  "the composite action must reference dependencies by owner/repo/path@ref instead of ./path",
-				})
-				blockingResolverError = true
-			}
 			if resolve.IsInvalidSelfRepositoryRef(resolveErr) {
 				var invalidRef *resolve.InvalidSelfRepositoryRefError
 				_ = errors.As(resolveErr, &invalidRef)
@@ -225,8 +218,8 @@ func selfRepositoryFinding(pw checks.ParsedWorkflow) checks.Finding {
 	}
 }
 
-// precheckWorkflow handles terminal preconditions (load error, local-path
-// actions, non-hosted runner, no refs, invalid deps). It returns true when
+// precheckWorkflow handles terminal preconditions (load error, invalid
+// self repository refs, no refs, invalid deps). It returns true when
 // one fired; otherwise the report is seeded with ActionRefs and images.
 func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.WorkflowReport, bool) {
 	wr := checks.WorkflowReport{Path: pw.Path}
@@ -283,11 +276,6 @@ func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.W
 		hasTerminalFinding = true
 	}
 
-	if len(pw.LocalPaths) > 0 {
-		wr.Findings = append(wr.Findings, localActionFinding(pw, store))
-		hasTerminalFinding = true
-	}
-
 	if hasTerminalFinding {
 		preserveExistingInventory(&wr, pw)
 		return wr, true
@@ -336,28 +324,68 @@ func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.W
 	return wr, false
 }
 
-// localActionFinding reports same-repo `./…` refs: an error once the workflow
-// is onboarded to the lockfile, a warning before. Shared by --verify and
-// --verify-local so both modes agree.
-func localActionFinding(pw checks.ParsedWorkflow, store *lockfile.State) checks.Finding {
-	if store != nil && store.HasWorkflow(workflowfile.KeyFromPath(pw.Path)) {
-		return checks.Finding{
-			WorkflowPath: pw.Path,
-			Category:     checks.LocalAction,
-			Severity:     checks.SeverityError,
-			Confidence:   checks.ConfidenceHigh,
-			Detail:       "workflow uses local path actions which are not supported; remove local path actions to continue using the lockfile",
-			Remediation:  "rewrite same-repo `uses: ./…` to `uses: $/…` (automatic on fix runs; disable with --no-migrate-local-actions), or remove the `./…` steps",
+// LocalActionDocURL explains local-action warnings. Kept out of docURLs,
+// which mirrors the editor's table.
+const LocalActionDocURL = "https://docs.github.com/actions/reference/security/workflow-dependency-lockfile-troubleshooting#local-action"
+
+// localActionFindings warns about each `./…` action a workflow (or one of its
+// `$/…` actions) uses. They name the runner workspace, which checkouts and
+// scripts can change, so they are never followed or locked. Shared by
+// --verify and --verify-local so both modes agree.
+func localActionFindings(pw checks.ParsedWorkflow) []checks.Finding {
+	var out []checks.Finding
+	for _, p := range pw.LocalPaths {
+		out = append(out, checks.Finding{
+			WorkflowPath:    pw.Path,
+			Category:        checks.LocalAction,
+			Severity:        checks.SeverityWarning,
+			Confidence:      checks.ConfidenceHigh,
+			LocalPath:       p,
+			LocalRemoteUses: workflowfile.LocalActionRemoteUses(pw.Path, p),
+			Detail:          "cannot follow workspace-local action " + p,
+			DocURL:          LocalActionDocURL,
+		})
+	}
+	for _, lu := range pw.NestedLocalUses {
+		out = append(out, checks.Finding{
+			WorkflowPath:    pw.Path,
+			Category:        checks.LocalAction,
+			Severity:        checks.SeverityWarning,
+			Confidence:      checks.ConfidenceHigh,
+			ParentNWO:       lu.Parent,
+			LocalPath:       lu.Path,
+			LocalRemoteUses: workflowfile.LocalActionRemoteUses(pw.Path, lu.Path),
+			Detail:          fmt.Sprintf("cannot follow workspace-local action %s used by %s", lu.Path, lu.Parent),
+			DocURL:          LocalActionDocURL,
+		})
+	}
+	return out
+}
+
+// nestedLocalActionFindings warns about `./…` actions used inside remote
+// composites, once per composite and path.
+func nestedLocalActionFindings(path string, local []*resolve.CompositeLocalPathError) []checks.Finding {
+	var out []checks.Finding
+	seen := map[[2]string]bool{}
+	for _, l := range local {
+		k := [2]string{l.Parent, l.LocalPath}
+		if seen[k] {
+			continue
 		}
+		seen[k] = true
+		out = append(out, checks.Finding{
+			WorkflowPath:    path,
+			Category:        checks.LocalAction,
+			Severity:        checks.SeverityWarning,
+			Confidence:      checks.ConfidenceHigh,
+			ParentNWO:       l.Parent,
+			LocalPath:       l.LocalPath,
+			LocalRemoteUses: workflowfile.LocalActionRemoteUses(path, l.LocalPath),
+			Detail:          fmt.Sprintf("cannot follow workspace-local action %s used by %s", l.LocalPath, l.Parent),
+			DocURL:          LocalActionDocURL,
+		})
 	}
-	return checks.Finding{
-		WorkflowPath: pw.Path,
-		Category:     checks.LocalAction,
-		Severity:     checks.SeverityWarning,
-		Confidence:   checks.ConfidenceHigh,
-		Detail:       "workflow uses local path actions; lockfile onboarding is not supported",
-		Remediation:  "rewrite same-repo `uses: ./…` to `uses: $/…` (automatic on fix runs; disable with --no-migrate-local-actions)",
-	}
+	return out
 }
 
 func preserveExistingInventory(wr *checks.WorkflowReport, pw checks.ParsedWorkflow) {

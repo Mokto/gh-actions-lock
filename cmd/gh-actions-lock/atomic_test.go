@@ -24,7 +24,7 @@ jobs:
 `
 
 // writeCleanWorkflow adds a workflow the run could pin on its own, plus a
-// local action the run would migrate to `$/…` when withLocal is set.
+// local action when withLocal is set.
 func writeCleanWorkflow(t *testing.T, reg *httpmock.Registry, withLocal bool) string {
 	t.Helper()
 	registerSetupGo(reg)
@@ -98,7 +98,7 @@ func (repoIDMismatch) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // TestRun_CleanWorkflowPins is the control for the tests below: on its own,
-// the clean workflow is pinned and migrated.
+// the clean workflow is pinned and its local action is left alone.
 func TestRun_CleanWorkflowPins(t *testing.T) {
 	reg := &httpmock.Registry{}
 	writeTempWorkflow(t, "name: ci\non: push\n")
@@ -109,8 +109,8 @@ func TestRun_CleanWorkflowPins(t *testing.T) {
 	assert.Contains(t, readTempLockfilePins(t), "actions/setup-go")
 	b, err := os.ReadFile(clean)
 	require.NoError(t, err)
-	assert.Contains(t, string(b), "$/.github/actions/local")
-	assert.Contains(t, stderr, "Migrated 1 local action")
+	assert.Contains(t, string(b), "uses: ./.github/actions/local")
+	assert.NotContains(t, string(b), "$/")
 }
 
 func TestRun_BlockingErrorWritesNothing(t *testing.T) {
@@ -136,7 +136,6 @@ jobs:
 			if name == "terminal" {
 				assert.Contains(t, stderr, "different repository than the one locked")
 				assert.Contains(t, stderr, "Nothing was written")
-				assert.NotContains(t, stderr, "Migrated")
 				assert.Contains(t, stderr, "1 of 2 workflows failed")
 				assert.NotContains(t, stderr, "Not pinned", "pins the run would have made are not errors")
 			}
@@ -150,7 +149,7 @@ func TestRun_UnloadableWorkflowWritesNothing(t *testing.T) {
 	clean := writeCleanWorkflow(t, reg, false)
 	before := snapshotWorkflows(t)
 
-	_, stderr, err := runCommandWithHTTP(t, reg, "--no-migrate-local-actions", broken, clean)
+	_, stderr, err := runCommandWithHTTP(t, reg, broken, clean)
 	require.ErrorIs(t, err, errSilent)
 	assert.Equal(t, before, snapshotWorkflows(t), "no file may change")
 	assert.NoFileExists(t, filepath.Join(".github", "workflows", "actions.lock"))
@@ -159,7 +158,7 @@ func TestRun_UnloadableWorkflowWritesNothing(t *testing.T) {
 }
 
 // TestRun_UnresolvedWritesNothing: an action that can't be resolved aborts
-// the run, and the output must not claim the rolled-back migration landed.
+// the run.
 func TestRun_UnresolvedWritesNothing(t *testing.T) {
 	// acme/gone has no stub, so it can't be resolved.
 	reg := &httpmock.Registry{}
@@ -180,5 +179,4 @@ jobs:
 	assert.Equal(t, before, snapshotWorkflows(t), "no file may change")
 	assert.Contains(t, stderr, "could not be resolved")
 	assert.Contains(t, stderr, "Nothing was written")
-	assert.NotContains(t, stderr, "Migrated")
 }

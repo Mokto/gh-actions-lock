@@ -156,14 +156,13 @@ func TestGcLogs(t *testing.T) {
 	})
 }
 
-// Regression for github-early-access/actions-locked-dependencies#59: a fix
-// run rejected because a remote composite uses a local path left a record
-// claiming valid with no workflows.
+// A fix run rejected because of a remote composite's contents must not leave
+// a record claiming valid with no workflows.
 func TestCheck_FailedRunLogsRejectedWorkflow(t *testing.T) {
 	logDir := isolateRunLogs(t)
 
 	reg := &httpmock.Registry{}
-	compositeYAML := "name: Publish\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/.tmp/run-in-docker\n"
+	compositeYAML := "name: Publish\nruns:\n  using: composite\n  steps:\n    - uses: octo/missing-ref\n"
 	reg.Register(
 		httpmock.GraphQLForRepo("pypa", "gh-action-pypi-publish"),
 		httpmock.JSONResponse(map[string]any{
@@ -206,16 +205,17 @@ jobs:
 	assert.Equal(t, workflowPath, payload.Workflows[0].Path)
 	assert.False(t, payload.Workflows[0].Valid)
 	require.NotEmpty(t, payload.Findings)
-	assert.Equal(t, "local-action", payload.Findings[0].Category)
-	assert.Contains(t, payload.Findings[0].Detail, "./.github/.tmp/run-in-docker")
+	assert.Equal(t, "not-pinned", payload.Findings[0].Category)
+	assert.Contains(t, payload.Findings[0].Detail, "octo/missing-ref")
 }
 
 func TestCheck_RunLogOnEveryExitPath(t *testing.T) {
 	t.Run("failure before diagnosis still logs the error", func(t *testing.T) {
 		logDir := isolateRunLogs(t)
-		writeTempWorkflow(t, "name: ci\non: push\njobs: {}\n")
+		path := writeTempWorkflow(t, "name: ci\non: push\njobs: {}\n")
+		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(path), "actions.lock"), []byte("{"), 0o600))
 
-		_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, ".github/workflows/missing.yml")
+		_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, path)
 		require.Error(t, err)
 		assert.Contains(t, stderr, "Run log:")
 

@@ -16,9 +16,10 @@ import (
 	"github.com/github/gh-actions-lock/internal/uses"
 )
 
-// CompositeLocalPathError is returned when a remote composite action uses a
-// local path (./…) reference in its steps. We cannot resolve transitive
-// dependencies behind such references, so the workflow must be blocked.
+// CompositeLocalPathError reports a `./…` use inside a remote composite. The
+// path names the runner workspace, not the composite's repository, so it is
+// never followed or locked. It is a warning carried on the resolver's error;
+// callers separate it with SplitLocalPaths.
 type CompositeLocalPathError struct {
 	// Parent is the NWO@Ref of the composite action containing the local path.
 	Parent string
@@ -27,14 +28,31 @@ type CompositeLocalPathError struct {
 }
 
 func (e *CompositeLocalPathError) Error() string {
-	return fmt.Sprintf("composite action %s uses local path %q which cannot be resolved for pinning", e.Parent, e.LocalPath)
+	return fmt.Sprintf("composite action %s uses local action %q, which is not followed", e.Parent, e.LocalPath)
 }
 
-// IsCompositeLocalPath reports whether err (or any error in its chain)
-// is a CompositeLocalPathError.
-func IsCompositeLocalPath(err error) bool {
-	var target *CompositeLocalPathError
-	return errors.As(err, &target)
+// SplitLocalPaths separates the CompositeLocalPathErrors joined into err from
+// the errors that remain. rest is nil when only local paths were reported.
+func SplitLocalPaths(err error) (local []*CompositeLocalPathError, rest error) {
+	var others []error
+	var walk func(error)
+	walk = func(err error) {
+		if l, ok := err.(*CompositeLocalPathError); ok {
+			local = append(local, l)
+			return
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, e := range joined.Unwrap() {
+				walk(e)
+			}
+			return
+		}
+		others = append(others, err)
+	}
+	if err != nil {
+		walk(err)
+	}
+	return local, errors.Join(others...)
 }
 
 // InvalidSelfRepositoryRefError is returned when a fetched composite carries
@@ -79,7 +97,8 @@ type NestedUse struct {
 }
 
 // CompositeUses returns the actions a composite's manifest uses, and the
-// uses that must block rather than be skipped. parent is the composite at
+// uses that must block rather than be skipped. `./…` uses are skipped and
+// reported as CompositeLocalPathError. parent is the composite at
 // its commit. A manifest that isn't a composite uses nothing.
 func CompositeUses(parent dep.Dependency, yml string) ([]NestedUse, error) {
 	meta, err := parserlock.ParseActionMeta(yml)

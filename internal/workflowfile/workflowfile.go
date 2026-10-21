@@ -169,14 +169,22 @@ type SelfRepositoryActionScan struct {
 	Refs                  []parserlock.ActionRef
 	SelfRepositoryRefs    []string
 	SelfRepositoryRefErrs []string
-	LocalPaths            []string
-	MalformedRefs         []string
+	// LocalUses are the `./…` uses inside the scanned actions, each with the
+	// `$/…` action that contains it.
+	LocalUses     []LocalUse
+	MalformedRefs []string
 	// ActionFiles are the in-repo action definition files visited, in visit
 	// order. Refs in these files are rewritable source, unlike `$/…` itself.
 	ActionFiles []string
 	Errors      []string
 	// Images are the mutable `docker://` steps in the visited actions.
 	Images []uses.Image
+}
+
+// LocalUse is a `./…` use and the `$/…` action whose steps contain it.
+type LocalUse struct {
+	Path   string
+	Parent string
 }
 
 // ScanSelfRepositoryActions recursively reads in-repo actions reached through
@@ -212,7 +220,7 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 	seenRefs := make(map[string]bool)
 	seenSelf := make(map[string]bool)
 	seenInvalid := make(map[string]bool)
-	seenLocal := make(map[string]bool)
+	seenLocal := make(map[LocalUse]bool)
 
 	for len(pending) > 0 {
 		current := pending[0]
@@ -262,9 +270,9 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 				}
 				pending = append(pending, pendingAction{ref: use, depth: current.depth + 1})
 			case strings.HasPrefix(use, "./"):
-				if !seenLocal[use] {
-					seenLocal[use] = true
-					scan.LocalPaths = append(scan.LocalPaths, use)
+				if lu := (LocalUse{Path: use, Parent: current.ref}); !seenLocal[lu] {
+					seenLocal[lu] = true
+					scan.LocalUses = append(scan.LocalUses, lu)
 				}
 			case strings.HasPrefix(use, "docker://"):
 				img, ok := uses.ClassifyImage(use)
@@ -371,68 +379,6 @@ func DiscoverCompositeActionFiles(root string) ([]string, error) {
 	}
 	sort.Strings(paths)
 	return paths, nil
-}
-
-// ExtractLocalCompositeRefs reads action.yml files from local paths relative
-// to the workflow file's directory and returns any repository action refs
-// found in their steps.
-func ExtractLocalCompositeRefs(workflowPath string, localPaths []string) ([]parserlock.ActionRef, []string) {
-	var refs []parserlock.ActionRef
-	var warnings []string
-	seen := make(map[string]bool)
-
-	repoRoot, err := findRepoRoot(workflowPath)
-	if err != nil {
-		if len(localPaths) > 0 {
-			warnings = append(warnings, fmt.Sprintf("can't resolve local action paths: %v", err))
-		}
-		return nil, warnings
-	}
-	if repoRoot == "" {
-		if len(localPaths) > 0 {
-			warnings = append(warnings, "can't resolve local action paths: not in a git repository")
-		}
-		return nil, warnings
-	}
-
-	for _, localPath := range localPaths {
-		relPath := strings.TrimPrefix(localPath, "./")
-		actionDir := filepath.Join(repoRoot, relPath)
-		if !isWithinRoot(repoRoot, actionDir) {
-			warnings = append(warnings, fmt.Sprintf("refusing to read action file outside repo root: %s", localPath))
-			continue
-		}
-
-		actionContent, err := os.ReadFile(filepath.Join(actionDir, "action.yml"))
-		if err != nil {
-			actionContent, err = os.ReadFile(filepath.Join(actionDir, "action.yaml"))
-			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("can't read action file for %s: %v", localPath, err))
-				continue
-			}
-		}
-
-		usesList, parseErr := parseActionYAMLForUses(actionContent)
-		if parseErr != nil {
-			warnings = append(warnings, fmt.Sprintf("can't parse action file for %s: %v", localPath, parseErr))
-			continue
-		}
-
-		for _, use := range usesList {
-			switch c := uses.Classify(use, uses.Step); c.Kind {
-			case uses.Invalid:
-				warnings = append(warnings, c.Err().Error())
-			case uses.Action:
-				dedupKey := c.Action.FullName() + "@" + c.Action.Ref
-				if !seen[dedupKey] {
-					seen[dedupKey] = true
-					refs = append(refs, c.Action)
-				}
-			}
-		}
-	}
-
-	return refs, warnings
 }
 
 // walkUses visits `uses:` values at the only places GitHub Actions honors
@@ -610,6 +556,47 @@ func overrideRepoRoot(root, startDir string) (string, error) {
 		return "", fmt.Errorf("%s=%s does not contain %s", RepoRootEnv, root, startDir)
 	}
 	return absRoot, nil
+}
+
+// ValidateInRepo rejects a path that resolves, through symlinks, outside the
+// repository containing it. A path outside any repository, or one that does
+// not exist yet, has nothing to escape.
+func ValidateInRepo(path string) error {
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return nil
+	}
+	root, err := findRepoRoot(path)
+	if err != nil || root == "" {
+		return err
+	}
+	return ValidatePathWithinRoot(root, path)
+}
+
+// LocalActionRemoteUses returns the remote actions that the composite at the
+// `./…` path localPath uses, read from the checkout containing workflowPath.
+// It returns nil when the action can't be read there: the runner workspace
+// may hold something else, so nothing is known about it.
+func LocalActionRemoteUses(workflowPath, localPath string) []string {
+	root, err := findRepoRoot(workflowPath)
+	if err != nil || root == "" {
+		return nil
+	}
+	actionDir := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(localPath, "./")))
+	if !isWithinRoot(root, actionDir) {
+		return nil
+	}
+	actionUses, _, err := readActionUses(root, actionDir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, use := range actionUses {
+		use = strings.TrimSpace(use)
+		if uses.Classify(use, uses.Step).Kind == uses.Action && !slices.Contains(out, use) {
+			out = append(out, use)
+		}
+	}
+	return out
 }
 
 func isWithinRoot(root, candidate string) bool {

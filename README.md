@@ -153,17 +153,32 @@ jobs:
 A trailing `@ref` (e.g. `$/actions/my-action@v1`) is rejected — the ref is always
 the running commit.
 
-Same-repo `./…` composite action references are automatically converted to `$/…`
-on fix runs. The migration rewrites `./…` steps both in your workflows and in
-your in-repo composite action definitions (`action.yml`). Only `./…` paths that
-resolve to an in-repo action file are rewritten. `--verify` and `--verify-local`
-never migrate; they report `./…` refs as `local-action` findings instead. To
-leave `./…` refs untouched on fix runs, opt out with
-`--no-migrate-local-actions`:
+### Local actions
 
-```bash
-gh actions-lock --no-migrate-local-actions
-```
+`uses: ./…` names a path in the runner workspace, which checkouts and scripts
+can change, so `gh actions-lock` cannot follow it, and never locks or rewrites
+it. That includes `./…` steps inside remote composite actions. A
+workspace-local action's own `uses:` dependencies are **outside lockfile coverage**.
+
+When the action's `action.yml` is in the checkout and uses remote actions, the
+runner needs a lockfile pin for each one and fails the job without it. Every
+mode, including `--verify` and `--verify-local`, reports this as a blocking
+`local-action` error. The message doesn't list those actions, since the
+workspace may hold something else at run time. To fix it, either:
+
+- pass `--migrate-local-actions` on a fix run to rewrite same-repo `./…`
+  references to `$/…`, in workflows and in-repo `action.yml` files, which the
+  CLI then follows and locks; or
+- pass `--ignore-local-actions` to keep `./…` and report it as a warning.
+  `--no-migrate-local-actions` is an alias.
+
+A `./…` inside a remote composite can't be rewritten, so only
+`--ignore-local-actions` applies there.
+
+A `./…` action the CLI can't read from the checkout, or one with only `run:`
+steps, is a non-blocking `local-action` warning. Both link to the
+[troubleshooting docs](https://docs.github.com/actions/reference/security/workflow-dependency-lockfile-troubleshooting#local-action).
+The workflow's other dependencies are locked and checked as usual.
 
 ## How it works
 
@@ -175,8 +190,8 @@ Finally, locked actions must have a branch that the commit being locked exists w
 
 ## Limitations
 
-There are currently eligibility limitations for workflows that can be onboarded to lockfiles:
-- Workflows in the lockfile cannot use local-path actions, these will be skipped for onboarding. This is also a short-term gap.
+- Local `./…` actions and their dependencies are outside lockfile coverage; see
+  [Local actions](#local-actions).
 
 The lockfile pins action commits, not the container images that workflows and Docker actions pull or build. Any image not pinned by `@sha256:` digest (a `docker://` step, a job `container:` or `services:` image, or a Docker action's `runs.image`) is reported as a non-blocking `container-image` warning. This includes images chosen by a `${{ }}` expression and Docker actions built from a Dockerfile, whose base image the lockfile doesn't cover.
 

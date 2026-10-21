@@ -477,49 +477,9 @@ scenarios:
       output_contains:
         - "container image alpine:3.18 is not pinned by digest"
 
-  - name: local_action_skipped
+  - name: composite_local_path_warns
     category: workflow_parsing
-    description: "Local action (./path) — entire workflow skipped"
-    needs_token: true
-    fixtures:
-      workflows:
-        ci.yml:
-          raw: |
-            name: CI
-            on: push
-            jobs:
-              build:
-                runs-on: ubuntu-latest
-                steps:
-                  - uses: ./my-local-action
-                  - uses: actions/checkout@v4
-    expect:
-      exit: 0
-
-  - name: local_action_onboarded_error
-    category: workflow_parsing
-    description: "Onboarded workflow adds local path action — hard error"
-    needs_token: true
-    fixtures:
-      workflows:
-        ci.yml:
-          raw: |
-            name: CI
-            on: push
-            jobs:
-              build:
-                runs-on: ubuntu-latest
-                steps:
-                  - uses: ./my-local-action
-                  - uses: actions/checkout@v4
-      lockfile_template: pinned_checkout
-    expect:
-      exit: 1
-      output_contains: ["local path actions"]
-
-  - name: composite_local_path_blocked
-    category: workflow_parsing
-    description: "Remote composite using ./local-path internally — blocked because transitive deps are unresolvable"
+    description: "Remote composite using ./local-path internally — the composite is locked, the local path is not followed and is reported as a warning"
     needs_token: true
     fixtures:
       workflows:
@@ -527,12 +487,12 @@ scenarios:
           name: CI
           actions: ["nodeselector/actions-test-fixtures/composite-with-local-path@main"]
     expect:
-      exit: 1
-      output_contains: ["local path actions", "composite"]
+      exit: 0
+      output_contains: ["Cannot follow 1 workspace-local action", "./local-helper"]
 
-  - name: composite_local_path_blocked_deep
+  - name: composite_local_path_warns_deep
     category: workflow_parsing
-    description: "Remote composite whose $/ chain runs several levels deep before a leaf uses ./local-path — blocked transitively, not at the top level"
+    description: "Remote composite whose $/ chain runs several levels deep before a leaf uses ./local-path — the warning surfaces transitively"
     needs_token: true
     fixtures:
       workflows:
@@ -540,14 +500,15 @@ scenarios:
           name: CI
           actions: ["nodeselector/actions-test-fixtures/deep-blocked@main"]
     expect:
-      exit: 1
-      output_contains: ["local path actions", "composite", "deep-blocked-helper"]
+      exit: 0
+      output_contains: ["Cannot follow 1 workspace-local action", "deep-blocked-helper"]
 
   - name: migrate_local_actions_rewrite
     category: workflow_parsing
-    description: "migration runs by default on fix runs: rewrites a deep in-repo ./ chain to $/, then discovers, narrows and pins the remote dependency reached only through that $/ chain; no self repository ref enters the lockfile"
+    description: "--migrate-local-actions on a fix run: rewrites a deep in-repo ./ chain to $/, then discovers, narrows and pins the remote dependency reached only through that $/ chain; no self repository ref enters the lockfile"
     needs_stub: true
     tags: [stub]
+    flags: ["--migrate-local-actions"]
     fixtures:
       workflows:
         ci.yml:
@@ -590,6 +551,43 @@ scenarios:
         "nested/deep/action.yml": ["uses: actions/checkout@v4.2.2"]
       files_exclude:
         ".github/workflows/ci.yml": ["uses: ./my-action", "actions/checkout"]
+
+  - name: local_actions_opaque
+    category: workflow_parsing
+    description: "Real binary and lockfile writer: with --ignore-local-actions a fix run locks the remote ref beside a ./ action that uses a remote action, never follows the local action file (its remote dependency is unknown to the stub) and rewrites neither file. Blocking without the flag is covered by Go command tests"
+    needs_stub: true
+    tags: [stub]
+    flags: ["--ignore-local-actions"]
+    fixtures:
+      workflows:
+        ci.yml:
+          raw: |
+            name: CI
+            on: push
+            jobs:
+              build:
+                runs-on: ubuntu-latest
+                steps:
+                  - uses: ./my-action
+                  - uses: actions/checkout@v4
+      files:
+        my-action/action.yml: |
+          name: My Action
+          runs:
+            using: composite
+            steps:
+              - uses: octo/not-in-stub@v1
+      delete_lockfile: true
+    expect:
+      exit: 0
+      output_contains: ["Cannot follow 1 workspace-local action", "./my-action"]
+      lockfile_contains: ["'actions/checkout@v4.2.2':"]
+      lockfile_excludes: ["octo/not-in-stub", "my-action"]
+      files_contain:
+        ".github/workflows/ci.yml": ["uses: ./my-action"]
+        "my-action/action.yml": ["uses: octo/not-in-stub@v1"]
+      files_exclude:
+        ".github/workflows/ci.yml": ["$/"]
 
   - name: sub_path_action
     category: workflow_parsing
@@ -1045,7 +1043,7 @@ scenarios:
 
   - name: local_action_only
     category: workflow_parsing
-    description: "Workflow with only local path actions (no remote refs) — skipped cleanly"
+    description: "Workflow with only local path actions (no remote refs) — reported as warnings, exits cleanly"
     needs_token: true
     fixtures:
       workflows:
@@ -1185,9 +1183,9 @@ scenarios:
       exit: 0
       lockfile_deps_cover_direct: true
 
-  - name: local_action_skip_names_workflow
+  - name: local_action_warning_names_workflow
     category: workflow_parsing
-    description: "Local action skip message names the affected workflow file"
+    description: "Local action warning names the affected workflow file"
     needs_token: true
     fixtures:
       workflows:
@@ -1628,14 +1626,14 @@ scenarios:
     expect:
       exit: 0
 
-  - name: partial_onboarding_counts_only_blocked_workflow
+  - name: composite_local_path_does_not_block_other_workflows
     category: multi_workflow
-    description: "A blocked workflow stops the whole run: nothing is written, and only the blocked workflow is counted as failed"
+    description: "A remote composite's ./ use is a warning, not a blocker: every workflow is pinned and written. The blocking path is covered by Go command tests"
     needs_token: true
     fixtures:
       workflows:
-        blocked.yml:
-          name: Blocked
+        withlocal.yml:
+          name: WithLocal
           actions:
             - "nodeselector/actions-test-fixtures/composite-with-local-path@main"
             - "nodeselector/actions-test-fixtures/simple-node@tampered"
@@ -1649,16 +1647,14 @@ scenarios:
           name: V1
           actions: ["nodeselector/actions-test-fixtures/simple-node@v1"]
     expect:
-      exit: 1
+      exit: 0
       output_contains:
-        - "1 of 4 workflows failed"
-        - "local action"
-        - "Nothing was written"
+        - "./local-helper"
+        - "across 4 workflows"
       output_excludes:
-        - "4 of 4 workflows failed"
-        - "Not pinned"
-      lockfile_excludes:
-        - "nodeselector/actions-test-fixtures@"
+        - "Nothing was written"
+      lockfile_contains:
+        - "nodeselector/actions-test-fixtures@main"
 
   # ═══════════════════════════════════════════════════════════════════════
   # CATEGORY: lockfile (additional scenarios)
