@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -93,9 +94,16 @@ func TestReferenceIdentityBoundary(t *testing.T) {
 	}
 }
 
-// keyFactoryUses type-checks every non-test package in the module and
-// returns its disallowed key factory uses, keyed "dir/file.go:function:factory".
-func keyFactoryUses(t *testing.T) map[string][]string {
+// checkedPackage is one type-checked non-test package of the module.
+type checkedPackage struct {
+	rel   string
+	fset  *token.FileSet
+	files []*ast.File
+	info  *types.Info
+}
+
+// checkedPackages type-checks every non-test package in the module.
+func checkedPackages(t *testing.T) []checkedPackage {
 	t.Helper()
 	root, module := moduleRoot(t)
 	var dirs []string
@@ -113,7 +121,7 @@ func keyFactoryUses(t *testing.T) map[string][]string {
 
 	fset := token.NewFileSet()
 	imp := importer.ForCompiler(fset, "source", nil).(types.ImporterFrom)
-	uses := map[string][]string{}
+	var pkgs []checkedPackage
 	for _, dir := range dirs {
 		bp, err := build.Default.ImportDir(dir, 0)
 		var noGo *build.NoGoError
@@ -130,27 +138,43 @@ func keyFactoryUses(t *testing.T) map[string][]string {
 			require.NoError(t, err)
 			files = append(files, f)
 		}
-		info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
+		info := &types.Info{
+			Uses:       map[*ast.Ident]types.Object{},
+			Defs:       map[*ast.Ident]types.Object{},
+			Types:      map[ast.Expr]types.TypeAndValue{},
+			Selections: map[*ast.SelectorExpr]*types.Selection{},
+		}
 		conf := types.Config{Importer: imp}
 		_, err = conf.Check(path.Join(module, rel), fset, files, info)
 		require.NoError(t, err)
-		for _, f := range files {
+		pkgs = append(pkgs, checkedPackage{rel: rel, fset: fset, files: files, info: info})
+	}
+	return pkgs
+}
+
+// keyFactoryUses returns every disallowed key factory use, keyed
+// "dir/file.go:function:factory".
+func keyFactoryUses(t *testing.T) map[string][]string {
+	t.Helper()
+	uses := map[string][]string{}
+	for _, pkg := range checkedPackages(t) {
+		for _, f := range pkg.files {
 			for _, decl := range f.Decls {
 				ast.Inspect(decl, func(n ast.Node) bool {
 					id, ok := n.(*ast.Ident)
 					if !ok {
 						return true
 					}
-					fn, ok := info.Uses[id].(*types.Func)
+					fn, ok := pkg.info.Uses[id].(*types.Func)
 					if !ok {
 						return true
 					}
 					owners, banned := keyFactories[fn.FullName()]
-					if !banned || slices.Contains(owners, rel) {
+					if !banned || slices.Contains(owners, pkg.rel) {
 						return true
 					}
-					pos := fset.Position(id.Pos())
-					site := path.Join(rel, filepath.Base(pos.Filename)) + ":" + declName(decl) + ":" + shortName(fn)
+					pos := pkg.fset.Position(id.Pos())
+					site := path.Join(pkg.rel, filepath.Base(pos.Filename)) + ":" + declName(decl) + ":" + shortName(fn)
 					uses[site] = append(uses[site], fmt.Sprintf("line %d", pos.Line))
 					return true
 				})
@@ -158,6 +182,144 @@ func keyFactoryUses(t *testing.T) map[string][]string {
 		}
 	}
 	return uses
+}
+
+// spellingPackages are where planning and rewrites decide what a reference
+// is. Their refs and SHAs are compared and keyed only as Ref or Key, so
+// two spellings of one commit can never be told apart there.
+var spellingPackages = []string{"internal/pin", "internal/pipeline", "internal/pipeline/checks"}
+
+// rawRefName matches the names a string holding a ref, SHA or commit goes
+// by: Ref, SHA, Commit, sha, ref, lockedSHA, declaredRef and so on.
+var rawRefName = regexp.MustCompile(`(?i)(^|[a-z])(sha|ref|commit|oid)$`)
+
+// TestNoRawRefComparison fails when code in spellingPackages compares a
+// raw ref, SHA or commit string (a field, variable or call named like one)
+// with == or !=, switches on one, keys a map with one (alone or
+// concatenated), or folds one with strings.EqualFold. Comparing with a
+// constant (an empty check, a literal ref) is allowed.
+func TestNoRawRefComparison(t *testing.T) {
+	for _, site := range rawRefComparisons(t) {
+		t.Errorf("%s; compare refs as dep.Ref or dep.Key", site)
+	}
+}
+
+func rawRefComparisons(t *testing.T) []string {
+	t.Helper()
+	var sites []string
+	for _, pkg := range checkedPackages(t) {
+		if !slices.Contains(spellingPackages, pkg.rel) {
+			continue
+		}
+		info := pkg.info
+		isString := func(e ast.Expr) bool {
+			tv, ok := info.Types[e]
+			if !ok || tv.Type == nil {
+				return false
+			}
+			b, ok := tv.Type.(*types.Basic)
+			return ok && b.Info()&types.IsString != 0
+		}
+		isConst := func(e ast.Expr) bool { return info.Types[e].Value != nil }
+		// tainted holds variables assigned a raw ref, such as
+		// key := e.NWO + "@" + e.Ref.
+		tainted := map[types.Object]bool{}
+		var raw func(e ast.Expr) bool
+		raw = func(e ast.Expr) bool {
+			switch e := ast.Unparen(e).(type) {
+			case *ast.SelectorExpr:
+				if sel, ok := info.Selections[e]; ok {
+					return sel.Kind() == types.FieldVal && rawRefName.MatchString(e.Sel.Name) && isString(e)
+				}
+			case *ast.Ident:
+				v, ok := info.Uses[e].(*types.Var)
+				return ok && !v.IsField() && isString(e) && (rawRefName.MatchString(e.Name) || tainted[v])
+			case *ast.BinaryExpr:
+				return e.Op == token.ADD && (raw(e.X) || raw(e.Y))
+			case *ast.CallExpr:
+				var name string
+				switch fn := ast.Unparen(e.Fun).(type) {
+				case *ast.Ident:
+					name = fn.Name
+				case *ast.SelectorExpr:
+					name = fn.Sel.Name
+				}
+				if name == "ToLower" {
+					return len(e.Args) == 1 && raw(e.Args[0])
+				}
+				// A call named like a ref returns one: lockedSHA(...), pin.SHA().
+				return rawRefName.MatchString(name) && isString(e)
+			}
+			return false
+		}
+		for _, f := range pkg.files {
+			for range 3 {
+				ast.Inspect(f, func(n ast.Node) bool {
+					as, ok := n.(*ast.AssignStmt)
+					if !ok || len(as.Lhs) != len(as.Rhs) {
+						return true
+					}
+					for i, l := range as.Lhs {
+						id, ok := l.(*ast.Ident)
+						if !ok || !raw(as.Rhs[i]) {
+							continue
+						}
+						if obj := info.Defs[id]; obj != nil {
+							tainted[obj] = true
+						} else if obj := info.Uses[id]; obj != nil {
+							tainted[obj] = true
+						}
+					}
+					return true
+				})
+			}
+		}
+		for _, f := range pkg.files {
+			for _, decl := range f.Decls {
+				report := func(n ast.Node, what string) {
+					pos := pkg.fset.Position(n.Pos())
+					sites = append(sites, fmt.Sprintf("%s:%d %s %s", path.Join(pkg.rel, filepath.Base(pos.Filename)), pos.Line, declName(decl), what))
+				}
+				ast.Inspect(decl, func(n ast.Node) bool {
+					switch n := n.(type) {
+					case *ast.BinaryExpr:
+						if (n.Op == token.EQL || n.Op == token.NEQ) && !isConst(n.X) && !isConst(n.Y) && (raw(n.X) || raw(n.Y)) {
+							report(n, "compares a raw ref")
+						}
+					case *ast.SwitchStmt:
+						if n.Tag != nil && raw(n.Tag) {
+							report(n, "switches on a raw ref")
+						}
+					case *ast.IndexExpr:
+						if m, ok := info.Types[n.X].Type.Underlying().(*types.Map); ok && isStringKey(m) && raw(n.Index) {
+							report(n, "keys a map with a raw ref")
+						}
+					case *ast.CompositeLit:
+						if tv, ok := info.Types[n]; ok {
+							if m, ok := tv.Type.Underlying().(*types.Map); ok && isStringKey(m) {
+								for _, el := range n.Elts {
+									if kv, ok := el.(*ast.KeyValueExpr); ok && raw(kv.Key) {
+										report(kv, "keys a map with a raw ref")
+									}
+								}
+							}
+						}
+					case *ast.CallExpr:
+						if fn, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr); ok && fn.Sel.Name == "EqualFold" && slices.ContainsFunc(n.Args, raw) {
+							report(n, "folds a raw ref")
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+	return sites
+}
+
+func isStringKey(m *types.Map) bool {
+	b, ok := m.Key().(*types.Basic)
+	return ok && b.Info()&types.IsString != 0
 }
 
 func declName(decl ast.Decl) string {
