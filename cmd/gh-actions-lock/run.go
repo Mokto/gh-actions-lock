@@ -762,10 +762,12 @@ type plannedMigration struct {
 	changed  int
 }
 
-// blockLocalActions turns each local-action warning whose composite uses
-// remote actions into a blocking error: the runner needs a pin for each, and
-// the lockfile can't record one for a `./…` action, so the job would fail
-// once the lockfile is enforced. It reports whether any finding was blocked.
+// blockLocalActions turns each local-action warning whose checked-in
+// composite uses remote actions into a blocking error: the runner needs a pin
+// for each, and the lockfile can't record one for a `./…` action, so the job
+// would fail once the lockfile is enforced. The message doesn't name those
+// actions, since the workspace may hold something else at run time. It
+// reports whether any finding was blocked.
 func blockLocalActions(report *checks.Report, ignore bool) bool {
 	if ignore {
 		return false
@@ -778,25 +780,19 @@ func blockLocalActions(report *checks.Report, ignore bool) bool {
 				continue
 			}
 			subject := f.LocalPath
-			fix := "Pass --ignore-local-actions to continue."
+			fix := "Pass --migrate-local-actions to lock this repo's copy as $/, or --ignore-local-actions to keep ./."
 			if f.ParentNWO != "" {
 				subject += " (in " + f.ParentNWO + ")"
+				if !strings.HasPrefix(f.ParentNWO, "$/") {
+					fix = "Pass --ignore-local-actions to keep ./."
+				}
 			}
-			if f.ParentNWO == "" || strings.HasPrefix(f.ParentNWO, "$/") {
-				fix = fmt.Sprintf("Pass --migrate-local-actions to rewrite it as $/%s, or --ignore-local-actions to keep ./.", strings.TrimPrefix(f.LocalPath, "./"))
-			}
+			cause := subject + " runs whatever is in the workspace, so the lockfile can't cover it or the actions it uses; they'll fail when the lockfile is enforced."
 			f.Severity = checks.SeverityError
-			f.Detail = fmt.Sprintf("%s uses %s, which the lockfile can't cover; the job will fail when the lockfile is enforced. %s",
-				subject, joinAnd(f.LocalRemoteUses), fix)
+			f.Detail = cause + " " + fix
+			f.TermDetail = cause + "\n    " + fix
 			blocked = true
 		}
 	}
 	return blocked
-}
-
-func joinAnd(items []string) string {
-	if len(items) < 2 {
-		return strings.Join(items, "")
-	}
-	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }

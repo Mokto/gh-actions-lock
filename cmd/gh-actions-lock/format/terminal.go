@@ -82,6 +82,7 @@ func findingExcluded(f checks.Finding, exclude map[checks.Category]bool, willRem
 // investigation-only category) so the caller can decide whether the
 // "re-run to fix" hint is honest.
 func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool) {
+	report = blockingFirst(report)
 	type depGroup struct {
 		findings  []checks.Finding
 		workflows []string
@@ -303,9 +304,37 @@ func categoryLabel(c checks.Category) string {
 	return strings.ReplaceAll(string(c), "-", " ")
 }
 
+// blockingFirst returns report with workflows blocked by a local-action error
+// first, and those errors first within each workflow, so the run's real cause
+// and its flags lead the output instead of an unrelated finding.
+func blockingFirst(report *checks.Report) *checks.Report {
+	isLocal := func(f checks.Finding) bool {
+		return f.Category == checks.LocalAction && f.Severity == checks.SeverityError
+	}
+	out := *report
+	out.Workflows = slices.Clone(report.Workflows)
+	for i := range out.Workflows {
+		ff := slices.Clone(out.Workflows[i].Findings)
+		slices.SortStableFunc(ff, func(a, b checks.Finding) int { return boolRank(isLocal(a)) - boolRank(isLocal(b)) })
+		out.Workflows[i].Findings = ff
+	}
+	slices.SortStableFunc(out.Workflows, func(a, b checks.WorkflowReport) int {
+		return boolRank(slices.ContainsFunc(a.Findings, isLocal)) - boolRank(slices.ContainsFunc(b.Findings, isLocal))
+	})
+	return &out
+}
+
+func boolRank(b bool) int {
+	if b {
+		return 0
+	}
+	return 1
+}
+
 // renderErrorFindings groups error-level findings by dependency and prints
 // per-dep detail lines followed by a category-count summary.
 func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked int, exclude map[checks.Category]bool, willRemediate bool) {
+	report = blockingFirst(report)
 	type depGroup struct {
 		dep      string
 		findings []checks.Finding

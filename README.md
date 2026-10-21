@@ -163,7 +163,8 @@ workspace-local action's own `uses:` dependencies are **outside lockfile coverag
 When the action's `action.yml` is in the checkout and uses remote actions, the
 runner needs a lockfile pin for each one and fails the job without it. Every
 mode, including `--verify` and `--verify-local`, reports this as a blocking
-`local-action` error that names those actions. To fix it, either:
+`local-action` error. The message doesn't list those actions, since the
+workspace may hold something else at run time. To fix it, either:
 
 - pass `--migrate-local-actions` on a fix run to rewrite same-repo `./…`
   references to `$/…`, in workflows and in-repo `action.yml` files, which the

@@ -821,8 +821,8 @@ func TestRun_SelfRepositoryLocalActionNamesItsParent(t *testing.T) {
 // reject its unlocked uses; --ignore-local-actions (or the old
 // --no-migrate-local-actions spelling) turns it back into a warning.
 func TestRun_LocalActionUsingRemoteActionsBlocks(t *testing.T) {
-	const want = "./.github/actions/setup uses actions/setup-node@v4 and octo/tool@v1, which the lockfile can't cover; " +
-		"the job will fail when the lockfile is enforced. Pass --migrate-local-actions to rewrite it as $/.github/actions/setup, or --ignore-local-actions to keep ./."
+	const want = "./.github/actions/setup runs whatever is in the workspace, so the lockfile can't cover it or the actions it uses; they'll fail when the lockfile is enforced. " +
+		"Pass --migrate-local-actions to lock this repo's copy as $/, or --ignore-local-actions to keep ./."
 	for _, tc := range []struct {
 		args    []string
 		blocked bool
@@ -873,14 +873,48 @@ func TestRun_LocalActionUsingRemoteActionsBlocks(t *testing.T) {
 // still applies; inside a remote composite only the flag does.
 func TestRun_LocalActionErrorNamesTheFix(t *testing.T) {
 	for _, tc := range []struct{ parent, want string }{
-		{"", "./x uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Pass --migrate-local-actions to rewrite it as $/x, or --ignore-local-actions to keep ./."},
-		{"$/actions/build", "./x (in $/actions/build) uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Pass --migrate-local-actions to rewrite it as $/x, or --ignore-local-actions to keep ./."},
-		{"octo/tool@v2", "./x (in octo/tool@v2) uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Pass --ignore-local-actions to continue."},
+		{"", "./x runs whatever is in the workspace, so the lockfile can't cover it or the actions it uses; they'll fail when the lockfile is enforced. Pass --migrate-local-actions to lock this repo's copy as $/, or --ignore-local-actions to keep ./."},
+		{"$/actions/build", "./x (in $/actions/build) runs whatever is in the workspace, so the lockfile can't cover it or the actions it uses; they'll fail when the lockfile is enforced. Pass --migrate-local-actions to lock this repo's copy as $/, or --ignore-local-actions to keep ./."},
+		{"octo/tool@v2", "./x (in octo/tool@v2) runs whatever is in the workspace, so the lockfile can't cover it or the actions it uses; they'll fail when the lockfile is enforced. Pass --ignore-local-actions to keep ./."},
 	} {
 		report := &checks.Report{Workflows: []checks.WorkflowReport{{Findings: []checks.Finding{{
 			Category: checks.LocalAction, Severity: checks.SeverityWarning, LocalPath: "./x", ParentNWO: tc.parent, LocalRemoteUses: []string{"a/b@v1"},
 		}}}}}
 		assert.True(t, blockLocalActions(report, false))
 		assert.Equal(t, tc.want, report.Workflows[0].Findings[0].Detail)
+	}
+}
+
+// TestRun_LocalActionErrorLeadsTheOutput: a blocking local action is the
+// first error shown, ahead of an unrelated not-pinned in an earlier
+// workflow, so the real cause and its flags aren't buried.
+func TestRun_LocalActionErrorLeadsTheOutput(t *testing.T) {
+	for _, mode := range []string{"--verify-local", "--no-fix"} {
+		t.Run(mode, func(t *testing.T) {
+			writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"+
+				"      - uses: actions/checkout@v4.2.1\n      - uses: ./.github/actions/setup\n",
+				"actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+			require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "a.yml"),
+				[]byte("name: a\non: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-go@v5.0.0\n"), 0o600))
+			require.NoError(t, os.Mkdir(".git", 0o755))
+			action := filepath.Join(".github", "actions", "setup", "action.yml")
+			require.NoError(t, os.MkdirAll(filepath.Dir(action), 0o755))
+			require.NoError(t, os.WriteFile(action, []byte("runs:\n  using: composite\n  steps:\n    - uses: actions/setup-node@v4\n"), 0o600))
+			reg := &httpmock.Registry{}
+			registerSetupGo(reg)
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOK)
+
+			_, stderr, err := runCommandWithHTTP(t, reg, mode, "--no-interactive")
+			require.ErrorIs(t, err, errSilent)
+			local := strings.Index(stderr, "./.github/actions/setup runs whatever is in the workspace")
+			require.GreaterOrEqual(t, local, 0, stderr)
+			assert.Contains(t, stderr, "they'll fail when the lockfile is enforced.\n    Pass --migrate-local-actions to lock this repo's copy as $/, or --ignore-local-actions to keep ./.")
+			// --verify-local lists not-pinned only in the summary count.
+			if other := strings.Index(stderr, "actions/setup-go"); other >= 0 {
+				assert.Less(t, local, other, "the local-action error comes first:\n%s", stderr)
+			}
+			first := strings.Index(stderr, "✗")
+			assert.Equal(t, local, strings.Index(stderr[first:], "\n")+first+3, "the first ✗ block is the local action:\n%s", stderr)
+		})
 	}
 }
