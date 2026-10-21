@@ -24,6 +24,7 @@ var testNow = time.Date(2026, 10, 20, 14, 0, 0, 0, time.UTC)
 // always picks its upper bound so waits are deterministic.
 func fakeBudget() (*retryBudget, *time.Duration) {
 	b := newRetryBudget()
+	b.policy = patientPolicy
 	var slept time.Duration
 	b.now = func() time.Time { return testNow.Add(slept) }
 	b.sleep = func(_ context.Context, d time.Duration) { slept += d }
@@ -297,5 +298,55 @@ func TestRetryAt(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.True(t, tt.want.Equal(RetryAt(tt.err)), "got %v", RetryAt(tt.err))
 		})
+	}
+}
+
+// TestRetryTransport_QuickPolicy: outside CI a run retries a blip for a few
+// seconds, then reports, and doesn't wait out a rate limit.
+func TestRetryTransport_QuickPolicy(t *testing.T) {
+	tests := []struct {
+		name     string
+		attempt  func() (*http.Response, error)
+		attempts int
+		waited   time.Duration
+	}{
+		{"503", status(503, nil), 3, 3 * time.Second},
+		{"refused", fail(&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}), 3, 3 * time.Second},
+		{"retry-after a few seconds", status(429, map[string]string{"Retry-After": "3"}), 3, 6 * time.Second},
+		{"retry-after a minute", status(429, map[string]string{"Retry-After": "60"}), 1, 0},
+		{"404", status(404, nil), 1, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budget, slept := fakeBudget()
+			budget.policy = quickPolicy
+			calls := 0
+			rt := newRetryTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return tt.attempt()
+			}), budget)
+			req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/x", nil)
+			if resp, err := rt.RoundTrip(req); err == nil {
+				resp.Body.Close()
+			}
+			assert.Equal(t, tt.attempts, calls)
+			assert.Equal(t, tt.waited, *slept)
+		})
+	}
+}
+
+func TestRunPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		ci, actions string
+		want        retryPolicy
+	}{
+		{"true", "", patientPolicy},
+		{"", "true", patientPolicy},
+		{"", "", quickPolicy},
+		{"false", "", quickPolicy},
+	} {
+		t.Setenv("CI", tt.ci)
+		t.Setenv("GITHUB_ACTIONS", tt.actions)
+		assert.Equal(t, tt.want, runPolicy(), "CI=%q GITHUB_ACTIONS=%q", tt.ci, tt.actions)
 	}
 }

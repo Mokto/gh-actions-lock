@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -18,24 +19,42 @@ import (
 	"time"
 )
 
-// Retry policy for every GitHub API request. This transport is the only
-// retry layer: callers above it never retry, and never split a batch because
-// of an outage. A CLI run can afford to wait out a short outage or a rate
-// limit, so it retries patiently and gives up only once GitHub has given no
-// answer for outageWindow.
+// This transport is the only retry layer: callers above it never retry, and
+// never split a batch because of an outage.
 const (
-	maxAttempts = 8
 	backoffBase = time.Second
-	backoffCap  = 30 * time.Second
-	// outageWindow is how long a run keeps retrying once GitHub stops
-	// answering. Any answer closes the window.
-	outageWindow = 5 * time.Minute
 
 	dialTimeout           = 10 * time.Second
 	tlsHandshakeTimeout   = 10 * time.Second
 	responseHeaderTimeout = 30 * time.Second
 	requestTimeout        = 60 * time.Second
 )
+
+// retryPolicy bounds how hard a run retries.
+type retryPolicy struct {
+	attempts   int
+	backoffCap time.Duration
+	// window is how long a run keeps retrying once GitHub stops answering.
+	// Any answer closes it. A rate-limit wait that ends past it isn't made.
+	window time.Duration
+}
+
+var (
+	// patientPolicy is for CI: nobody is watching, and a job that waits
+	// out a short outage or rate limit beats a red check.
+	patientPolicy = retryPolicy{attempts: 8, backoffCap: 30 * time.Second, window: 5 * time.Minute}
+	// quickPolicy is for a terminal: retry a blip, then report and exit
+	// so the user can decide.
+	quickPolicy = retryPolicy{attempts: 3, backoffCap: 2 * time.Second, window: 10 * time.Second}
+)
+
+// runPolicy picks the retry policy for this process.
+func runPolicy() retryPolicy {
+	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
+		return patientPolicy
+	}
+	return quickPolicy
+}
 
 // UnknownOutcomeError reports a request that ended without an answer from
 // GitHub: the connection failed or timed out on every attempt. Retrying
@@ -66,6 +85,8 @@ func SetRetryNotifier(fn func(string)) {
 // retryBudget is shared by every transport of one Client so a run's
 // requests agree on when an outage started.
 type retryBudget struct {
+	policy retryPolicy
+
 	mu sync.Mutex
 	// since is when GitHub last stopped answering; zero while it answers.
 	since time.Time
@@ -81,6 +102,7 @@ type retryBudget struct {
 
 func newRetryBudget() *retryBudget {
 	return &retryBudget{
+		policy:  runPolicy(),
 		noticed: map[string]time.Time{},
 		now:     time.Now,
 		sleep:   DefaultSleep,
@@ -107,7 +129,7 @@ func (b *retryBudget) allow(d time.Duration) bool {
 	if b.since.IsZero() {
 		b.since = now
 	}
-	return !now.Add(d).After(b.since.Add(outageWindow))
+	return !now.Add(d).After(b.since.Add(b.policy.window))
 }
 
 // answered closes the outage window: GitHub is responding again.
@@ -203,10 +225,11 @@ func (rt *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // (retryAt) is honored if it ends inside the outage window, and otherwise
 // the caller gets the answer now rather than a run that stalls past it.
 func (rt *retryTransport) wait(ctx context.Context, attempt int, retryAt time.Time, reason string) bool {
-	if attempt >= maxAttempts || ctx.Err() != nil {
+	p := rt.budget.policy
+	if attempt >= p.attempts || ctx.Err() != nil {
 		return false
 	}
-	d := rt.budget.jitter(min(backoffCap, backoffBase<<(attempt-1)))
+	d := rt.budget.jitter(min(p.backoffCap, backoffBase<<(attempt-1)))
 	if !retryAt.IsZero() {
 		// Never retry a stale reset immediately.
 		d = max(retryAt.Sub(rt.budget.now()), backoffBase)
@@ -214,9 +237,9 @@ func (rt *retryTransport) wait(ctx context.Context, attempt int, retryAt time.Ti
 	if !rt.budget.allow(d) {
 		return false
 	}
-	next := fmt.Sprintf("retrying in %s, attempt %d/%d", d.Round(time.Second), attempt+1, maxAttempts)
+	next := fmt.Sprintf("retrying in %s, attempt %d/%d", d.Round(time.Second), attempt+1, p.attempts)
 	if !retryAt.IsZero() && d >= time.Minute {
-		next = fmt.Sprintf("waiting until %s, attempt %d/%d", rt.budget.now().Add(d).UTC().Format("15:04 UTC"), attempt+1, maxAttempts)
+		next = fmt.Sprintf("waiting until %s, attempt %d/%d", rt.budget.now().Add(d).UTC().Format("15:04 UTC"), attempt+1, p.attempts)
 	}
 	rt.budget.notice(reason, reason+"; "+next)
 	rt.budget.sleep(ctx, d)
