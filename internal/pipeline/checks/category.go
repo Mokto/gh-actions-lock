@@ -56,17 +56,15 @@ const (
 	// RunOnly means the workflow has no action refs (only run:
 	// steps), so pinning is not applicable.
 	RunOnly Category = "run-only"
-	// AncestryUnknown means the Compare API couldn't decide whether
-	// the pinned SHA is in the ref's history (typically rate-limited
-	// or transient error). Non-blocking diagnostic: we know the SHAs
-	// differ but can't classify the move as benign-but-known
-	// (ref-moved) vs. tampered (unreachable-pin).
+	// AncestryUnknown means the Compare API didn't answer whether the
+	// pinned SHA is in the ref's history (an outage or rate limit). We
+	// know the SHAs differ but can't classify the move as benign-but-known
+	// (ref-moved) vs. tampered (unreachable-pin), so it blocks as a
+	// retryable error.
 	AncestryUnknown Category = "ancestry-unknown"
-	// ReachabilityUnknown means branch_commits couldn't decide
-	// whether the pinned SHA is still reachable from any branch in
-	// the upstream repo (resolver failure, GraphQL rate limit, etc).
-	// Non-blocking diagnostic: surfaced so consumers can retry rather
-	// than treating the dep as verified.
+	// ReachabilityUnknown means GitHub didn't answer whether a pin is
+	// still valid (an outage or rate limit). It blocks as a retryable
+	// error rather than treating the dep as verified.
 	ReachabilityUnknown Category = "reachability-unknown"
 	// OnboardingRequired means a `check --no-onboard` run encountered a
 	// workflow (or an action within one) that has no existing entry in the
@@ -116,10 +114,9 @@ const (
 )
 
 // IsInconclusive reports whether c represents a diagnostic that
-// couldn't reach a verdict (network/rate-limit fallback). These are
-// surfaced as warnings but are not blocking: consumers (e.g.
+// couldn't reach a verdict (network/rate-limit fallback). Consumers (e.g.
 // Dependabot FindingMapper) treat them as "scan inconclusive, retry"
-// rather than "lockfile is bad".
+// rather than "lockfile is bad"; Finding.Retryable says the same in JSON.
 func (c Category) IsInconclusive() bool {
 	switch c {
 	case AncestryUnknown, ReachabilityUnknown:

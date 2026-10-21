@@ -2,8 +2,10 @@ package ghapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 )
@@ -76,6 +78,32 @@ func IsTransient(err error) bool {
 	}
 	var urlErr *url.Error
 	return errors.As(err, &urlErr) && retryableTransportErr(urlErr.Err)
+}
+
+// ConfigError returns a one-line error when err shows the run itself is
+// misconfigured: GitHub's TLS certificate isn't trusted (a proxy or CA
+// bundle), or GitHub rejected the token. Every request would fail the same
+// way, so it is reported once rather than per pin. It returns nil otherwise.
+func ConfigError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && untrustedCert(urlErr.Err) {
+		host := urlErr.URL
+		if u, perr := url.Parse(urlErr.URL); perr == nil && u.Host != "" {
+			host = u.Host
+		}
+		return &BriefError{Msg: fmt.Sprintf("TLS certificate for %s is not trusted; check HTTPS_PROXY or your CA bundle", host), Err: err}
+	}
+	var httpErr *api.HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnauthorized {
+		login := "gh auth login"
+		if httpErr.RequestURL != nil {
+			if host := strings.TrimPrefix(httpErr.RequestURL.Hostname(), "api."); host != "github.com" {
+				login += " --hostname " + host
+			}
+		}
+		return &BriefError{Msg: fmt.Sprintf("GitHub rejected the token (401); run `%s`", login), Err: err}
+	}
+	return nil
 }
 
 // graphQLRateLimited reports a GraphQL response rejected by the rate limit.

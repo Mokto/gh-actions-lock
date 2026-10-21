@@ -3,8 +3,10 @@ package ghapi
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"syscall"
 	"testing"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -70,6 +72,28 @@ func TestBrief(t *testing.T) {
 				assert.True(t, found)
 				assert.Equal(t, code, got)
 			}
+		})
+	}
+}
+
+func TestOutage(t *testing.T) {
+	refused := &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}
+	tests := []struct {
+		name        string
+		err         error
+		want        string
+		rateLimited bool
+	}{
+		{"connection refused", &UnknownOutcomeError{Cause: refused}, "GitHub API unreachable (connection refused)", false},
+		{"server error", &api.HTTPError{StatusCode: http.StatusBadGateway}, "GitHub API returned 502 Bad Gateway", false},
+		{"rate limit", &api.HTTPError{StatusCode: http.StatusTooManyRequests}, "GitHub API rate limit exhausted", true},
+		{"graphql rate limit", &api.GraphQLError{Errors: []api.GraphQLErrorItem{{Type: "RATE_LIMITED"}}}, "GitHub API rate limit exhausted", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, limited := Outage(tt.err)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.rateLimited, limited)
 		})
 	}
 }

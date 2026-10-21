@@ -106,6 +106,34 @@ func TestCheckAncestry_500ReturnsUnknown(t *testing.T) {
 	}
 }
 
+func TestCheckAncestryCause_ClassifiesAPIErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		resp      httpmock.Responder
+		want      AncestryStatus
+		wantCause bool
+	}{
+		{name: "422 rejects the commits", resp: httpmock.StatusResponse(http.StatusUnprocessableEntity), want: AncestryNotAncestor},
+		{name: "401 is an answer", resp: httpmock.StatusResponse(http.StatusUnauthorized), want: AncestryNotAncestor, wantCause: true},
+		{name: "403 is an answer", resp: httpmock.StatusResponse(http.StatusForbidden), want: AncestryNotAncestor, wantCause: true},
+		{name: "rate-limited 403 is unknown", resp: httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}), want: AncestryUnknown, wantCause: true},
+		{name: "503 is unknown", resp: httpmock.StatusResponse(http.StatusServiceUnavailable), want: AncestryUnknown, wantCause: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.RegisterReusable(httpmock.REST("GET", "repos/owner/repo/compare/aaaa...bbbb"), tt.resp)
+			status, _, cause := newTestResolver(t, reg).CheckAncestryCause(context.Background(), "owner", "repo", "aaaa", "bbbb")
+			if status != tt.want {
+				t.Errorf("status = %v, want %v", status, tt.want)
+			}
+			if (cause != nil) != tt.wantCause {
+				t.Errorf("cause = %v, want one: %v", cause, tt.wantCause)
+			}
+		})
+	}
+}
+
 func TestShortHex(t *testing.T) {
 	tests := []struct {
 		name string

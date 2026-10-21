@@ -21,8 +21,10 @@ type CheckResolver interface {
 	PeelTagObject(ctx context.Context, owner, repo, sha string) (commit string, ok bool)
 	// CheckAncestry asks whether candidate is an ancestor of head and
 	// returns a short human-readable detail alongside the status — the
-	// rate-limit or compare-base detail callers surface to operators.
-	CheckAncestry(ctx context.Context, owner, repo, candidate, head string) (resolve.AncestryStatus, string)
+	// rate-limit or compare-base detail callers surface to operators — and
+	// the API error behind a result GitHub didn't answer (see
+	// resolve.Resolver.CheckAncestryCause).
+	CheckAncestry(ctx context.Context, owner, repo, candidate, head string) (resolve.AncestryStatus, string, error)
 }
 
 // prewarmedResolver adapts *resolve.Resolver to CheckResolver. Ref
@@ -60,9 +62,9 @@ func (a *prewarmedResolver) PeelTagObject(ctx context.Context, owner, repo, sha 
 	return a.inner.PeelTagObject(ctx, owner, repo, sha)
 }
 
-func (a *prewarmedResolver) CheckAncestry(ctx context.Context, owner, repo, candidate, head string) (resolve.AncestryStatus, string) {
+func (a *prewarmedResolver) CheckAncestry(ctx context.Context, owner, repo, candidate, head string) (resolve.AncestryStatus, string, error) {
 	if a.inner == nil {
-		return resolve.AncestryUnknown, ""
+		return resolve.AncestryUnknown, "", nil
 	}
-	return a.inner.CheckAncestry(ctx, owner, repo, candidate, head)
+	return a.inner.CheckAncestryCause(ctx, owner, repo, candidate, head)
 }

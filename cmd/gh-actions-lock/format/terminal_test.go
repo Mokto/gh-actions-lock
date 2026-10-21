@@ -5,8 +5,10 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/stretchr/testify/assert"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -761,6 +763,98 @@ func TestPresentReadOnlyFailures_HintOnlyWhenPlainRunCanFix(t *testing.T) {
 			var buf bytes.Buffer
 			if got := PresentReadOnlyFailures(ui.NewPlain(&buf), report); got != tt.want {
 				t.Errorf("hasFixable = %v, want %v\n%s", got, tt.want, buf.String())
+			}
+		})
+	}
+}
+
+func retryableFinding(nwo, ref string, reason string, rateLimited bool, at time.Time) checks.Finding {
+	return checks.Finding{
+		WorkflowPath: ".github/workflows/ci.yml",
+		Category:     checks.ReachabilityUnknown,
+		Severity:     checks.SeverityError,
+		Confidence:   checks.ConfidenceLow,
+		Dependency:   &dep.Dependency{NWO: nwo, Ref: ref},
+		Detail:       "could not verify locked " + nwo,
+		Retryable:    true,
+		RetryReason:  reason,
+		RateLimited:  rateLimited,
+		RetryAt:      at,
+	}
+}
+
+// TestPresentReadOnlyFailures_GroupsRetryable: checks GitHub didn't answer
+// share one block, not one per pin, and the verdict line counts them apart
+// from definitive errors.
+func TestPresentReadOnlyFailures_GroupsRetryable(t *testing.T) {
+	reset := time.Date(2026, 1, 2, 14, 5, 0, 0, time.UTC)
+	t.Cleanup(func() { now = time.Now })
+	now = func() time.Time { return reset.Add(-38 * time.Minute) }
+	refused := "GitHub API unreachable (connection refused)"
+	limited := "GitHub API rate limit exhausted"
+	forged := checks.Finding{
+		WorkflowPath: ".github/workflows/ci.yml",
+		Category:     checks.UnreachablePin,
+		Severity:     checks.SeverityError,
+		Dependency:   &dep.Dependency{NWO: "octo/forged", Ref: "v1"},
+		Detail:       "locked commit is not in octo/forged's history",
+	}
+	tests := []struct {
+		name     string
+		findings []checks.Finding
+		want     []string
+		unwanted []string
+	}{
+		{
+			name: "outage",
+			findings: []checks.Finding{
+				retryableFinding("actions/checkout", "v4", refused, false, time.Time{}),
+				retryableFinding("actions/setup-go", "v5", refused, false, time.Time{}),
+				retryableFinding("actions/checkout", "v4", refused, false, time.Time{}),
+			},
+			want: []string{
+				"Couldn't verify 2 pins\n",
+				"  actions/checkout@v4, actions/setup-go@v5\n",
+				"  ↳ GitHub API unreachable (connection refused); re-run this check once it is reachable. Nothing is known to be wrong with the lockfile.\n",
+			},
+			unwanted: []string{"workflow failed", "could not verify locked"},
+		},
+		{
+			name: "rate limit",
+			findings: []checks.Finding{
+				retryableFinding("actions/checkout", "v4", limited, true, reset),
+				retryableFinding("actions/cache", "v4", limited, true, reset),
+			},
+			want: []string{
+				"Couldn't verify 2 pins: GitHub API rate limit exhausted until 14:05 UTC (in 38m)\n",
+				"  ↳ re-run after 14:05 UTC, or use a token with a higher rate limit\n",
+			},
+		},
+		{
+			name: "partial failure",
+			findings: []checks.Finding{
+				forged,
+				retryableFinding("actions/checkout", "v4", refused, false, time.Time{}),
+				retryableFinding("actions/setup-go", "v5", refused, false, time.Time{}),
+			},
+			want: []string{
+				"1 of 1 workflow failed: 1 error, 2 pins couldn't be verified\n",
+				"octo/forged@v1",
+				"Couldn't verify 2 pins\n",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, buf := newTestUI()
+			report := &checks.Report{Workflows: []checks.WorkflowReport{{Path: ".github/workflows/ci.yml", Findings: tt.findings}}}
+			PresentReadOnlyFailures(u, report)
+			got := buf.String()
+			for _, want := range tt.want {
+				assert.Contains(t, got, want)
+			}
+			for _, unwanted := range tt.unwanted {
+				assert.NotContains(t, got, unwanted)
 			}
 		})
 	}

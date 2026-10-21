@@ -824,6 +824,19 @@ STUB_WIRING = {
     end
     s.env("GH_TOKEN" => "gho_fake_500_token")
   },
+  verify_outage_retryable_blocks: ->(s) {
+    s.stub_server do |srv|
+      error_all(srv, 503, { message: "Service Unavailable" })
+    end
+    s.env("GH_TOKEN" => "gho_fake_outage_token")
+  },
+  # An SSO 403 is an answer, not an outage: keep the check inconclusive.
+  dbot_inconclusive_ref_blocks: ->(s) {
+    s.stub_server do |srv|
+      error_all(srv, 503, { message: "Service Unavailable" })
+    end
+    s.env("GH_TOKEN" => "gho_fake_inconclusive_token")
+  },
   api_unauthorized_401: ->(s) {
     s.stub_server do |srv|
       error_all(srv, 401, { message: "Bad credentials" })

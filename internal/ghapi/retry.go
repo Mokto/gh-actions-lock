@@ -355,18 +355,17 @@ func RetryAt(err error) time.Time {
 // retry. A certificate GitHub's TLS chain doesn't satisfy is configuration
 // (a proxy or CA bundle), not an outage.
 func retryableTransportErr(err error) bool {
+	return !errors.Is(err, context.Canceled) && !untrustedCert(err)
+}
+
+// untrustedCert reports a TLS certificate the client doesn't trust.
+func untrustedCert(err error) bool {
 	var unknownAuthority x509.UnknownAuthorityError
 	var hostname x509.HostnameError
 	var invalid x509.CertificateInvalidError
 	var verify *tls.CertificateVerificationError
-	switch {
-	case errors.Is(err, context.Canceled):
-		return false
-	case errors.As(err, &unknownAuthority), errors.As(err, &hostname),
-		errors.As(err, &invalid), errors.As(err, &verify):
-		return false
-	}
-	return true
+	return errors.As(err, &unknownAuthority) || errors.As(err, &hostname) ||
+		errors.As(err, &invalid) || errors.As(err, &verify)
 }
 
 func drain(body io.ReadCloser) {

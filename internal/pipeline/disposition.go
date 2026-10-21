@@ -37,7 +37,7 @@ type paritySubject struct {
 	heldBy string
 	// head is the ref the commit was traced to; "" for an entry without one.
 	head string
-	// inconclusive marks a check that couldn't finish.
+	// inconclusive marks a check GitHub didn't answer (see unanswered).
 	inconclusive bool
 }
 
@@ -75,11 +75,11 @@ const (
 // (see heldBy) can't be repaired that way, so it stays an error, and advice
 // names the holder.
 func disposeParity(m parityMode, f *checks.Finding, s paritySubject) (parityVerdict, checks.Finding) {
+	// A check GitHub didn't answer fails closed: the pin is unverified.
+	if s.inconclusive {
+		f.Severity = checks.SeverityError
+	}
 	if s.fresh || s.ownSHA && s.inconclusive {
-		if s.inconclusive {
-			f.Severity = checks.SeverityError
-			f.Remediation = "retry; nothing is written until the repository identity is confirmed"
-		}
 		return verdictKeep, *f
 	}
 	fullSHA := parserlock.IsFullSha(s.pin.Ref)
@@ -101,13 +101,10 @@ func disposeParity(m parityMode, f *checks.Finding, s paritySubject) (parityVerd
 		return verdictAccept, blocking
 	}
 	excused := m.relock && (s.away || !fullSHA)
-	// A history check fails closed: the commit is otherwise unproven.
-	if s.inconclusive && s.head != "" {
-		f.Severity = checks.SeverityError
-		f.Remediation = "retry; a pin is accepted only once its commit is traced to its tag or branch"
-		if !excused || fullSHA {
-			return verdictKeep, *f
-		}
+	// An unfinished history check can't be excused for a full-SHA key: the
+	// commit is otherwise unproven.
+	if s.inconclusive && s.head != "" && (!excused || fullSHA) {
+		return verdictKeep, *f
 	}
 	if excused && !(c == checks.RepoRenamed || c == checks.RepoReplaced || c == checks.RepoUnavailable ||
 		c == checks.UnreachablePin) {

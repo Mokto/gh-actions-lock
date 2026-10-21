@@ -31,7 +31,7 @@ const (
 	AncestryConfirmed AncestryStatus = iota
 	// AncestryNotAncestor means the pinned SHA is NOT an ancestor — possible forgery.
 	AncestryNotAncestor
-	// AncestryUnknown means the check could not be completed (rate limit, API error).
+	// AncestryUnknown means GitHub didn't answer (an outage or rate limit).
 	AncestryUnknown
 )
 
@@ -43,8 +43,10 @@ func (r *Resolver) CheckAncestry(ctx context.Context, owner, repo, pinnedSHA, li
 	return status, detail
 }
 
-// CheckAncestryCause is CheckAncestry that also returns the error behind an
-// AncestryUnknown result.
+// CheckAncestryCause is CheckAncestry that also returns the error behind a
+// result the Compare API didn't answer: an AncestryUnknown outage, or an
+// AncestryNotAncestor refusal such as a 401 or 403. Only a transient error
+// leaves ancestry unknown; any other answer leaves the commit unproven.
 func (r *Resolver) CheckAncestryCause(ctx context.Context, owner, repo, pinnedSHA, liveSHA string) (AncestryStatus, string, error) {
 	if strings.EqualFold(pinnedSHA, liveSHA) {
 		return AncestryConfirmed, "pinned SHA equals live SHA", nil
@@ -53,17 +55,22 @@ func (r *Resolver) CheckAncestryCause(ctx context.Context, owner, repo, pinnedSH
 	status, mergeBaseSHA, err := r.gh.CompareRefs(ctx, owner, repo, pinnedSHA, liveSHA)
 	if err != nil {
 		code, ok := ghapi.StatusCode(err)
-		if !ok {
-			return AncestryUnknown, err.Error(), err
-		}
-		switch code {
-		case http.StatusNotFound:
+		switch {
+		case code == http.StatusNotFound:
 			return AncestryNotAncestor, "commit not found in repository", nil
-		case http.StatusConflict:
+		case code == http.StatusConflict:
 			return AncestryNotAncestor, "no common ancestor between pinned and live SHA", nil
-		default:
-			return AncestryUnknown, fmt.Sprintf("API error (HTTP %d): %s", code, err.Error()), err
+		case code == http.StatusUnprocessableEntity:
+			return AncestryNotAncestor, "the Compare API rejected the commits", nil
+		case ghapi.IsTransient(err):
+			if ok {
+				return AncestryUnknown, fmt.Sprintf("API error (HTTP %d): %s", code, err.Error()), err
+			}
+			return AncestryUnknown, err.Error(), err
+		case ok:
+			return AncestryNotAncestor, fmt.Sprintf("API error (HTTP %d): %s", code, err.Error()), err
 		}
+		return AncestryNotAncestor, err.Error(), err
 	}
 
 	if strings.EqualFold(mergeBaseSHA, pinnedSHA) {

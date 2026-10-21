@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/ui"
@@ -87,7 +88,8 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 	}
 	var order []string
 	groups := map[string]*depGroup{}
-	var failedCount, checked int
+	var retry []checks.Finding
+	var failedCount, checked, errCount int
 
 	for i := range report.Workflows {
 		wr := &report.Workflows[i]
@@ -100,6 +102,11 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 			if f.IsValid() {
 				continue
 			}
+			if f.Retryable {
+				retry = append(retry, f)
+				continue
+			}
+			errCount++
 			key := f.DepKey()
 			if key == "" {
 				key = wr.Path
@@ -119,13 +126,20 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 	}
 
 	if len(order) == 0 {
+		renderRetryable(out, retry)
 		return false
 	}
 
 	out.TermBlank()
-	out.TermError("%d of %d %s failed",
+	verdict := fmt.Sprintf("%d of %d %s failed",
 		failedCount, checked, ui.Pluralize(checked, "workflow", "workflows"))
-	blocked := false
+	if pins := retryLabels(retry); len(pins) > 0 {
+		verdict += fmt.Sprintf(": %d %s, %d %s couldn't be verified",
+			errCount, ui.Pluralize(errCount, "error", "errors"),
+			len(pins), ui.Pluralize(len(pins), "pin", "pins"))
+	}
+	out.TermError("%s", verdict)
+	blocked := len(retry) > 0
 	for _, key := range order {
 		g := groups[key]
 		out.TermBlank()
@@ -141,8 +155,68 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 			out.TermDetail("  ↳ %s", out.TermDim(wf))
 		}
 	}
+	renderRetryable(out, retry)
 	// A plain re-run writes nothing while an unfixable error remains.
 	return hasFixable && !blocked
+}
+
+// now is stubbed by tests that render a rate-limit reset.
+var now = time.Now
+
+// renderRetryable prints the checks GitHub didn't answer as one block: they
+// share a cause, and nothing is known to be wrong with any of them.
+func renderRetryable(out *ui.UI, ff []checks.Finding) {
+	pins := retryLabels(ff)
+	if len(pins) == 0 {
+		return
+	}
+	// A rate limit decides when a re-run can succeed: name the latest reset.
+	cause := ff[0]
+	for _, f := range ff {
+		if f.RateLimited && (!cause.RateLimited || f.RetryAt.After(cause.RetryAt)) {
+			cause = f
+		}
+	}
+	head := fmt.Sprintf("Couldn't verify %d %s", len(pins), ui.Pluralize(len(pins), "pin", "pins"))
+	advice := cause.RetryReason + "; re-run this check once it is reachable. Nothing is known to be wrong with the lockfile."
+	if cause.RateLimited || !cause.RetryAt.IsZero() {
+		head += ": " + cause.RetryReason
+		if !cause.RetryAt.IsZero() {
+			head += fmt.Sprintf(" until %s UTC (in %s)", cause.RetryAt.UTC().Format("15:04"), untilReset(cause.RetryAt))
+		}
+		advice = checks.RetryAdvice(cause.RetryAt, cause.RateLimited)
+	}
+	out.TermBlank()
+	out.TermError("%s", head)
+	out.TermDetail("  %s", strings.Join(pins, ", "))
+	out.TermDetail("  ↳ %s", advice)
+}
+
+// retryLabels names each pin, with the composite that uses it, or the
+// workflow for a workflow-level check, once each.
+func retryLabels(ff []checks.Finding) []string {
+	var labels []string
+	seen := map[string]bool{}
+	for _, f := range ff {
+		label := cmp.Or(f.DepKey(), f.WorkflowPath)
+		if f.ParentNWO != "" {
+			label += " (used by " + f.ParentNWO + ")"
+		}
+		if !seen[label] {
+			seen[label] = true
+			labels = append(labels, label)
+		}
+	}
+	return labels
+}
+
+// untilReset is the wait until t, to the minute: "38m", "1h5m".
+func untilReset(t time.Time) string {
+	d := max(t.Sub(now()).Round(time.Minute), time.Minute)
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
 // renderTermFindingDetail is the Term* twin of renderFindingDetail: it
@@ -259,6 +333,7 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 	}
 
 	catCounts := map[checks.Category]int{}
+	unverified := 0
 	for _, dep := range depOrder {
 		dg := depMap[dep]
 
@@ -267,7 +342,11 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 			if findingExcluded(f, exclude, willRemediate) {
 				continue
 			}
-			catCounts[f.Category]++
+			if f.Retryable {
+				unverified++
+			} else {
+				catCounts[f.Category]++
+			}
 			if f.Category != checks.NotPinned || !f.IsRemediableNotPinned() {
 				allSkip = false
 			}
@@ -297,6 +376,9 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 		if n, ok := catCounts[cat]; ok {
 			parts = append(parts, fmt.Sprintf("%d %s", n, string(cat)))
 		}
+	}
+	if unverified > 0 {
+		parts = append(parts, fmt.Sprintf("%d couldn't be verified", unverified))
 	}
 	out.Error("%d of %d %s failed: %s",
 		failedCount, checked,
@@ -363,10 +445,6 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 	for _, wr := range report.Workflows {
 		for _, f := range wr.Findings {
 			if f.IsWarning() {
-				if f.DepKey() == "" && f.Category == checks.ReachabilityUnknown &&
-					strings.HasPrefix(f.Detail, "could not re-resolve actions") {
-					continue
-				}
 				key := f.DepKey()
 				if key == "" {
 					key = f.WorkflowPath

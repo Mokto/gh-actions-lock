@@ -130,15 +130,7 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 				wr.BlockingResolverError = true
 				return wr
 			}
-			// Low: we're surfacing the resolver failure itself, not a
-			// verdict about any specific dependency.
-			wr.Findings = append(wr.Findings, checks.Finding{
-				WorkflowPath: pw.Path,
-				Category:     checks.ReachabilityUnknown,
-				Severity:     checks.SeverityWarning,
-				Confidence:   checks.ConfidenceLow,
-				Detail:       fmt.Sprintf("could not re-resolve actions: %s", resolveErr),
-			})
+			wr.Findings = append(wr.Findings, resolveErrFinding(pw.Path, resolveErr))
 		}
 	}
 
@@ -194,6 +186,28 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 	}
 
 	return wr
+}
+
+// resolveErrFinding reports a resolver failure no definitive class above
+// explains. The workflow's actions are unverified either way, so it blocks:
+// as retryable when GitHub didn't answer.
+func resolveErrFinding(path string, err error) checks.Finding {
+	f := checks.Finding{
+		WorkflowPath: path,
+		Category:     checks.RepoUnavailable,
+		Severity:     checks.SeverityError,
+		Confidence:   checks.ConfidenceHigh,
+		Detail:       fmt.Sprintf("could not re-resolve actions: %s", err),
+		Remediation:  "check that each action's repository exists and this token can read it, then re-run",
+	}
+	if unanswered(err) {
+		// Low: this is the resolver failure itself, not a verdict about
+		// any specific dependency.
+		f.Category = checks.ReachabilityUnknown
+		f.Confidence = checks.ConfidenceLow
+		f.MarkRetryable(err)
+	}
+	return f
 }
 
 // selfRepositoryFinding builds the informational finding for a workflow that
