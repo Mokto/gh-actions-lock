@@ -33,6 +33,7 @@ func TestCategoryStringsAreFrozen(t *testing.T) {
 		{InvalidSelfRepositoryRef, "invalid-self-repository-ref"},
 		{FreshTag, "fresh-tag"},
 		{CooldownConfigIgnored, "cooldown-config-ignored"},
+		{IncompleteLockfile, "incomplete-lockfile"},
 	}
 	for _, c := range cases {
 		if string(c.got) != c.want {
@@ -57,7 +58,7 @@ func TestCategoryIsInconclusive(t *testing.T) {
 		Valid, RunOnly, OnboardingRequired, VersionRef, LocalAction,
 		StaleWorkflow,
 		SelfRepositoryAction, InvalidSelfRepositoryRef,
-		FreshTag, CooldownConfigIgnored,
+		FreshTag, CooldownConfigIgnored, IncompleteLockfile,
 	}
 	for _, c := range blocking {
 		if c.IsInconclusive() {

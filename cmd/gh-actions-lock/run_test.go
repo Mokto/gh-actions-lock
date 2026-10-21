@@ -318,7 +318,12 @@ func TestRun_LockedManifests(t *testing.T) {
 			workflow:  []string{"acme/comp/gone@v1"},
 			entries:   map[string][]string{"acme/comp@v1": nil},
 			manifests: map[string]string{"acme/comp/gone": ""},
-			blocked:   "acme/comp/gone@v1 has no action.yml or action.yaml at locked commit 000000000000",
+			blocked:   "acme/comp/gone@v1 has no action.yml, action.yaml or Dockerfile at locked commit 000000000000",
+		},
+		"Dockerfile-only actions": {
+			workflow:  []string{"acme/docker@v1", "acme/comp@v1"},
+			entries:   map[string][]string{"acme/docker@v1": nil, "acme/comp@v1": {"acme/tools@v1"}, "acme/tools@v1": nil},
+			manifests: map[string]string{"acme/docker": dockerfileOnly, "acme/comp": composite("acme/tools/build@v1"), "acme/tools/build": dockerfileOnly},
 		},
 	} {
 		for _, mode := range [][]string{{"--verify"}, {"--no-fix"}, {}} {
@@ -340,6 +345,7 @@ func TestRun_LockedManifests(t *testing.T) {
 				var details []string
 				for _, f := range p.Findings {
 					if f.Severity == "error" {
+						assert.Equal(t, "incomplete-lockfile", f.Category)
 						details = append(details, f.Detail)
 					}
 				}
@@ -444,6 +450,62 @@ func TestRun_LockedManifestsSeededRoot(t *testing.T) {
 	after, err := os.ReadFile(".github/workflows/actions.lock")
 	require.NoError(t, err)
 	assert.Equal(t, string(before), string(after))
+}
+
+// TestRun_LockedManifestsReusedSeedChildren: a workflow newly reaching a
+// composite another workflow locked, directly or through a live composite,
+// takes its recorded children unread, so they are walked too.
+func TestRun_LockedManifestsReusedSeedChildren(t *testing.T) {
+	for name, tc := range map[string]struct {
+		uses      string
+		manifests map[string]string
+		want      string
+	}{
+		"seeded child under a live root": {
+			uses:      "acme/live@v1",
+			manifests: map[string]string{"acme/live": composite("acme/comp@v1"), "acme/comp": composite("acme/child@v2", "acme/extra@v1")},
+			want:      "uses acme/extra@v1, but its lockfile entry acme/comp@v1 does not record it",
+		},
+		"missing commit under a reused seed": {
+			uses:      "acme/comp@v1",
+			manifests: map[string]string{"acme/comp": composite("acme/child@v2"), "acme/child": missingCommit},
+			want:      "could not read locked manifest acme/child@v2",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			writeManifestRepo(t, map[string][]string{"a.yml": {"acme/comp@v1"}},
+				map[string][]string{"acme/comp@v1": {"acme/child@v2"}, "acme/child@v2": nil})
+			require.NoError(t, os.WriteFile(".github/workflows/b.yml", []byte("on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: "+tc.uses+"\n"), 0o600))
+			before, err := os.ReadFile(".github/workflows/actions.lock")
+			require.NoError(t, err)
+			reg := &httpmock.Registry{}
+			registerLockedManifests(reg, tc.manifests)
+			registerLive(reg, tc.manifests, map[string]string{"acme/live": entrySHA(9, "")})
+
+			p, err := runParity(t, reg, "--no-narrow", ".github/workflows/b.yml")
+			require.ErrorIs(t, err, errSilent)
+			assert.Contains(t, fmt.Sprint(p.Findings), tc.want)
+			after, err := os.ReadFile(".github/workflows/actions.lock")
+			require.NoError(t, err)
+			assert.Equal(t, string(before), string(after))
+		})
+	}
+}
+
+// TestRun_LockedManifestsTerminal: a read-only run shows how to repair the
+// lockfile and doesn't suggest that a plain run would.
+func TestRun_LockedManifestsTerminal(t *testing.T) {
+	writeManifestRepo(t, map[string][]string{"ci.yml": {"acme/comp@v1"}},
+		map[string][]string{"acme/comp@v1": nil, "acme/child@v2": nil})
+	reg := &httpmock.Registry{}
+	registerLockedManifests(reg, map[string]string{"acme/comp": composite("acme/child@v2")})
+
+	stdout, stderr, err := runCommandWithHTTP(t, reg, "--no-fix")
+	require.ErrorIs(t, err, errSilent)
+	term := stdout + stderr
+	assert.Contains(t, term, "Lockfile doesn't match locked manifest acme/child@v2")
+	assert.Contains(t, term, "restore the edge from version control, or run `gh actions-lock --relock`")
+	assert.NotContains(t, term, "Re-run without")
 }
 
 // TestRun_LockedManifestsInconclusive: a failed read leaves dependencies

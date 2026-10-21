@@ -50,6 +50,28 @@ func TestBuildActionFileQuery(t *testing.T) {
 	}
 }
 
+func TestActionFileDockerfile(t *testing.T) {
+	refs := []ActionFileRequest{
+		{Owner: "acme", Repo: "plain", Ref: "v1"},
+		{Owner: "acme", Repo: "tools", Path: "build", Ref: "v1", Dockerfile: true},
+	}
+	query, vars, aliases := buildActionFileQuery(refs)
+	assert.NotContains(t, query, "$docker0")
+	assert.Contains(t, query, "dockerfile: file(path: $docker1) { oid } dockerfileLower: file(path: $dockerLower1) { oid }")
+	assert.Equal(t, "build/Dockerfile", vars["docker1"])
+	assert.Equal(t, "build/dockerfile", vars["dockerLower1"])
+
+	data := map[string]json.RawMessage{
+		"a0": json.RawMessage(`{"nameWithOwner":"acme/plain","object":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`),
+		"a1": json.RawMessage(`{"nameWithOwner":"acme/tools","object":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","dockerfile":null,"dockerfileLower":{"oid":"cccccccccccccccccccccccccccccccccccccccc"}}}`),
+	}
+	gqlErr := &api.GraphQLError{Errors: []api.GraphQLErrorItem{{Type: "NOT_FOUND", Path: []any{"a1", "object", "dockerfile"}, Message: "not found"}}}
+	results := parseActionFileResponse(data, refs, aliases, gqlErr, "")
+	require.NoError(t, results[1].Err)
+	assert.False(t, results[0].Dockerfile)
+	assert.True(t, results[1].Dockerfile)
+}
+
 func TestParseActionFileResponse(t *testing.T) {
 	refs := []ActionFileRequest{
 		{Owner: "actions", Repo: "checkout", Ref: "v6"},

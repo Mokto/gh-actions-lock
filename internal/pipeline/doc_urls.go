@@ -42,6 +42,7 @@ var docURLs = map[checks.Category]string{
 	checks.OnboardingRequired:  securityHardeningBase + "#using-third-party-actions",
 	checks.AncestryUnknown:     securityHardeningBase + "#using-third-party-actions",
 	checks.ReachabilityUnknown: securityHardeningBase + "#using-third-party-actions",
+	checks.IncompleteLockfile:  securityHardeningBase + "#using-third-party-actions",
 }
 
 // DocURLFor returns the documentation URL for a finding category, or ""

@@ -369,12 +369,28 @@ func (c *Client) resolveAnonymous(ctx context.Context, ref ActionFileRequest) Ac
 			// must not silently truncate a composite's dependency graph.
 			if code, _ := StatusCode(err); code != http.StatusNotFound {
 				result.Err = err
+			} else if ref.Dockerfile {
+				result.Dockerfile, result.Err = c.anonDockerfile(ctx, base, result.Owner, result.Repo, sha, strings.TrimSuffix(ymlPath, "action.yml"))
 			}
 			return result
 		}
 	}
 	result.ActionYML = content
 	return result
+}
+
+// anonDockerfile reports a Dockerfile or dockerfile in dir.
+func (c *Client) anonDockerfile(ctx context.Context, base, owner, repo, sha, dir string) (bool, error) {
+	for _, name := range []string{"Dockerfile", "dockerfile"} {
+		_, err := c.anonGetFileContent(ctx, base, owner, repo, sha, dir+name)
+		if err == nil {
+			return true, nil
+		}
+		if code, _ := StatusCode(err); code != http.StatusNotFound {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 // anonGetCommitSHA fetches the commit SHA for a ref without authentication.

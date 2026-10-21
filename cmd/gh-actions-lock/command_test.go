@@ -259,6 +259,13 @@ func registerLockedManifests(reg *httpmock.Registry, manifests map[string]string
 	return &reads
 }
 
+// Manifests that stand for an action with only a Dockerfile, and for a
+// commit the repository no longer has.
+const (
+	dockerfileOnly = "FROM alpine"
+	missingCommit  = "missing commit"
+)
+
 // actionFiles answers action-file reads from manifests. A ref that is not a
 // full SHA resolves to commits[owner/repo].
 func actionFiles(manifests, commits map[string]string) httpmock.Responder {
@@ -288,7 +295,14 @@ func actionFiles(manifests, commits map[string]string) httpmock.Responder {
 			if !parserlock.IsFullSha(sha) {
 				sha = commits[nwo]
 			}
-			data[fmt.Sprintf("a%d", i)] = testRepoResponse(nwo, sha, text)
+			resp := testRepoResponse(nwo, sha, text)
+			switch text {
+			case dockerfileOnly:
+				resp["object"] = map[string]any{"oid": sha, "dockerfile": map[string]any{"oid": sha}}
+			case missingCommit:
+				resp["object"] = nil
+			}
+			data[fmt.Sprintf("a%d", i)] = resp
 		}
 		return httpmock.JSONResponse(map[string]any{"data": data})(req)
 	}

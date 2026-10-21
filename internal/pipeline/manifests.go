@@ -72,7 +72,7 @@ func checkManifests(ctx context.Context, r *resolve.Resolver, file parserlock.Fi
 			if !ok {
 				i = len(reqs)
 				reqIdx[id] = i
-				reqs = append(reqs, ghapi.ActionFileRequest{Owner: p.Owner, Repo: p.Repo, Path: n.path, Ref: sha})
+				reqs = append(reqs, ghapi.ActionFileRequest{Owner: p.Owner, Repo: p.Repo, Path: n.path, Ref: sha, Dockerfile: true})
 			}
 			nodes = append(nodes, n)
 			nodeReq = append(nodeReq, i)
@@ -84,9 +84,6 @@ func checkManifests(ctx context.Context, r *resolve.Resolver, file parserlock.Fi
 		level = nil
 		for i, n := range nodes {
 			rd := readManifest(n, file, byKey, results[nodeReq[i]])
-			if rd == nil {
-				continue
-			}
 			if rd.err != nil && ghapi.DependabotProxy() {
 				msg := fmt.Sprintf("could not read locked manifest %s", nodeName(n))
 				return &ghapi.BriefError{Msg: msg + ": " + briefCause(rd.err), Err: fmt.Errorf("%s: %s", msg, verbose(rd.err))}
@@ -132,18 +129,15 @@ func checkManifests(ctx context.Context, r *resolve.Resolver, file parserlock.Fi
 	return nil
 }
 
-// readManifest classifies one read. It returns nil when parity owns the
-// outcome: the repository or commit is gone.
+// readManifest classifies one read. Parity's failures are not read, so any
+// failure here, a missing commit included, leaves the node unverified.
 func readManifest(n manifestNode, file parserlock.File, byKey map[string]string, res ghapi.ActionFileResult) *manifestRead {
-	var notFound *ghapi.RefNotFoundError
 	switch {
-	case errors.As(res.Err, &notFound):
-		return nil
 	case res.Err != nil:
 		return &manifestRead{err: res.Err}
 	case res.CommitOID == "":
 		return &manifestRead{err: errors.New("no result")}
-	case res.ActionYML == "":
+	case res.ActionYML == "" && !res.Dockerfile:
 		return &manifestRead{missing: true}
 	}
 	entry := file.Dependencies[n.key]
@@ -182,21 +176,23 @@ func manifestFindings(path string, n manifestNode, entry parserlock.Action, rd *
 	short := parserlock.ShortSHA(sha)
 	f := checks.Finding{
 		WorkflowPath: path,
-		Category:     checks.NotPinned,
+		Category:     checks.IncompleteLockfile,
 		Severity:     checks.SeverityError,
 		Confidence:   checks.ConfidenceHigh,
 		Dependency:   &dep.Dependency{NWO: p.NWO, Path: n.path, Ref: p.Ref, SHA: sha},
+		DocURL:       DocURLFor(checks.IncompleteLockfile),
 	}
 	switch {
 	case rd.err != nil:
 		// Unverified dependencies block until a re-run reads the manifest.
 		f.Category, f.Confidence, f.Retryable = checks.ReachabilityUnknown, checks.ConfidenceLow, true
+		f.DocURL = DocURLFor(checks.ReachabilityUnknown)
 		f.Detail = fmt.Sprintf("could not read locked manifest %s at %s: %s", nodeName(n), short, verbose(rd.err))
 		f.TermDetail = fmt.Sprintf("could not read locked manifest %s at %s: %s", nodeName(n), short, briefCause(rd.err))
 		f.Remediation = "couldn't verify; re-run this check once the GitHub API is reachable"
 		return []checks.Finding{f}
 	case rd.missing:
-		f.Detail = fmt.Sprintf("%s has no action.yml or action.yaml at locked commit %s", nodeName(n), short)
+		f.Detail = fmt.Sprintf("%s has no action.yml, action.yaml or Dockerfile at locked commit %s", nodeName(n), short)
 		f.Remediation = "point `uses:` at an action that exists at that commit, then run `gh actions-lock --relock`"
 		return []checks.Finding{f}
 	}
@@ -206,7 +202,7 @@ func manifestFindings(path string, n manifestNode, entry parserlock.Action, rd *
 			f.Dependency = &dep.Dependency{NWO: e.use.NWO(), Path: e.use.Path, Ref: e.use.Ref}
 			f.ParentNWO = p.NWO + "@" + p.Ref
 			f.Detail = fmt.Sprintf("%s at locked commit %s uses %s@%s, but its lockfile entry %s does not record it", nodeName(n), short, e.use.FullName(), e.use.Ref, n.key)
-			f.Remediation = "restore actions.lock from version control, or run `gh actions-lock --relock` to rebuild it"
+			f.Remediation = "restore the edge from version control, or run `gh actions-lock --relock`"
 			out = append(out, f)
 		}
 	}

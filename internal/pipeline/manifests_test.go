@@ -25,11 +25,18 @@ func TestReadManifest(t *testing.T) {
 	n := manifestNode{key: "Acme/Comp@v1"}
 	ok := ghapi.ActionFileResult{CommitOID: "1111111111111111111111111111111111111111"}
 
-	t.Run("parity owns a missing commit", func(t *testing.T) {
-		assert.Nil(t, readManifest(n, file, byKey, ghapi.ActionFileResult{Err: &ghapi.RefNotFoundError{Err: errors.New("gone")}}))
+	t.Run("a missing commit parity didn't check is unverified", func(t *testing.T) {
+		assert.Error(t, readManifest(n, file, byKey, ghapi.ActionFileResult{Err: &ghapi.RefNotFoundError{Err: errors.New("gone")}}).err)
 	})
-	t.Run("no result is inconclusive", func(t *testing.T) {
+	t.Run("no result is unverified", func(t *testing.T) {
 		assert.Error(t, readManifest(n, file, byKey, ghapi.ActionFileResult{}).err)
+	})
+	t.Run("a Dockerfile is a leaf", func(t *testing.T) {
+		res := ok
+		res.Dockerfile = true
+		rd := readManifest(n, file, byKey, res)
+		assert.False(t, rd.missing)
+		assert.Empty(t, rd.edges)
 	})
 	t.Run("edges", func(t *testing.T) {
 		res := ok

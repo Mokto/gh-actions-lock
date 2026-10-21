@@ -294,6 +294,9 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 					staleCalls++
 					return httpmock.StatusResponse(http.StatusNotFound)(req)
 				case "/graphql":
+					if lockedManifestRead(req) {
+						return actionFiles(nil, nil)(req)
+					}
 					if tt.mismatch {
 						return parityRepoID(req, http.StatusOK, 2)
 					}

@@ -151,9 +151,9 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		for _, o := range fresh(pw, recordedKeys) {
 			o.report = ri
 			add(o)
-			// A seeded pin was copied from the lockfile with its recorded
-			// children, not read.
-			if k := byKey[pinKey(o.lp.Pin.NWO, o.lp.Pin.Ref)]; o.lp.Parent == "" && k != "" && r.Seeded(o.ref) {
+			// A seeded pin, a composite's child included, was copied from
+			// the lockfile with its recorded children, not read.
+			if k := byKey[pinKey(o.lp.Pin.NWO, o.lp.Pin.Ref)]; k != "" && r.Seeded(o.ref) {
 				roots[ri] = append(roots[ri], manifestNode{key: k, path: o.ref.Path})
 			}
 		}
