@@ -49,6 +49,8 @@ type Client struct {
 
 	// Caches for raw GitHub resources. These live here so all consumers
 	// (resolver, auditor, tag lister) share a single cache per CLI run.
+	// pinProofs holds each headless pin check this run made (see CheckPins).
+	pinProofs            syncmap.Map[NWOSha, PinState]
 	compareCache         syncmap.Map[Compare, bool]
 	compareSF            singleflight.Group
 	repoMetaCache        syncmap.Map[Repo, repoMeta]

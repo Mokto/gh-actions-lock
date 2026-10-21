@@ -81,7 +81,7 @@ func TestCheckPins_GraphQLBatchesFifty(t *testing.T) {
 
 	pins := make([]PinCheck, pinCheckBatchSize+1)
 	for i := range pins {
-		pins[i] = PinCheck{Owner: "o", Repo: "r", SHA: paritySHA}
+		pins[i] = PinCheck{Owner: "o", Repo: fmt.Sprintf("r%d", i), SHA: paritySHA}
 	}
 	states := newTestClient(t, reg).CheckPins(context.Background(), pins)
 	require.Len(t, states, len(pins))
@@ -103,13 +103,73 @@ func TestCheckPins_GraphQLSplitsOnBatchFailure(t *testing.T) {
 
 	states := newTestClient(t, reg).CheckPins(context.Background(), []PinCheck{
 		{Owner: "o", Repo: "r", SHA: paritySHA},
-		{Owner: "o", Repo: "r", SHA: paritySHA},
+		{Owner: "o", Repo: "s", SHA: paritySHA},
 	})
 	assert.Len(t, reg.Requests, 3)
 	for _, s := range states {
 		assert.NoError(t, s.Err)
 		assert.True(t, s.CommitFound)
 	}
+}
+
+// TestCheckPins_ProvesEachCommitOncePerRun: a check with no ref proves a
+// repository and an immutable commit, so the run asks once whoever asks and
+// however they spell it, and every caller gets the same answer, a failed one
+// included. A check of a ref is asked each time: refs move.
+func TestCheckPins_ProvesEachCommitOncePerRun(t *testing.T) {
+	upper := strings.ToUpper(paritySHA)
+	for _, tt := range []struct {
+		name   string
+		status int
+	}{{"proven", http.StatusOK}, {"failed", http.StatusBadGateway}} {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			if tt.status == http.StatusOK {
+				reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+					"data": map[string]any{"a0": map[string]any{"nameWithOwner": "o/r", "databaseId": 7, "commit": map[string]any{"oid": paritySHA}}},
+				}))
+			} else {
+				reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), httpmock.StatusResponse(tt.status))
+			}
+			c := newTestClient(t, reg)
+
+			first := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA}, {Owner: "O", Repo: "R", SHA: upper}})
+			again := c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "R", SHA: upper}})
+			graphql := 0
+			for _, r := range reg.Requests {
+				if strings.Contains(r.URL.Path, "graphql") {
+					graphql++
+				}
+			}
+			assert.Equal(t, 1, graphql, "one check of the commit per run")
+			require.Len(t, first, 2)
+			require.Len(t, again, 1)
+			assert.Equal(t, first[0], first[1])
+			assert.Equal(t, first[0], again[0])
+			if tt.status == http.StatusOK {
+				assert.True(t, first[0].CommitFound)
+				assert.EqualValues(t, 7, first[0].RepoID)
+			} else {
+				assert.Error(t, again[0].Err, "a failed check stays failed")
+			}
+		})
+	}
+
+	t.Run("a ref is checked each time", func(t *testing.T) {
+		reg := &httpmock.Registry{}
+		defer reg.Verify(t)
+		for range 2 {
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": map[string]any{"nameWithOwner": "o/r", "commit": map[string]any{"oid": paritySHA}, "tag": map[string]any{"oid": paritySHA}, "tagRef": map[string]any{}}},
+			}))
+		}
+		c := newTestClient(t, reg)
+		for range 2 {
+			c.CheckPins(context.Background(), []PinCheck{{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v1"}})
+		}
+		assert.Len(t, reg.Requests, 2)
+	})
 }
 
 func TestCheckPins_RESTOnly(t *testing.T) {

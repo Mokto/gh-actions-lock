@@ -54,6 +54,49 @@ func (c *Client) CheckPins(ctx context.Context, pins []PinCheck) []PinState {
 	if len(pins) == 0 {
 		return nil
 	}
+	// A check with no Head proves a repository and an immutable commit, so
+	// one answer serves every caller in the run: parity and a repair's
+	// identity proof ask about the same entry. A failed check is kept too,
+	// so every caller fails closed on it. Head checks name a mutable ref
+	// and are always asked.
+	states := make([]PinState, len(pins))
+	var ask []PinCheck
+	var askAt []int
+	asked := map[NWOSha]int{}
+	same := map[int]int{}
+	for i, p := range pins {
+		if p.Head != "" {
+			ask, askAt = append(ask, p), append(askAt, i)
+			continue
+		}
+		k := ForNWOSha(p.Owner, p.Repo, p.SHA)
+		if s, ok := c.pinProofs.Get(k); ok {
+			states[i] = s
+			continue
+		}
+		if j, ok := asked[k]; ok {
+			same[i] = j
+			continue
+		}
+		asked[k] = len(ask)
+		ask, askAt = append(ask, p), append(askAt, i)
+	}
+	for j, s := range c.checkPins(ctx, ask) {
+		states[askAt[j]] = s
+		if p := ask[j]; p.Head == "" && ctx.Err() == nil {
+			c.pinProofs.Put(ForNWOSha(p.Owner, p.Repo, p.SHA), s)
+		}
+	}
+	for i, j := range same {
+		states[i] = states[askAt[j]]
+	}
+	return states
+}
+
+func (c *Client) checkPins(ctx context.Context, pins []PinCheck) []PinState {
+	if len(pins) == 0 {
+		return nil
+	}
 	if c.local != nil {
 		states := make([]PinState, len(pins))
 		groups := make(map[*Client][]PinCheck)

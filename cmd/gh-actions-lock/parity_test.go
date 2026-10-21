@@ -5105,6 +5105,9 @@ func TestSHARecordedRef_DirectRepairProvesIdentity(t *testing.T) {
 
 func testDirectRepairProvesIdentity(t *testing.T, identity, keySHA string) {
 	reg := &httpmock.Registry{}
+	// proofs counts the checks of the candidate's repository and commit
+	// alone, with no ref to resolve: parity and the repair share one.
+	var proofs atomic.Int32
 	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
 		var body struct {
 			Variables map[string]any `json:"variables"`
@@ -5117,6 +5120,9 @@ func testDirectRepairProvesIdentity(t *testing.T, identity, keySHA string) {
 				break
 			}
 			name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+			if _, head := body.Variables[fmt.Sprintf("head%d", i)]; !head && name == "checkout" {
+				proofs.Add(1)
+			}
 			var id any = 1
 			switch identity {
 			case "inconclusive":
@@ -5155,6 +5161,7 @@ func testDirectRepairProvesIdentity(t *testing.T, identity, keySHA string) {
 	require.NoError(t, err)
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", path)
+	assert.Equal(t, int32(1), proofs.Load(), "one identity proof per entry per run")
 	wfAfter, rerr := os.ReadFile(path)
 	require.NoError(t, rerr)
 	assert.Equal(t, string(wfBefore), string(wfAfter))
