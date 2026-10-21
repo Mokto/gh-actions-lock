@@ -7,6 +7,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
+	"github.com/github/gh-actions-lock/internal/uses"
 )
 
 // Finding represents a single diagnosed issue (or clean bill) for a workflow.
@@ -95,6 +96,8 @@ type Finding struct {
 	RetryReason string
 	RetryAt     time.Time
 	RateLimited bool
+	// ImageUses are the places a container-image finding's image is used.
+	ImageUses []uses.Image
 }
 
 // MarkRetryable makes f a blocking, retryable finding for a check that
@@ -157,8 +160,6 @@ type WorkflowReport struct {
 	Deps []dep.Dependency
 	// Inventory lists all dependencies with direct/transitive classification.
 	Inventory []InventoryEntry
-	// ParseWarnings from ExtractActionRefs (e.g. malformed uses: lines).
-	ParseWarnings []string
 	// Deferred are findings parity excused or accepted on the strength of
 	// a write the run has yet to plan.
 	Deferred []Deferred
@@ -171,7 +172,7 @@ func (r *WorkflowReport) NeedsAttention() bool {
 			continue
 		}
 		switch f.Category {
-		case Valid, RunOnly, LocalAction, MisleadingSHA, RefMoved, VersionRef, SelfRepositoryAction:
+		case Valid, RunOnly, LocalAction, MisleadingSHA, RefMoved, VersionRef, SelfRepositoryAction, ContainerImage:
 			continue
 		default:
 			return true

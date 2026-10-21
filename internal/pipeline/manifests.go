@@ -13,6 +13,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/resolve"
+	"github.com/github/gh-actions-lock/internal/uses"
 )
 
 // manifestNode is one action a recorded entry provides: the entry's key and
@@ -34,6 +35,7 @@ type manifestRead struct {
 	err     error
 	missing bool
 	edges   []manifestEdge
+	images  []uses.Image
 }
 
 // checkManifests reads each root's action.yml at its locked commit, then
@@ -119,6 +121,9 @@ func checkManifests(ctx context.Context, r *resolve.Resolver, file parserlock.Fi
 				}
 				wr.Findings = append(wr.Findings, f)
 			}
+			for _, img := range rd.images {
+				checks.AddContainerImage(wr, img)
+			}
 			for _, e := range rd.edges {
 				if e.to.key != "" {
 					nodes = append(nodes, e.to)
@@ -152,7 +157,7 @@ func readManifest(n manifestNode, file parserlock.File, byKey map[string]string,
 	// Malformed and local uses are diagnosed when the composite is first
 	// resolved; the edges that remain are what the lockfile must record.
 	uses, _ := resolve.CompositeUses(dep.Dependency{NWO: p.NWO, Ref: p.Ref, SHA: lockedSHA(entry.Commit)}, res.ActionYML)
-	rd := &manifestRead{}
+	rd := &manifestRead{images: resolve.ManifestImages(res.ActionYML, nodeName(n))}
 	for _, u := range uses {
 		k := pinKey(u.Ref.NWO(), u.Ref.Ref)
 		e := manifestEdge{use: u.Ref}

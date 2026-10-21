@@ -107,3 +107,41 @@ type Error struct {
 }
 
 func (e *Error) Error() string { return "uses: " + e.Raw + " " + e.Problem }
+
+// ImageKind is how a container image is chosen when it isn't pinned by digest.
+type ImageKind int
+
+const (
+	// ImageTag names an image by tag, or untagged (latest).
+	ImageTag ImageKind = iota
+	// ImageExpression is chosen at run time by a `${{ }}` expression.
+	ImageExpression
+	// ImageBuild is a Docker action's Dockerfile, built on the runner.
+	ImageBuild
+)
+
+// Image is a container image a workflow runs that the lockfile can't pin.
+type Image struct {
+	// Name is the image reference without `docker://`, or the Dockerfile
+	// path for ImageBuild.
+	Name string
+	Kind ImageKind
+	// Where names the job, service, `$/` action or remote action using it.
+	Where string
+	// Action is the remote action (owner/repo[/path]@ref) that names the
+	// image, so only its maintainer can pin it. Empty when the repository does.
+	Action string
+}
+
+// ClassifyImage trims `docker://` from raw and returns the image it names,
+// unless it's pinned by an `@sha256:` digest or empty.
+func ClassifyImage(raw string) (Image, bool) {
+	img := Image{Name: strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "docker://"))}
+	if img.Name == "" || strings.Contains(strings.ToLower(img.Name), "@sha256:") {
+		return img, false
+	}
+	if strings.Contains(img.Name, "${{") {
+		img.Kind = ImageExpression
+	}
+	return img, true
+}

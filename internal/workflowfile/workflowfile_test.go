@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/uses"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,10 +17,9 @@ func TestLoadAndExtractActionRefs(t *testing.T) {
 	require.NoError(t, err)
 
 	scan := f.ExtractActionRefs()
-	refs, localPaths, warnings := scan.Refs, scan.LocalPaths, scan.Warnings
+	refs, localPaths := scan.Refs, scan.LocalPaths
 	assert.Len(t, refs, 2)
 	assert.Empty(t, localPaths)
-	assert.Empty(t, warnings)
 
 	assert.Equal(t, "actions/checkout", refs[0].NWO())
 	assert.Equal(t, "v4", refs[0].Ref)
@@ -32,7 +32,7 @@ func TestExtractActionRefsMixed(t *testing.T) {
 	require.NoError(t, err)
 
 	scan := f.ExtractActionRefs()
-	refs, localPaths, warnings := scan.Refs, scan.LocalPaths, scan.Warnings
+	refs, localPaths := scan.Refs, scan.LocalPaths
 	assert.Len(t, refs, 3)
 	assert.Equal(t, "actions/checkout", refs[0].NWO())
 	assert.Equal(t, "actions/cache", refs[1].NWO())
@@ -41,27 +41,6 @@ func TestExtractActionRefsMixed(t *testing.T) {
 
 	assert.Len(t, localPaths, 1)
 	assert.Equal(t, "./local-action", localPaths[0])
-	assert.Equal(t, []string{
-		"docker://alpine:3.18 is not covered by the actions lockfile; container image tags are mutable",
-	}, warnings)
-}
-
-func TestExtractActionRefs_DockerWarnings(t *testing.T) {
-	f, err := Parse("ci.yml", []byte(`
-on: push
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: docker://alpine:3.18
-      - uses: docker://alpine:3.18
-      - uses: docker://alpine@sha256:0123456789abcdef
-`))
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{
-		"docker://alpine:3.18 is not covered by the actions lockfile; container image tags are mutable",
-	}, f.ExtractActionRefs().Warnings)
 }
 
 func TestParseRejectsUsesExpression(t *testing.T) {
@@ -138,7 +117,6 @@ jobs:
 		},
 		scan.SelfRepositoryRefErrs,
 	)
-	assert.Empty(t, scan.Warnings)
 }
 
 func TestExtractActionRefs_SelfRepositoryOnly(t *testing.T) {
@@ -297,9 +275,7 @@ func TestScanSelfRepositoryActions_RecursiveClosure(t *testing.T) {
 	)
 	assert.Equal(t, []string{"./workspace-relative"}, scan.LocalPaths)
 	assert.Empty(t, scan.Errors)
-	assert.Equal(t, []string{
-		"docker://alpine:3.18 is not covered by the actions lockfile; container image tags are mutable",
-	}, scan.Warnings)
+	assert.Equal(t, []uses.Image{{Name: "alpine:3.18", Where: "$/actions/child"}}, scan.Images)
 }
 
 func TestScanSelfRepositoryActions_NoRepoRoot(t *testing.T) {
@@ -547,7 +523,6 @@ jobs:
 	assert.Equal(t, []string{"./local/action"}, scan.LocalPaths)
 	assert.Equal(t, []string{"$/self/action"}, scan.SelfRepositoryActionRefs, "parallel steps are step-level")
 	assert.Equal(t, []string{"$/self/versioned@main"}, scan.SelfRepositoryRefErrs)
-	assert.Len(t, scan.Warnings, 1, "docker:// inside parallel is disclosed")
 }
 
 func TestExtractActionRefs_MalformedParallelValues(t *testing.T) {
