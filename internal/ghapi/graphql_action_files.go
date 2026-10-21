@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -72,11 +71,13 @@ type repoResponse struct {
 // Results are returned in the same order as inputs; per-ref failures are
 // recorded in each result's Err field rather than aborting the batch.
 //
-// If the whole query is rejected — transport failure, query cost/complexity,
-// or a secondary rate limit — the batch is split in half and each half
+// If GraphQL rejects the whole query — query cost/complexity, or an
+// unattributed SAML block — the batch is split in half and each half
 // retried, recursively down to a single ref, so a few oversized or bad refs
-// can't fail their batch-mates. Splitting is skipped once ctx is canceled so a
-// canceled scan doesn't fan out into a flurry of doomed retries.
+// can't fail their batch-mates. An outage or rate limit is never split: it
+// rejects every half the same way, and the transport already retried it.
+// Splitting is skipped once ctx is canceled so a canceled scan doesn't fan
+// out into a flurry of doomed retries.
 func (c *Client) ResolveActionFiles(ctx context.Context, refs []ActionFileRequest) []ActionFileResult {
 	if len(refs) == 0 {
 		return nil
@@ -109,8 +110,7 @@ func (c *Client) ResolveActionFiles(ctx context.Context, refs []ActionFileReques
 		return results
 	}
 	results, batchErr := c.resolveActionFilesOnce(ctx, refs)
-	code, _ := StatusCode(batchErr)
-	if batchErr == nil || len(refs) == 1 || ctx.Err() != nil || code == http.StatusUnauthorized {
+	if !splittable(batchErr) || len(refs) == 1 || ctx.Err() != nil {
 		return c.retryWithAnonymous(ctx, refs, results)
 	}
 	mid := len(refs) / 2
@@ -160,8 +160,8 @@ func (c *Client) resolveActionFilesOnce(ctx context.Context, refs []ActionFileRe
 	var gqlErr *api.GraphQLError
 	if err != nil {
 		if !errors.As(err, &gqlErr) {
-			// Total transport failure — every result gets the error, and the
-			// batch-level signal tells the caller to split and retry.
+			// Transport or HTTP failure: every result gets the error. The
+			// caller doesn't split it (see splittable).
 			results := make([]ActionFileResult, len(refs))
 			for i, r := range refs {
 				results[i] = ActionFileResult{
@@ -175,6 +175,14 @@ func (c *Client) resolveActionFilesOnce(ctx context.Context, refs []ActionFileRe
 
 	results := parseActionFileResponse(data, refs, aliasMap, gqlErr, c.Hostname)
 	return results, batchLevelGraphQLErr(gqlErr)
+}
+
+// splittable reports whether splitting a batch rejected with err could
+// recover some of its refs. Only a query-level GraphQL error can; an outage
+// or rate limit rejects every half the same way.
+func splittable(err error) bool {
+	var gqlErr *api.GraphQLError
+	return errors.As(err, &gqlErr) && !graphQLRateLimited(err)
 }
 
 // batchLevelGraphQLErr returns a non-nil error when gqlErr carries a

@@ -91,8 +91,7 @@ func (c *Client) CheckPins(ctx context.Context, pins []PinCheck) []PinState {
 // checkPinBatch splits on batch-level failures like ResolveActionFiles.
 func (c *Client) checkPinBatch(ctx context.Context, pins []PinCheck) []PinState {
 	states, batchErr := c.checkPinsOnce(ctx, pins)
-	code, _ := StatusCode(batchErr)
-	if batchErr == nil || len(pins) == 1 || ctx.Err() != nil || code == http.StatusUnauthorized {
+	if !splittable(batchErr) || len(pins) == 1 || ctx.Err() != nil {
 		for i, s := range states {
 			if s.Err != nil && ctx.Err() == nil && c.repoFallbackEligible(ctx, pins[i].Owner, pins[i].Repo, s.Err) {
 				states[i] = c.checkPinREST(ctx, pins[i])

@@ -91,10 +91,12 @@ func TestCheckPins_GraphQLBatchesFifty(t *testing.T) {
 	}
 }
 
-func TestCheckPins_GraphQLSplitsOnBatchFailure(t *testing.T) {
+func TestCheckPins_GraphQLSplitsOnQueryLevelError(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
-	reg.Register(httpmock.GraphQL(`a1:`), httpmock.StatusResponse(http.StatusBadGateway))
+	reg.Register(httpmock.GraphQL(`a1:`), httpmock.JSONResponse(map[string]any{
+		"errors": []map[string]any{{"message": "query has cost too high", "type": "MAX_NODE_LIMIT_EXCEEDED"}},
+	}))
 	for range 2 {
 		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 			"data": map[string]any{"a0": map[string]any{"nameWithOwner": "o/r", "commit": map[string]any{"oid": paritySHA}}},
@@ -109,6 +111,37 @@ func TestCheckPins_GraphQLSplitsOnBatchFailure(t *testing.T) {
 	for _, s := range states {
 		assert.NoError(t, s.Err)
 		assert.True(t, s.CommitFound)
+	}
+}
+
+// TestCheckPins_OutageIsNotSplit: an outage or rate limit rejects every half
+// of a batch alike, and the transport already retried it, so a full batch
+// costs one request rather than fanning out into 2n-1.
+func TestCheckPins_OutageIsNotSplit(t *testing.T) {
+	tests := map[string]httpmock.Responder{
+		"502":                  httpmock.StatusResponse(http.StatusBadGateway),
+		"secondary rate limit": httpmock.StatusResponseWithHeaders(http.StatusForbidden, map[string]string{"Retry-After": "60"}),
+		"graphql rate limited": httpmock.JSONResponse(map[string]any{
+			"errors": []map[string]any{{"message": "API rate limit exceeded", "type": "RATE_LIMITED"}},
+		}),
+	}
+	for name, resp := range tests {
+		t.Run(name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), resp)
+
+			pins := make([]PinCheck, pinCheckBatchSize)
+			for i := range pins {
+				pins[i] = PinCheck{Owner: "o", Repo: "r", SHA: paritySHA}
+			}
+			states := newTestClient(t, reg).CheckPins(context.Background(), pins)
+			assert.Len(t, reg.Requests, 1)
+			require.Len(t, states, len(pins))
+			for _, s := range states {
+				assert.True(t, IsTransient(s.Err), "%v", s.Err)
+			}
+		})
 	}
 }
 
