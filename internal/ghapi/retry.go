@@ -50,9 +50,10 @@ var (
 	quickPolicy = retryPolicy{attempts: 3, backoffCap: 2 * time.Second, window: 10 * time.Second}
 )
 
-// runPolicy picks the retry policy for this process.
+// runPolicy picks the retry policy for this process. Dependabot sets neither
+// CI variable, but nobody watches its runs either.
 func runPolicy() retryPolicy {
-	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
+	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" || DependabotProxy() {
 		return patientPolicy
 	}
 	return quickPolicy

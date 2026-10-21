@@ -364,16 +364,19 @@ func TestRetryTransport_QuickPolicy(t *testing.T) {
 
 func TestRunPolicy(t *testing.T) {
 	for _, tt := range []struct {
-		ci, actions string
-		want        retryPolicy
+		ci, actions, dependabot string
+		want                    retryPolicy
 	}{
-		{"true", "", patientPolicy},
-		{"", "true", patientPolicy},
-		{"", "", quickPolicy},
-		{"false", "", quickPolicy},
+		{"true", "", "", patientPolicy},
+		{"", "true", "", patientPolicy},
+		{"", "", "1", patientPolicy},
+		{"", "", "", quickPolicy},
+		{"false", "", "", quickPolicy},
+		{"", "", "0", quickPolicy},
 	} {
 		t.Setenv("CI", tt.ci)
 		t.Setenv("GITHUB_ACTIONS", tt.actions)
-		assert.Equal(t, tt.want, runPolicy(), "CI=%q GITHUB_ACTIONS=%q", tt.ci, tt.actions)
+		t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", tt.dependabot)
+		assert.Equal(t, tt.want, runPolicy(), "CI=%q GITHUB_ACTIONS=%q GH_ACTIONS_LOCK_DEPENDABOT_PROXY=%q", tt.ci, tt.actions, tt.dependabot)
 	}
 }
