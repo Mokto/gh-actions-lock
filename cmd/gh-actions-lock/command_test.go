@@ -1773,3 +1773,28 @@ jobs:
 	_, stderr, err = runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", path)
 	require.NoError(t, err, stderr)
 }
+
+// TestVerifyLocalAcceptsRecordedTagWithAt: a composite pins its child by full
+// SHA, and the child's entry records the tag found for it, which contains @
+// (as actions/attest-build-provenance's predicate@2.0.0 does).
+func TestVerifyLocalAcceptsRecordedTagWithAt(t *testing.T) {
+	child := "864457a58d4733d7f1574bd8821fa24e02cf7538"
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/attest-build-provenance@v3.0.0
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'actions/attest-build-provenance@v3.0.0':\n    ref: 'v3.0.0'\n    commit: 'sha1-" + strings.Repeat("e", 40) + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'actions/attest-build-provenance@" + child + "'\n" +
+		"  'actions/attest-build-provenance@" + child + "':\n    ref: 'predicate@2.0.0'\n    commit: 'sha1-" + child + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'actions/attest-build-provenance@v3.0.0'\n"
+	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, "--verify-local", path)
+	require.NoError(t, err, stderr)
+}

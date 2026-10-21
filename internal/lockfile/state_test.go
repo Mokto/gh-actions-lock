@@ -1092,6 +1092,11 @@ func TestLoadStateCanonicalizesFullSHAs(t *testing.T) {
 		require.ErrorIs(t, err, ErrCorruptLockfile)
 		assert.ErrorContains(t, err, "spell one full SHA in different cases")
 	})
+	t.Run("keeps a recorded tag containing @", func(t *testing.T) {
+		store, err := load(t, "o/comp@v1", entry("o/comp@v1", "v1", upper, "o/child@"+child), entry("o/child@"+child, "predicate@2.0.0", child, ""))
+		require.NoError(t, err)
+		assert.Equal(t, "predicate@2.0.0", store.File().Dependencies["o/child@"+strings.ToLower(child)].Ref)
+	})
 	t.Run("rejects a ref containing @", func(t *testing.T) {
 		_, err := load(t, "o/comp@rel@1", entry("o/comp@rel@1", "rel@1", lower, ""))
 		require.ErrorIs(t, err, ErrCorruptLockfile)
