@@ -9,31 +9,69 @@ import (
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/github/gh-actions-lock/internal/tag"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// TestInjectFreshTagFindings_PositiveCooldownSkips proves the per-entry gate:
-// an action with a positive effective cooldown is not nudged, because the
-// resolver's cooldown filter already gated fresh tags for it.
-func TestInjectFreshTagFindings_PositiveCooldownSkips(t *testing.T) {
-	fresh := time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
-	reg := &httpmock.Registry{}
-	reg.Register(
-		httpmock.REST("GET", `(?i)repos/actions/checkout/releases`),
-		httpmock.JSONResponse([]map[string]any{
-			{"tag_name": "v4", "published_at": fresh, "immutable": false},
-		}),
-	)
-	tagger := tag.NewListerForTest(t, reg)
+// TestInjectFreshTagFindings_Cooldown proves a configured cooldown widens the
+// freshness window and changes the wording instead of silencing the nudge.
+func TestInjectFreshTagFindings_Cooldown(t *testing.T) {
+	tests := []struct {
+		name       string
+		releasedAt time.Duration
+		cfg        tag.CooldownConfig
+		wantDetail string // empty means no finding
+	}{
+		{
+			name:       "fresh tag within configured cooldown warns",
+			releasedAt: 5 * 24 * time.Hour,
+			cfg:        tag.CooldownConfig{RepoOverrides: map[string]int{"actions/checkout": 7}},
+			wantDetail: "newer than your configured cooldown (7 days)",
+		},
+		{
+			name:       "tag older than configured cooldown is quiet",
+			releasedAt: 10 * 24 * time.Hour,
+			cfg:        tag.CooldownConfig{DefaultDays: 7},
+		},
+		{
+			name:       "no cooldown keeps default window and wording",
+			releasedAt: 24 * time.Hour,
+			cfg:        tag.CooldownConfig{},
+			wantDetail: "no Dependabot cooldown configured",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.Register(
+				httpmock.REST("GET", `(?i)repos/actions/checkout/tags`),
+				httpmock.JSONResponse([]map[string]any{
+					{"name": "v4", "commit": map[string]any{"sha": "s1"}},
+				}),
+			)
+			reg.Register(
+				httpmock.REST("GET", `(?i)repos/actions/checkout/releases`),
+				httpmock.JSONResponse([]map[string]any{
+					{"tag_name": "v4", "published_at": time.Now().Add(-tt.releasedAt).Format(time.RFC3339), "immutable": false},
+				}),
+			)
+			tagger := tag.NewListerForTest(t, reg)
+			record := &pin.Record{Entries: []pin.Entry{
+				{NWO: "actions/checkout", Ref: "v4", SHA: "s1", Resolution: pin.Pinned},
+			}}
+			report := &checks.Report{}
+			injectFreshTagFindings(context.Background(), report, record, tagger, tt.cfg)
 
-	record := &pin.Record{Entries: []pin.Entry{
-		{NWO: "actions/checkout", Ref: "v4", SHA: "s1", Resolution: pin.Pinned},
-	}}
-	report := &checks.Report{}
-	cfg := tag.CooldownConfig{RepoOverrides: map[string]int{"actions/checkout": 7}}
-	injectFreshTagFindings(context.Background(), report, record, tagger, cfg)
-
-	if len(report.RepoFindings) != 0 {
-		t.Fatalf("RepoFindings = %d, want 0 (positive cooldown skips the nudge)", len(report.RepoFindings))
+			if tt.wantDetail == "" {
+				assert.Empty(t, report.RepoFindings)
+				return
+			}
+			require.Len(t, report.RepoFindings, 1)
+			f := report.RepoFindings[0]
+			assert.Equal(t, checks.FreshTag, f.Category)
+			assert.Equal(t, checks.SeverityInfo, f.Severity)
+			assert.Contains(t, f.Detail, tt.wantDetail)
+		})
 	}
 }
 
@@ -42,20 +80,24 @@ func TestFreshTagFinding(t *testing.T) {
 	iso := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
 
 	tests := []struct {
-		name   string
-		iso    string
-		wantOK bool
+		name     string
+		iso      string
+		cooldown int
+		wantOK   bool
 	}{
-		{"fresh", iso(24 * time.Hour), true},
-		{"just under window", iso(freshTagWindow - time.Hour), true},
-		{"exactly at window", iso(freshTagWindow), false},
-		{"old", iso(30 * 24 * time.Hour), false},
-		{"empty", "", false},
-		{"unparseable", "not-a-date", false},
+		{"fresh", iso(24 * time.Hour), 0, true},
+		{"just under window", iso(freshTagWindow - time.Hour), 0, true},
+		{"exactly at window", iso(freshTagWindow), 0, false},
+		{"old", iso(30 * 24 * time.Hour), 0, false},
+		{"empty", "", 0, false},
+		{"unparseable", "not-a-date", 0, false},
+		{"just under cooldown", iso(10*24*time.Hour - time.Hour), 10, true},
+		{"exactly at cooldown", iso(10 * 24 * time.Hour), 10, false},
+		{"cooldown shorter than default window", iso(2 * 24 * time.Hour), 1, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f, ok := freshTagFinding("actions/checkout", "v4.2.1", tt.iso, now)
+			f, ok := freshTagFinding("actions/checkout", "v4.2.1", tt.iso, tt.cooldown, now)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}

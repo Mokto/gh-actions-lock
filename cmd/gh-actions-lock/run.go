@@ -300,14 +300,15 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		console.StartProgress(fmt.Sprintf("Scanning %d %s", total, ui.Pluralize(total, "workflow", "workflows")))
 	}
 
-	// Cooldown governs pin selection, not read-only checks. Only fix runs
-	// need its policy, diagnostics, and tag lister for narrowing.
+	// Cooldown sets the fresh-tag warning window for pins this run makes; it
+	// doesn't filter pin selection. Only fix runs need its policy,
+	// diagnostics, and the tag lister.
 	var tagger *tag.Lister
 	var cooldownCfg tag.CooldownConfig
 	var cooldownWarnings []string
 	if gc := r.GHClient(); gc != nil && !opts.noFix {
 		cooldownCfg, _, cooldownWarnings = ResolveCooldown(".")
-		tagger = tag.NewLister(gc, cooldownCfg)
+		tagger = tag.NewLister(gc)
 	}
 
 	runOpts := pipeline.RunOptions{
@@ -558,9 +559,8 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		injectVersionRefFindings(report, record)
 	}
 
-	// Nudge on freshly pinned tags for actions with no effective cooldown.
-	// Non-blocking; per-entry so a global "configured" flag can't mask an
-	// action whose effective cooldown is 0.
+	// Nudge on freshly pinned tags, using each action's effective cooldown
+	// as its freshness window (freshTagWindow when none). Non-blocking.
 	if tagger != nil {
 		injectFreshTagFindings(ctx, report, record, tagger, cooldownCfg)
 	}

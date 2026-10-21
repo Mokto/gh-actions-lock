@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -58,26 +57,4 @@ func TestReorderSuggestions(t *testing.T) {
 	}
 	// Immutable, then regular release, then plain full version, then major-only.
 	assert.Equal(t, []string{"v4.2.1", "v4.2.0", "v4.1.9", "v4"}, names)
-}
-
-func TestIsTagTooNew(t *testing.T) {
-	tl := NewLister(nil, CooldownConfig{DefaultDays: 7})
-	repo := ghapi.ForRepo("actions", "checkout")
-
-	recent := time.Now().Add(-2 * 24 * time.Hour).Format(time.RFC3339) // within cooldown
-	old := time.Now().Add(-30 * 24 * time.Hour).Format(time.RFC3339)   // past cooldown
-	tl.releaseDates.Put(repo, map[string]string{
-		"v4.2.1": recent,
-		"v4.2.0": old,
-	})
-
-	assert.True(t, tl.isTagTooNew("actions", "checkout", "v4.2.1"))
-	assert.False(t, tl.isTagTooNew("actions", "checkout", "v4.2.0"))
-	// A tag with no known release date is never filtered.
-	assert.False(t, tl.isTagTooNew("actions", "checkout", "v9.9.9"))
-
-	// A zero/negative cooldown disables the age check entirely.
-	tl0 := NewLister(nil, CooldownConfig{DefaultDays: 0})
-	tl0.releaseDates.Put(repo, map[string]string{"v4.2.1": recent})
-	assert.False(t, tl0.isTagTooNew("actions", "checkout", "v4.2.1"))
 }
