@@ -822,7 +822,7 @@ func TestRun_SelfRepositoryLocalActionNamesItsParent(t *testing.T) {
 // --no-migrate-local-actions spelling) turns it back into a warning.
 func TestRun_LocalActionUsingRemoteActionsBlocks(t *testing.T) {
 	const want = "./.github/actions/setup uses actions/setup-node@v4 and octo/tool@v1, which the lockfile can't cover; " +
-		"the job will fail when the lockfile is enforced. Write it as $/.github/actions/setup, or pass --ignore-local-actions."
+		"the job will fail when the lockfile is enforced. Pass --migrate-local-actions to rewrite it as $/.github/actions/setup, or --ignore-local-actions to keep ./."
 	for _, tc := range []struct {
 		args    []string
 		blocked bool
@@ -873,8 +873,8 @@ func TestRun_LocalActionUsingRemoteActionsBlocks(t *testing.T) {
 // still applies; inside a remote composite only the flag does.
 func TestRun_LocalActionErrorNamesTheFix(t *testing.T) {
 	for _, tc := range []struct{ parent, want string }{
-		{"", "./x uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Write it as $/x, or pass --ignore-local-actions."},
-		{"$/actions/build", "./x (in $/actions/build) uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Write it as $/x, or pass --ignore-local-actions."},
+		{"", "./x uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Pass --migrate-local-actions to rewrite it as $/x, or --ignore-local-actions to keep ./."},
+		{"$/actions/build", "./x (in $/actions/build) uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Pass --migrate-local-actions to rewrite it as $/x, or --ignore-local-actions to keep ./."},
 		{"octo/tool@v2", "./x (in octo/tool@v2) uses a/b@v1, which the lockfile can't cover; the job will fail when the lockfile is enforced. Pass --ignore-local-actions to continue."},
 	} {
 		report := &checks.Report{Workflows: []checks.WorkflowReport{{Findings: []checks.Finding{{

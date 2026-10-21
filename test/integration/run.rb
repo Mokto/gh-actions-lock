@@ -704,6 +704,9 @@ STUB_WIRING = {
   local_actions_opaque: ->(s) {
     wire_checkout_success(s, "gho_fake_local_actions_token")
   },
+  migrate_local_actions_rewrite: ->(s) {
+    wire_checkout_success(s, "gho_fake_migrate_token")
+  },
   self_repository_shared_dependency: ->(s) {
     wire_checkout_success(s, "gho_fake_self_repository_token")
   },

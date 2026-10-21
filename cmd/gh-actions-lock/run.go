@@ -73,6 +73,9 @@ type checkOptions struct {
 	// ignoreLocalActions keeps a `./…` action that uses remote actions a
 	// warning instead of a blocking error.
 	ignoreLocalActions bool
+	// migrateLocalActions rewrites same-repo `./…` action refs to the
+	// inherently-pinned `$/…` form on fix runs. Opt-in.
+	migrateLocalActions bool
 }
 
 // bindCheckFlags registers the run flags on the root command.
@@ -98,6 +101,8 @@ func bindCheckFlags(cmd *cobra.Command, opts *checkOptions) {
 	cmd.Flags().StringVar(&opts.profileDir, "profile", "", "Enable profiling: write trace, CPU profile, and HTTP log to `dir`")
 	cmd.Flags().BoolVar(&opts.ignoreLocalActions, "ignore-local-actions", false,
 		"Warn instead of failing when a local `./…` action uses remote actions the lockfile can't cover")
+	cmd.Flags().BoolVar(&opts.migrateLocalActions, "migrate-local-actions", false,
+		"Rewrite same-repo `uses: ./…` actions to the inherently-pinned `uses: $/…` form, in workflows and in-repo action files")
 	// Older releases spelled the opt-out this way; keep those commands working.
 	cmd.Flags().BoolVar(&opts.ignoreLocalActions, "no-migrate-local-actions", false, "Alias for --ignore-local-actions")
 	_ = cmd.Flags().MarkHidden("no-migrate-local-actions")
@@ -254,6 +259,28 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	endSetup()
 
 	opts.workflowPaths = paths
+
+	// committed guards the all-or-nothing rule: until pin.Commit succeeds,
+	// every disk write this run made is rolled back.
+	committed := false
+
+	// Rewrite same-repo `./…` action refs to the inherently-pinned `$/…` form
+	// before scanning, so the diagnosis sees compliant refs. Opt in with
+	// --migrate-local-actions; read-only runs (--no-fix) never touch disk.
+	migrated := 0
+	if opts.migrateLocalActions && !opts.noFix {
+		var undo func()
+		var err error
+		migrated, undo, err = migrateLocalActions(opts.workflowPaths)
+		defer func() {
+			if !committed {
+				undo()
+			}
+		}()
+		if err != nil {
+			return err
+		}
+	}
 
 	// Detailed narration is suppressed from the terminal during the run so the
 	// output stays limited to phase labels, prompts, and the final summary.
@@ -508,9 +535,13 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		console.StopProgress()
 		return fmt.Errorf("committing pins: %w", err)
 	}
+	committed = true
 	endCommit()
 
 	console.StopProgress()
+	if migrated > 0 && opts.jsonFields == "" {
+		console.TermSuccess("Migrated %d local %s to `$/…`", migrated, ui.Pluralize(migrated, "action", "actions"))
+	}
 
 	appendUnselectedOwnSHAWarnings(report, store)
 
@@ -639,6 +670,98 @@ func cliVersion() string {
 	return "unknown"
 }
 
+// migrateLocalActions rewrites same-repo `./…` action refs to `$/…` and writes
+// changes to disk. It covers two kinds of files: the discovered workflow files,
+// and every in-repo composite action definition file (action.yml/action.yaml)
+// found under the repository root. The latter is why a composite action that
+// internally uses `uses: ./helper` gets fixed too, not just the workflow that
+// calls it. Returns the total number of `uses:` lines rewritten and an undo
+// func that restores the original contents; undo is never nil.
+func migrateLocalActions(paths []string) (int, func(), error) {
+	var written []plannedMigration
+	undo := func() {
+		for _, m := range written {
+			_ = os.WriteFile(m.path, m.original, 0o644)
+		}
+	}
+	files := append([]string(nil), paths...)
+
+	// Also sweep in-repo composite action files. The repo root is derived from
+	// a workflow path (they live under .github/workflows/); onboarding only
+	// runs when workflows exist, so an empty paths list means nothing to do.
+	if len(paths) > 0 {
+		root, err := workflowfile.FindRepoRoot(paths[0])
+		if err != nil {
+			return 0, undo, err
+		}
+		if root != "" {
+			actionFiles, err := workflowfile.DiscoverCompositeActionFiles(root)
+			if err != nil {
+				return 0, undo, err
+			}
+			files = append(files, actionFiles...)
+		}
+	}
+
+	var migrations []plannedMigration
+	seen := make(map[string]bool)
+	for _, path := range files {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return 0, undo, fmt.Errorf("resolving migration path %s: %w", path, err)
+		}
+		if seen[absPath] {
+			continue
+		}
+		seen[absPath] = true
+
+		root, err := workflowfile.FindRepoRoot(path)
+		if err != nil {
+			return 0, undo, fmt.Errorf("refusing to migrate %s: %w", path, err)
+		}
+		if root != "" {
+			if err := workflowfile.ValidatePathWithinRoot(root, path); err != nil {
+				return 0, undo, fmt.Errorf("refusing to migrate %s: %w", path, err)
+			}
+		}
+		original, err := os.ReadFile(path)
+		if err != nil {
+			return 0, undo, fmt.Errorf("loading %s: %w", path, err)
+		}
+		wf, err := workflowfile.Load(path)
+		if err != nil {
+			return 0, undo, fmt.Errorf("loading %s: %w", path, err)
+		}
+		content, changed, err := wf.MigrateLocalActionsToSelfRepository()
+		if err != nil {
+			return 0, undo, fmt.Errorf("refusing to migrate %s: %w", path, err)
+		}
+		if changed == 0 {
+			continue
+		}
+		migrations = append(migrations, plannedMigration{path: path, original: original, content: content, changed: changed})
+	}
+
+	// Do not write anything until every candidate has passed structural and
+	// repository-boundary validation.
+	total := 0
+	for _, plan := range migrations {
+		written = append(written, plan)
+		if err := os.WriteFile(plan.path, plan.content, 0o644); err != nil {
+			return total, undo, fmt.Errorf("writing %s: %w", plan.path, err)
+		}
+		total += plan.changed
+	}
+	return total, undo, nil
+}
+
+type plannedMigration struct {
+	path     string
+	original []byte
+	content  []byte
+	changed  int
+}
+
 // blockLocalActions turns each local-action warning whose composite uses
 // remote actions into a blocking error: the runner needs a pin for each, and
 // the lockfile can't record one for a `./…` action, so the job would fail
@@ -660,7 +783,7 @@ func blockLocalActions(report *checks.Report, ignore bool) bool {
 				subject += " (in " + f.ParentNWO + ")"
 			}
 			if f.ParentNWO == "" || strings.HasPrefix(f.ParentNWO, "$/") {
-				fix = fmt.Sprintf("Write it as $/%s, or pass --ignore-local-actions.", strings.TrimPrefix(f.LocalPath, "./"))
+				fix = fmt.Sprintf("Pass --migrate-local-actions to rewrite it as $/%s, or --ignore-local-actions to keep ./.", strings.TrimPrefix(f.LocalPath, "./"))
 			}
 			f.Severity = checks.SeverityError
 			f.Detail = fmt.Sprintf("%s uses %s, which the lockfile can't cover; the job will fail when the lockfile is enforced. %s",

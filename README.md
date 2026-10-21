@@ -163,9 +163,16 @@ workspace-local action's own `uses:` dependencies are **outside lockfile coverag
 When the action's `action.yml` is in the checkout and uses remote actions, the
 runner needs a lockfile pin for each one and fails the job without it. Every
 mode, including `--verify` and `--verify-local`, reports this as a blocking
-`local-action` error that names those actions. Fix it by writing the reference
-as `$/…`, which the CLI follows and locks, or pass `--ignore-local-actions` to
-report it as a warning and continue. `--no-migrate-local-actions` is an alias.
+`local-action` error that names those actions. To fix it, either:
+
+- pass `--migrate-local-actions` on a fix run to rewrite same-repo `./…`
+  references to `$/…`, in workflows and in-repo `action.yml` files, which the
+  CLI then follows and locks; or
+- pass `--ignore-local-actions` to keep `./…` and report it as a warning.
+  `--no-migrate-local-actions` is an alias.
+
+A `./…` inside a remote composite can't be rewritten, so only
+`--ignore-local-actions` applies there.
 
 A `./…` action the CLI can't read from the checkout, or one with only `run:`
 steps, is a non-blocking `local-action` warning. Both link to the

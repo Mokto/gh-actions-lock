@@ -503,6 +503,55 @@ scenarios:
       exit: 0
       output_contains: ["Cannot follow 1 workspace-local action", "deep-blocked-helper"]
 
+  - name: migrate_local_actions_rewrite
+    category: workflow_parsing
+    description: "--migrate-local-actions on a fix run: rewrites a deep in-repo ./ chain to $/, then discovers, narrows and pins the remote dependency reached only through that $/ chain; no self repository ref enters the lockfile"
+    needs_stub: true
+    tags: [stub]
+    flags: ["--migrate-local-actions"]
+    fixtures:
+      workflows:
+        ci.yml:
+          raw: |
+            name: CI
+            on: push
+            jobs:
+              build:
+                runs-on: ubuntu-latest
+                steps:
+                  - uses: ./my-action
+      files:
+        my-action/action.yml: |
+          name: My Action
+          runs:
+            using: composite
+            steps:
+              - uses: ./helper
+        helper/action.yml: |
+          name: Helper
+          runs:
+            using: composite
+            steps:
+              - uses: ./nested/deep
+        nested/deep/action.yml: |
+          name: Deep
+          runs:
+            using: composite
+            steps:
+              - uses: actions/checkout@v4
+      delete_lockfile: true
+    expect:
+      exit: 0
+      lockfile_contains: ["'actions/checkout@v4.2.2':"]
+      lockfile_excludes: ["$/"]
+      files_contain:
+        ".github/workflows/ci.yml": ["uses: $/my-action"]
+        "my-action/action.yml": ["uses: $/helper"]
+        "helper/action.yml": ["uses: $/nested/deep"]
+        "nested/deep/action.yml": ["uses: actions/checkout@v4.2.2"]
+      files_exclude:
+        ".github/workflows/ci.yml": ["uses: ./my-action", "actions/checkout"]
+
   - name: local_actions_opaque
     category: workflow_parsing
     description: "Real binary and lockfile writer: with --ignore-local-actions a fix run locks the remote ref beside a ./ action that uses a remote action, never follows the local action file (its remote dependency is unknown to the stub) and rewrites neither file. Blocking without the flag is covered by Go command tests"

@@ -7,6 +7,7 @@ package workflowfile
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -326,6 +327,55 @@ func DiscoverWorkflowsIn(dir string) ([]string, error) {
 		if ext == ".yml" || ext == ".yaml" {
 			paths = append(paths, filepath.Join(dir, entry.Name()))
 		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// FindRepoRoot returns the repository root containing startPath, or "" when
+// startPath is not inside a git repository. RepoRootEnv overrides discovery;
+// an unusable override is an error.
+func FindRepoRoot(startPath string) (string, error) {
+	return findRepoRoot(startPath)
+}
+
+// DiscoverCompositeActionFiles walks the repository rooted at root and returns
+// the paths of all action definition files (action.yml / action.yaml). The
+// .git directory is skipped. Non-composite action files are included; callers
+// migrate them with MigrateLocalActionsToSelfRepository, which no-ops when a file has
+// no local `./…` steps.
+func DiscoverCompositeActionFiles(root string) ([]string, error) {
+	if root == "" {
+		return nil, nil
+	}
+	var paths []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == "action.yml" || d.Name() == "action.yaml" {
+			if err := ValidatePathWithinRoot(root, p); err != nil {
+				return err
+			}
+			info, err := os.Stat(p)
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("action definition %s is not a regular file", p)
+			}
+			paths = append(paths, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("discovering action files under %s: %w", root, err)
 	}
 	sort.Strings(paths)
 	return paths, nil
