@@ -62,9 +62,9 @@ gh actions-lock --verify
 
 If the GitHub API is unreachable or rate-limited, `--verify` retries for about
 a minute at most, then fails (exit 1) with the pins it couldn't verify. Their
-`--json` findings carry `"retryable": true`; nothing is known to be wrong with
-them, so re-run the check. An untrusted TLS certificate or a rejected token
-stops the run instead (exit 2).
+`--json` findings carry `"retryable": true`; re-run the check once the API is
+reachable. An untrusted TLS certificate or a rejected token stops the run
+instead (exit 2).
 
 Every mode checks each locked commit against the lockfile entry's `ref`, which
 is looked up only as an existing tag, then branch, of exactly that name, the

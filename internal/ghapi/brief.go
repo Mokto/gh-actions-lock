@@ -45,16 +45,17 @@ func (e *BriefError) Verbose() string { return e.Err.Error() }
 
 // Outage describes a transient failure for the terminal, e.g. "GitHub API
 // unreachable (connection refused)", and reports whether it was a rate
-// limit.
-func Outage(err error) (reason string, rateLimited bool) {
-	if IsRateLimited(err) || graphQLRateLimited(err) {
+// limit. For a joined error it describes the branch cause picks.
+func Outage(err error) (reason string, limited bool) {
+	if err == nil {
+		return "GitHub API unreachable", false
+	}
+	err = cause(err)
+	if rateLimited(err) {
 		return "GitHub API rate limit exhausted", true
 	}
 	if code, ok := StatusCode(err); ok {
 		return fmt.Sprintf("GitHub API returned %d %s", code, http.StatusText(code)), false
-	}
-	if err == nil {
-		return "GitHub API unreachable", false
 	}
 	return "GitHub API unreachable (" + transportCause(err) + ")", false
 }

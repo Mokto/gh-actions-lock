@@ -111,13 +111,26 @@ func TestConfigError(t *testing.T) {
 		t.Fatal(err)
 	}
 	untrusted := &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}}
+	refused := &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}}
+	rejected := &api.HTTPError{StatusCode: http.StatusUnauthorized, RequestURL: dotcom}
+	sources := map[string]string{"github.com": "oauth_token", "ghes.example.com": "oauth_token", "env.example.com": "GH_ENTERPRISE_TOKEN"}
+	orig := tokenSource
+	t.Cleanup(func() { tokenSource = orig })
+	tokenSource = func(host string) string { return sources[host] }
+	envHost, err := url.Parse("https://env.example.com/api/v3/repos/a/b")
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name string
 		err  error
 		want string
 	}{
+		{"token from the environment", &api.HTTPError{StatusCode: http.StatusUnauthorized, RequestURL: envHost}, "GitHub rejected the token in GH_ENTERPRISE_TOKEN (401); check it, or unset it to use `gh auth login`"},
+		{"rejected token after an outage", fmt.Errorf("resolving: %w", errors.Join(refused, fmt.Errorf("a/b@v1: %w", rejected))), "GitHub rejected the token (401); run `gh auth login`"},
+		{"untrusted certificate after a 404 under a wrapper", fmt.Errorf("resolving: %w", errors.Join(httpErr(http.StatusNotFound, nil), errors.Join(untrusted))), "TLS certificate for api.github.com is not trusted; check HTTPS_PROXY or your CA bundle"},
 		{"untrusted certificate", fmt.Errorf("checking pins: %w", untrusted), "TLS certificate for api.github.com is not trusted; check HTTPS_PROXY or your CA bundle"},
-		{"rejected token", &api.HTTPError{StatusCode: http.StatusUnauthorized, RequestURL: dotcom}, "GitHub rejected the token (401); run `gh auth login`"},
+		{"rejected token", rejected, "GitHub rejected the token (401); run `gh auth login`"},
 		{"rejected token on another host", &api.HTTPError{StatusCode: http.StatusUnauthorized, RequestURL: ghes}, "GitHub rejected the token (401); run `gh auth login --hostname ghes.example.com`"},
 		{"joined behind a 404", errors.Join(httpErr(http.StatusNotFound, nil), untrusted), "TLS certificate for api.github.com is not trusted; check HTTPS_PROXY or your CA bundle"},
 		{"permission denied is per repository", httpErr(http.StatusForbidden, nil), ""},

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -231,6 +232,12 @@ func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 			"fileYaml": nil,
 		},
 	}
+}
+
+// compareAhead answers a Compare API request as if head descends from base.
+func compareAhead(req *http.Request) (*http.Response, error) {
+	base, _, _ := strings.Cut(path.Base(req.URL.Path), "...")
+	return httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": base}})(req)
 }
 
 // registerParity stubs one parity query that reports every pin intact, and
@@ -795,10 +802,8 @@ func TestCheckCommand_JSONDependenciesWithRequiredBy(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 	registerParity(reg)
-	// The transitive pin moved; its history check confirms the move.
-	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/cache/compare/`), httpmock.JSONResponse(map[string]any{
-		"status": "ahead", "merge_base_commit": map[string]any{"sha": strings.Repeat("a", 40)},
-	}))
+	// The pins moved; their history checks confirm the moves.
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/[^/]+/compare/`), compareAhead)
 
 	compositeYAML := "name: Setup Go\nruns:\n  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
 
@@ -889,10 +894,8 @@ func TestCheckCommand_JSONDependenciesInfersRequiredByWithoutComments(t *testing
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 	registerParity(reg)
-	// The transitive pin moved; its history check confirms the move.
-	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/cache/compare/`), httpmock.JSONResponse(map[string]any{
-		"status": "ahead", "merge_base_commit": map[string]any{"sha": strings.Repeat("a", 40)},
-	}))
+	// The pins moved; their history checks confirm the moves.
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/[^/]+/compare/`), compareAhead)
 
 	compositeYAML := "name: Setup Go\nruns:\n  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
 
@@ -953,6 +956,7 @@ jobs:
 
 func TestCheckCommand_JSONDefaultFieldsExcludesDependencies(t *testing.T) {
 	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/[^/]+/compare/`), compareAhead)
 	defer reg.Verify(t)
 
 	reg.Register(

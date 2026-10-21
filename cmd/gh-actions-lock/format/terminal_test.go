@@ -802,6 +802,7 @@ func TestPresentReadOnlyFailures_GroupsRetryable(t *testing.T) {
 	tests := []struct {
 		name     string
 		findings []checks.Finding
+		retried  time.Duration
 		want     []string
 		unwanted []string
 	}{
@@ -812,12 +813,13 @@ func TestPresentReadOnlyFailures_GroupsRetryable(t *testing.T) {
 				retryableFinding("actions/setup-go", "v5", refused, false, time.Time{}),
 				retryableFinding("actions/checkout", "v4", refused, false, time.Time{}),
 			},
+			retried: 47 * time.Second,
 			want: []string{
-				"Couldn't verify 2 pins\n",
+				"Couldn't verify 2 pins: GitHub API unreachable (connection refused), after retrying for 47s\n",
 				"  actions/checkout@v4, actions/setup-go@v5\n",
-				"  ↳ GitHub API unreachable (connection refused); re-run this check once it is reachable. Nothing is known to be wrong with the lockfile.\n",
+				"  ↳ re-run this check once the GitHub API is reachable\n",
 			},
-			unwanted: []string{"workflow failed", "could not verify locked"},
+			unwanted: []string{"workflow failed", "could not verify locked", "wrong"},
 		},
 		{
 			name: "rate limit",
@@ -840,14 +842,14 @@ func TestPresentReadOnlyFailures_GroupsRetryable(t *testing.T) {
 			want: []string{
 				"1 of 1 workflow failed: 1 error, 2 pins couldn't be verified\n",
 				"octo/forged@v1",
-				"Couldn't verify 2 pins\n",
+				"Couldn't verify 2 pins: GitHub API unreachable (connection refused)\n",
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			u, buf := newTestUI()
-			report := &checks.Report{Workflows: []checks.WorkflowReport{{Path: ".github/workflows/ci.yml", Findings: tt.findings}}}
+			report := &checks.Report{Workflows: []checks.WorkflowReport{{Path: ".github/workflows/ci.yml", Findings: tt.findings}}, RetriedFor: tt.retried}
 			PresentReadOnlyFailures(u, report)
 			got := buf.String()
 			for _, want := range tt.want {

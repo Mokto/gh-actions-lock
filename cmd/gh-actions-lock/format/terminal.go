@@ -126,7 +126,7 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 	}
 
 	if len(order) == 0 {
-		renderRetryable(out, retry)
+		renderRetryable(out, retry, report.RetriedFor)
 		return false
 	}
 
@@ -155,7 +155,7 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 			out.TermDetail("  ↳ %s", out.TermDim(wf))
 		}
 	}
-	renderRetryable(out, retry)
+	renderRetryable(out, retry, report.RetriedFor)
 	// A plain re-run writes nothing while an unfixable error remains.
 	return hasFixable && !blocked
 }
@@ -164,8 +164,8 @@ func PresentReadOnlyFailures(out *ui.UI, report *checks.Report) (hasFixable bool
 var now = time.Now
 
 // renderRetryable prints the checks GitHub didn't answer as one block: they
-// share a cause, and nothing is known to be wrong with any of them.
-func renderRetryable(out *ui.UI, ff []checks.Finding) {
+// share a cause. retried is how long the run waited between retries.
+func renderRetryable(out *ui.UI, ff []checks.Finding, retried time.Duration) {
 	pins := retryLabels(ff)
 	if len(pins) == 0 {
 		return
@@ -177,19 +177,17 @@ func renderRetryable(out *ui.UI, ff []checks.Finding) {
 			cause = f
 		}
 	}
-	head := fmt.Sprintf("Couldn't verify %d %s", len(pins), ui.Pluralize(len(pins), "pin", "pins"))
-	advice := cause.RetryReason + "; re-run this check once it is reachable. Nothing is known to be wrong with the lockfile."
-	if cause.RateLimited || !cause.RetryAt.IsZero() {
-		head += ": " + cause.RetryReason
-		if !cause.RetryAt.IsZero() {
-			head += fmt.Sprintf(" until %s UTC (in %s)", cause.RetryAt.UTC().Format("15:04"), untilReset(cause.RetryAt))
-		}
-		advice = checks.RetryAdvice(cause.RetryAt, cause.RateLimited)
+	head := fmt.Sprintf("Couldn't verify %d %s: %s", len(pins), ui.Pluralize(len(pins), "pin", "pins"), cause.RetryReason)
+	if !cause.RetryAt.IsZero() {
+		head += fmt.Sprintf(" until %s UTC (in %s)", cause.RetryAt.UTC().Format("15:04"), untilReset(cause.RetryAt))
+	}
+	if retried >= time.Second {
+		head += fmt.Sprintf(", after retrying for %s", retried.Round(time.Second))
 	}
 	out.TermBlank()
 	out.TermError("%s", head)
 	out.TermDetail("  %s", strings.Join(pins, ", "))
-	out.TermDetail("  ↳ %s", advice)
+	out.TermDetail("  ↳ %s", checks.RetryAdvice(cause.RetryAt, cause.RateLimited))
 }
 
 // retryLabels names each pin, with the composite that uses it, or the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/ghapi"
@@ -135,13 +136,21 @@ func checkOneRefMoved(ctx context.Context, pw ParsedWorkflow, ref parserlock.Act
 		f.Detail = fmt.Sprintf("ref %s now resolves to %s, lockfile pins %s (ancestry check inconclusive%s)", ref.Ref, parserlock.ShortSHA(sha), parserlock.ShortSHA(pin.SHA()), suffixWith(ancestryDetail))
 		f.MarkRetryable(cause)
 	default:
-		f.Category = RefMoved
-		f.Severity = SeverityWarning
-		f.Confidence = ConfidenceHigh
-		f.Detail = fmt.Sprintf("ref %s now resolves to %s, lockfile pins %s", ref.Ref, parserlock.ShortSHA(sha), parserlock.ShortSHA(pin.SHA()))
-		f.Remediation = "run `gh actions-lock --relock` to refresh the lock entry"
+		f.MarkRefMoved()
 	}
 	return f, true
+}
+
+// MarkRefMoved makes f, a ref-moved check of f.Dependency whose ref now
+// resolves to f.ObservedSHA, the warning for a commit confirmed in the
+// ref's history.
+func (f *Finding) MarkRefMoved() {
+	f.Category = RefMoved
+	f.Severity = SeverityWarning
+	f.Confidence = ConfidenceHigh
+	f.Retryable, f.RetryReason, f.RetryAt, f.RateLimited = false, "", time.Time{}, false
+	f.Detail = fmt.Sprintf("ref %s now resolves to %s, lockfile pins %s", f.Dependency.Ref, parserlock.ShortSHA(f.ObservedSHA), parserlock.ShortSHA(f.Dependency.SHA))
+	f.Remediation = "run `gh actions-lock --relock` to refresh the lock entry"
 }
 
 // AcceptMovedRemediation is the single next step for a pin the runner

@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/cli/go-gh/v2/pkg/auth"
 )
 
 // StatusCode reports the HTTP status code carried by err when it originates
@@ -62,15 +64,16 @@ func IsRateLimited(err error) bool {
 // error is transient when any branch is, so one 404 can't mask an outage
 // elsewhere in the batch. It follows the rules the retry transport uses.
 func IsTransient(err error) bool {
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, e := range joined.Unwrap() {
-			if IsTransient(e) {
-				return true
-			}
+	for _, b := range branches(err) {
+		if transient(b) {
+			return true
 		}
-		return false
 	}
-	if IsRateLimited(err) || graphQLRateLimited(err) || errors.As(err, new(*UnknownOutcomeError)) {
+	return false
+}
+
+func transient(err error) bool {
+	if rateLimited(err) || errors.As(err, new(*UnknownOutcomeError)) {
 		return true
 	}
 	if code, ok := StatusCode(err); ok {
@@ -80,11 +83,78 @@ func IsTransient(err error) bool {
 	return errors.As(err, &urlErr) && retryableTransportErr(urlErr.Err)
 }
 
+func rateLimited(err error) bool { return IsRateLimited(err) || graphQLRateLimited(err) }
+
+// branches splits err at every errors.Join, including joins beneath
+// wrappers, so each branch's cause can be read on its own: errors.As would
+// stop at the first match of a type.
+func branches(err error) []error {
+	for e := err; e != nil; {
+		switch u := e.(type) {
+		case interface{ Unwrap() []error }:
+			var out []error
+			for _, b := range u.Unwrap() {
+				out = append(out, branches(b)...)
+			}
+			return out
+		case interface{ Unwrap() error }:
+			e = u.Unwrap()
+		default:
+			e = nil
+		}
+	}
+	return []error{err}
+}
+
+// cause picks the branch of err that decides what to tell the user: a setup
+// error first (a rejected token or an untrusted certificate), then the rate
+// limit that resets last, then any other outage. It returns err when no
+// branch is any of those.
+func cause(err error) error {
+	bs := branches(err)
+	for _, b := range bs {
+		if configError(b) != nil {
+			return b
+		}
+	}
+	var limited error
+	var at time.Time
+	for _, b := range bs {
+		if rateLimited(b) {
+			if t := retryAt(b); limited == nil || t.After(at) {
+				limited, at = b, t
+			}
+		}
+	}
+	if limited != nil {
+		return limited
+	}
+	for _, b := range bs {
+		if transient(b) {
+			return b
+		}
+	}
+	return err
+}
+
+// tokenSource reports where the token for host comes from; tests stub it.
+var tokenSource = func(host string) string {
+	_, src := auth.TokenForHost(host)
+	return src
+}
+
 // ConfigError returns a one-line error when err shows the run itself is
 // misconfigured: GitHub's TLS certificate isn't trusted (a proxy or CA
 // bundle), or GitHub rejected the token. Every request would fail the same
 // way, so it is reported once rather than per pin. It returns nil otherwise.
 func ConfigError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return configError(cause(err))
+}
+
+func configError(err error) error {
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) && untrustedCert(urlErr.Err) {
 		host := urlErr.URL
@@ -94,16 +164,23 @@ func ConfigError(err error) error {
 		return &BriefError{Msg: fmt.Sprintf("TLS certificate for %s is not trusted; check HTTPS_PROXY or your CA bundle", host), Err: err}
 	}
 	var httpErr *api.HTTPError
-	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnauthorized {
-		login := "gh auth login"
-		if httpErr.RequestURL != nil {
-			if host := strings.TrimPrefix(httpErr.RequestURL.Hostname(), "api."); host != "github.com" {
-				login += " --hostname " + host
-			}
-		}
-		return &BriefError{Msg: fmt.Sprintf("GitHub rejected the token (401); run `%s`", login), Err: err}
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusUnauthorized {
+		return nil
 	}
-	return nil
+	host := "github.com"
+	if httpErr.RequestURL != nil {
+		host = strings.TrimPrefix(httpErr.RequestURL.Hostname(), "api.")
+	}
+	// A token variable takes precedence over `gh auth login`, so logging in
+	// again wouldn't replace it.
+	if src := tokenSource(host); strings.HasSuffix(src, "_TOKEN") {
+		return &BriefError{Msg: fmt.Sprintf("GitHub rejected the token in %s (401); check it, or unset it to use `gh auth login`", src), Err: err}
+	}
+	login := "gh auth login"
+	if host != "github.com" {
+		login += " --hostname " + host
+	}
+	return &BriefError{Msg: fmt.Sprintf("GitHub rejected the token (401); run `%s`", login), Err: err}
 }
 
 // graphQLRateLimited reports a GraphQL response rejected by the rate limit.

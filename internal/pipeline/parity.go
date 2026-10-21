@@ -195,12 +195,24 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	// tagMoved marks an exact-version tag that moved ahead of its commit. A
 	// branch named like one is a floating ref.
 	tagMoved := make([]bool, len(states))
+	// answered holds GitHub's answer to each comparison it answered, by
+	// compareKey.
+	answered := map[string]resolve.AncestryStatus{}
+	defer func() {
+		for i := range report.Workflows {
+			dropSuperseded(&report.Workflows[i], answered)
+		}
+	}()
 	for i := range states {
 		st, pc := &states[i], pins[i]
 		if pc.Head == "" || st.Err != nil || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
 			continue
 		}
-		switch ancestry, detail, cause := r.CheckAncestryCause(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); {
+		ancestry, detail, cause := r.CheckAncestryCause(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID)
+		if cause == nil && ancestry != resolve.AncestryUnknown {
+			answered[compareKey(pc.Owner+"/"+pc.Repo, pc.SHA, st.HeadOID)] = ancestry
+		}
+		switch {
 		case ancestry == resolve.AncestryNotAncestor && cause == nil:
 			st.CommitFound = false
 		case ancestry == resolve.AncestryConfirmed:
@@ -239,20 +251,8 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			report.Verified[k] = true
 		}
 	}()
-	checked := map[int]map[string]bool{}
-	defer func() {
-		for ri, keys := range checked {
-			dropSuperseded(&report.Workflows[ri], keys)
-		}
-	}()
 	for i, st := range states {
 		for _, o := range owners[i] {
-			if !o.fresh {
-				if checked[o.report] == nil {
-					checked[o.report] = map[string]bool{}
-				}
-				checked[o.report][checks.PruneKey(o.lp.Pin.NWO, o.lp.Pin.Ref, pins[i].SHA)] = true
-			}
 			f, ok := parityFinding(o.pw, o.ref, o.lp, pins[i], st)
 			// A pin parity blocks or can't check is not worth reading.
 			if ok && (f.Severity == checks.SeverityError || st.Err != nil) {
@@ -340,25 +340,63 @@ func unanswered(err error) bool {
 	return ghapi.IsTransient(err) && !errors.As(err, new(*ghapi.SSORateLimitedError))
 }
 
-// dropSuperseded drops findings that parity's own findings replace: a
-// ref-moved check of a recorded pin in checked (keys by checks.PruneKey)
-// that couldn't compare the commits, and a workflow's resolver outage once a pin of the
-// workflow blocks, now or should its deferred finding be restored.
-func dropSuperseded(wr *checks.WorkflowReport, checked map[string]bool) {
+// dropSuperseded fails closed: it settles a finding only where another
+// check answers the same question. A ref-moved check that couldn't compare
+// a pin's commit with the ref's takes parity's answer to that comparison
+// (in answered, by compareKey): confirmed makes it the ref-moved warning,
+// so --relock still re-pins it; anything else leaves parity's own finding.
+// It also goes once parity reports its own error on the pin. A workflow's
+// resolver outage goes once a pin of the workflow blocks, now or should its
+// deferred finding be restored.
+func dropSuperseded(wr *checks.WorkflowReport, answered map[string]resolve.AncestryStatus) {
 	pinBlocks := func(f checks.Finding) bool {
 		return f.Severity == checks.SeverityError && f.DepKey() != ""
 	}
-	blocked := slices.ContainsFunc(wr.Findings, pinBlocks) ||
-		slices.ContainsFunc(wr.Deferred, func(d checks.Deferred) bool { return pinBlocks(d.Finding) })
+	parityBlocks := map[string]bool{}
+	for _, f := range wr.Findings {
+		if pinBlocks(f) && (f.RecordedRef != "" || f.FreshRef) {
+			parityBlocks[findingPinKey(f)] = true
+		}
+	}
+	for _, d := range wr.Deferred {
+		if pinBlocks(d.Finding) {
+			parityBlocks[findingPinKey(d.Finding)] = true
+		}
+	}
+	blocked := slices.ContainsFunc(wr.Findings, pinBlocks) || len(parityBlocks) > 0
 	wr.Findings = slices.DeleteFunc(wr.Findings, func(f checks.Finding) bool {
 		switch {
 		case refMovedUnproven(f) && f.Dependency != nil:
-			return checked[checks.PruneKey(f.Dependency.NWO, f.Dependency.Ref, f.Dependency.SHA)]
+			if parityBlocks[findingPinKey(f)] {
+				return true
+			}
+			a, ok := answered[compareKey(f.Dependency.NWO, f.Dependency.SHA, f.ObservedSHA)]
+			return ok && a != resolve.AncestryConfirmed
 		case f.Category == checks.ReachabilityUnknown && f.Retryable && f.DepKey() == "":
 			return blocked
 		}
 		return false
 	})
+	for i, f := range wr.Findings {
+		if !refMovedUnproven(f) || f.Dependency == nil {
+			continue
+		}
+		if a, ok := answered[compareKey(f.Dependency.NWO, f.Dependency.SHA, f.ObservedSHA)]; ok && a == resolve.AncestryConfirmed {
+			wr.Findings[i].MarkRefMoved()
+		}
+	}
+}
+
+// compareKey names a comparison of a pinned commit with a ref's commit.
+func compareKey(nwo, pinned, head string) string {
+	return strings.ToLower(nwo + "@" + pinned + "..." + head)
+}
+
+func findingPinKey(f checks.Finding) string {
+	if f.Dependency == nil {
+		return ""
+	}
+	return checks.PruneKey(f.Dependency.NWO, f.Dependency.Ref, f.Dependency.SHA)
 }
 
 // refMovedUnproven reports a ref-moved check whose comparison GitHub didn't

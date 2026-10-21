@@ -72,7 +72,7 @@ type Finding struct {
 	Remediation string `json:"remediation,omitempty"`
 	DocURL      string `json:"doc_url,omitempty"`
 	// Retryable marks a check GitHub didn't answer (an outage or rate
-	// limit): the finding blocks, but re-running may clear it.
+	// limit): the finding blocks until a re-run gets an answer.
 	Retryable bool `json:"retryable,omitempty"`
 }
 

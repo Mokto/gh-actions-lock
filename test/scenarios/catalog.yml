@@ -303,7 +303,7 @@ scenarios:
     expect:
       exit: 2
       output_contains:
-        - "GitHub rejected the token (401)"
+        - "GitHub rejected the token in GH_"
       output_excludes:
         - "could not be resolved"
 

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/stretchr/testify/assert"
@@ -94,6 +95,39 @@ func TestOutage(t *testing.T) {
 			got, limited := Outage(tt.err)
 			assert.Equal(t, tt.want, got)
 			assert.Equal(t, tt.rateLimited, limited)
+		})
+	}
+}
+
+// TestOutage_PicksCause: in a joined error the rate limit that resets last
+// decides the reason and retry time, whatever its position, and an outage
+// beats a permission answer.
+func TestOutage_PicksCause(t *testing.T) {
+	refused := &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}
+	early := time.Date(2026, 1, 2, 14, 0, 0, 0, time.UTC)
+	late := early.Add(5 * time.Minute)
+	limited := func(at time.Time) error {
+		return &UnknownOutcomeError{Cause: &api.HTTPError{StatusCode: http.StatusTooManyRequests}, RetryAt: at}
+	}
+	forbidden := &api.HTTPError{StatusCode: http.StatusForbidden}
+	tests := []struct {
+		name        string
+		err         error
+		wantReason  string
+		wantLimited bool
+		wantAt      time.Time
+	}{
+		{"403 before a rate limit", errors.Join(forbidden, limited(late)), "GitHub API rate limit exhausted", true, late},
+		{"rate limit before an outage, under a wrapper", fmt.Errorf("resolving: %w", errors.Join(refused, errors.Join(limited(early), limited(late)))), "GitHub API rate limit exhausted", true, late},
+		{"403 before an outage", errors.Join(forbidden, refused), "GitHub API unreachable (connection refused)", false, time.Time{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, lim := Outage(tt.err)
+			assert.Equal(t, tt.wantReason, reason)
+			assert.Equal(t, tt.wantLimited, lim)
+			assert.Equal(t, tt.wantAt, RetryAt(tt.err))
+			assert.True(t, IsTransient(tt.err))
 		})
 	}
 }

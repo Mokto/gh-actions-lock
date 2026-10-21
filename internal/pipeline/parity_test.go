@@ -17,6 +17,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -372,24 +373,30 @@ func TestPlannedAway(t *testing.T) {
 	}
 }
 
-// TestDropSuperseded: parity's check of a recorded pin replaces a ref-moved
-// check that couldn't compare it, and a pin finding replaces the workflow's
-// resolver outage.
+// TestDropSuperseded: a finding is settled only by an answer to the same
+// question, never by a different check of the same pin.
 func TestDropSuperseded(t *testing.T) {
-	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const (
+		sha   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		live  = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		other = "cccccccccccccccccccccccccccccccccccccccc"
+	)
 	d := &dep.Dependency{NWO: "actions/checkout", Ref: "v4", SHA: sha}
-	ancestry := checks.Finding{Category: checks.AncestryUnknown, Severity: checks.SeverityError, Retryable: true, Dependency: d}
-	refused := checks.Finding{Category: checks.RepoUnavailable, Severity: checks.SeverityError, Dependency: d, ObservedSHA: "b"}
+	ancestry := checks.Finding{Category: checks.AncestryUnknown, Severity: checks.SeverityError, Retryable: true, Dependency: d, ObservedSHA: live}
+	refused := checks.Finding{Category: checks.RepoUnavailable, Severity: checks.SeverityError, Dependency: d, ObservedSHA: live}
 	outage := checks.Finding{Category: checks.ReachabilityUnknown, Severity: checks.SeverityError, Retryable: true}
-	pinErr := checks.Finding{Category: checks.ReachabilityUnknown, Severity: checks.SeverityError, Retryable: true, Dependency: d}
-	checked := map[string]bool{checks.PruneKey("actions/checkout", "v4", sha): true}
+	pinErr := checks.Finding{Category: checks.ReachabilityUnknown, Severity: checks.SeverityError, Retryable: true, Dependency: d, RecordedRef: "v4"}
+	confirmed := map[string]resolve.AncestryStatus{compareKey("actions/checkout", sha, live): resolve.AncestryConfirmed}
+	elsewhere := map[string]resolve.AncestryStatus{compareKey("actions/checkout", sha, other): resolve.AncestryConfirmed}
 	tests := []struct {
 		name     string
 		wr       checks.WorkflowReport
-		checked  map[string]bool
+		answered map[string]resolve.AncestryStatus
 		wantKept []checks.Category
 	}{
-		{"parity checked the pin", checks.WorkflowReport{Findings: []checks.Finding{ancestry, refused, pinErr}}, checked, []checks.Category{checks.ReachabilityUnknown}},
+		{"parity's error on the pin replaces it", checks.WorkflowReport{Findings: []checks.Finding{ancestry, refused, pinErr}}, nil, []checks.Category{checks.ReachabilityUnknown}},
+		{"parity confirmed the same comparison", checks.WorkflowReport{Findings: []checks.Finding{ancestry, refused}}, confirmed, []checks.Category{checks.RefMoved, checks.RefMoved}},
+		{"parity confirmed a different comparison", checks.WorkflowReport{Findings: []checks.Finding{ancestry}}, elsewhere, []checks.Category{checks.AncestryUnknown}},
 		{"parity didn't check the pin", checks.WorkflowReport{Findings: []checks.Finding{ancestry}}, nil, []checks.Category{checks.AncestryUnknown}},
 		{"a pin finding replaces the resolver outage", checks.WorkflowReport{Findings: []checks.Finding{outage, pinErr}}, nil, []checks.Category{checks.ReachabilityUnknown}},
 		{"so does a deferred one", checks.WorkflowReport{Findings: []checks.Finding{outage}, Deferred: []checks.Deferred{{Finding: pinErr}}}, nil, nil},
@@ -397,10 +404,14 @@ func TestDropSuperseded(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dropSuperseded(&tt.wr, tt.checked)
+			dropSuperseded(&tt.wr, tt.answered)
 			var got []checks.Category
 			for _, f := range tt.wr.Findings {
 				got = append(got, f.Category)
+				if f.Category == checks.RefMoved {
+					assert.Equal(t, checks.SeverityWarning, f.Severity)
+					assert.False(t, f.Retryable)
+				}
 			}
 			assert.Equal(t, tt.wantKept, got)
 		})

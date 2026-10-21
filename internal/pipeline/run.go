@@ -156,5 +156,8 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
+	if r != nil {
+		report.RetriedFor = r.GHClient().RetriedFor()
+	}
 	return &RunResult{Report: report, Valid: report.IsValid()}, nil
 }

@@ -95,6 +95,8 @@ type retryBudget struct {
 	// noticed throttles notices to one per reason per second, since many
 	// requests wait out the same outage at once.
 	noticed map[string]time.Time
+	// retried is the longest outage the run waited through.
+	retried time.Duration
 
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration)
@@ -131,7 +133,21 @@ func (b *retryBudget) allow(d time.Duration) bool {
 	if b.since.IsZero() {
 		b.since = now
 	}
-	return !now.Add(d).After(b.since.Add(b.policy.window))
+	if now.Add(d).After(b.since.Add(b.policy.window)) {
+		return false
+	}
+	b.retried = max(b.retried, now.Add(d).Sub(b.since))
+	return true
+}
+
+// RetriedFor is the longest the run spent retrying through one outage.
+func (c *Client) RetriedFor() time.Duration {
+	if c == nil || c.budget == nil {
+		return 0
+	}
+	c.budget.mu.Lock()
+	defer c.budget.mu.Unlock()
+	return c.budget.retried
 }
 
 // answered closes the outage window: GitHub is responding again.
@@ -339,8 +355,16 @@ func retryAfter(h http.Header, now time.Time) time.Time {
 }
 
 // RetryAt returns the earliest time GitHub said a retry of the request
-// behind err could succeed, or the zero time if it didn't say.
+// behind err could succeed, or the zero time if it didn't say. For a joined
+// error it reads the branch cause picks.
 func RetryAt(err error) time.Time {
+	if err == nil {
+		return time.Time{}
+	}
+	return retryAt(cause(err))
+}
+
+func retryAt(err error) time.Time {
 	var unknown *UnknownOutcomeError
 	if errors.As(err, &unknown) && !unknown.RetryAt.IsZero() {
 		return unknown.RetryAt
