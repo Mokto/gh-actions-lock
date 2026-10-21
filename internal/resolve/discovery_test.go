@@ -606,3 +606,9 @@ func TestResolveGraphDockerfileOnlyActionImage(t *testing.T) {
 		})
 	}
 }
+
+// TestLocalActionWarningDisclosesImages: a remote action can generate and run
+// a ./ action at run time, such as one that wraps a container.
+func TestLocalActionWarningDisclosesImages(t *testing.T) {
+	assert.True(t, strings.HasSuffix(LocalActionWarning("o/r@v1", "./run"), "nor is any container image it runs"))
+}

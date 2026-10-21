@@ -22,7 +22,7 @@ const localActionWarningPrefix = "Local actions are allowed but never followed o
 
 // LocalActionWarning identifies a workspace path whose dependencies are not covered.
 func LocalActionWarning(parent, localPath string) string {
-	return fmt.Sprintf("%s: %s uses %s; its uses: dependencies are not covered by this lockfile", localActionWarningPrefix, parent, localPath)
+	return fmt.Sprintf("%s: %s uses %s; its uses: dependencies are not covered by this lockfile, nor is any container image it runs", localActionWarningPrefix, parent, localPath)
 }
 
 // InvalidSelfRepositoryRefError is returned when a fetched composite carries
