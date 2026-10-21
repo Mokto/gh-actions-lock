@@ -225,7 +225,11 @@ func TestMovedTagFinding(t *testing.T) {
 			ref := parserlock.ActionRef{Owner: "actions", Repo: "checkout", Path: "sub", Ref: tt.ref}
 			pc := ghapi.PinCheck{Owner: "actions", Repo: "checkout", SHA: sha, Head: "v6.1.0"}
 			f := movedTagFinding(checks.ParsedWorkflow{Path: ".github/workflows/ci.yml"}, ref, lp, pc, ghapi.PinState{CommitFound: true, HeadOID: live})
+			assert.Equal(t, checks.RefMoved, f.Category)
 			assert.Equal(t, checks.SeverityWarning, f.Severity)
+			assert.True(t, f.TagMoved)
+			assert.Equal(t, live, f.ObservedSHA)
+			assert.Contains(t, f.Detail, "locked commit "+sha[:12]+" is still in its history")
 			assert.Equal(t, tt.wantParent, f.ParentNWO)
 			assert.Equal(t, tt.ref, f.Dependency.Ref)
 			assert.Equal(t, tt.wantAdvice, f.Remediation)

@@ -60,8 +60,9 @@ way the Actions backend resolver does. Every pin, whether an exact tag
 owner/repo@<sha>`), must have its commit in that ref's history, so a fork
 commit can't pass as upstream. Tags can move: the Actions backend accepts an
 exact tag that moved ahead of the commit, so runs allow it and `--verify` only
-warns. A lockfile entry whose `ref` the Actions backend resolver would reject
-fails the run (exit 2), naming the first such entry in the file and its line:
+warns with "Tag now points past locked commit", not "Pinned commit not in
+upstream history". A lockfile entry whose `ref` the Actions backend resolver
+would reject fails the run (exit 2), naming the first such entry in the file and its line:
 it must be a short tag or branch name the backend accepts, never a SHA, a
 `refs/` name, revision syntax such as `main~1`, or a `git describe` name, and
 it must equal the `uses:` ref unless that is a full SHA. A `uses:` ref that is

@@ -182,11 +182,12 @@ func renderTermFindingDetail(out *ui.UI, f checks.Finding, dep string) {
 	}
 }
 
-// findingLabel is categoryLabel with terminal-only titles for refs that
-// don't exist upstream, which share the not-pinned and unreachable-pin
-// categories in JSON. Only a ref the lockfile recorded can no longer exist.
+// findingLabel distinguishes ref states that share a category in JSON.
+// Only a ref the lockfile recorded can no longer exist.
 func findingLabel(f checks.Finding) string {
 	switch {
+	case f.TagMoved && f.Category == checks.RefMoved:
+		return "Tag now points past locked commit"
 	case f.RefRefused && f.Category == checks.UnreachablePin:
 		return "Ref name refused"
 	case (f.RefMissing || f.RefGone) && f.Category == checks.UnreachablePin && f.FreshRef:
@@ -445,7 +446,12 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 			if label == "" {
 				label = f.WorkflowPath
 			}
-			out.TermWarn("%s: %s", label, cmp.Or(f.TermDetail, f.Detail))
+			if f.TagMoved {
+				out.TermWarn("%s %s", findingLabel(f), label)
+				out.TermDetail("↳ %s", cmp.Or(f.TermDetail, f.Detail))
+			} else {
+				out.TermWarn("%s: %s", label, cmp.Or(f.TermDetail, f.Detail))
+			}
 			if f.Remediation != "" {
 				out.TermDetail("↳ %s", f.Remediation)
 			}
