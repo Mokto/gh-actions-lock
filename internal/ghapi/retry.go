@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -202,6 +204,9 @@ func (rt *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 			continue
 		}
+		if resp.Request == nil {
+			resp.Request = try
+		}
 		if retryAt, ok := retryableResponse(resp, rt.budget.now()); ok {
 			reason := fmt.Sprintf("GitHub API unavailable (%d %s)", resp.StatusCode, http.StatusText(resp.StatusCode))
 			if resp.StatusCode < 500 {
@@ -271,10 +276,40 @@ func transportReason(err error) string {
 // retrying, and when GitHub said a retry could succeed (zero if it didn't).
 func retryableResponse(resp *http.Response, now time.Time) (time.Time, bool) {
 	switch {
-	case resp.StatusCode >= 500, resp.StatusCode == http.StatusTooManyRequests, rateLimited403(resp.StatusCode, resp.Header):
+	case resp.StatusCode >= 500, resp.StatusCode == http.StatusTooManyRequests, rateLimited403(resp.StatusCode, resp.Header),
+		graphQLRateLimitedResponse(resp):
 		return retryAfter(resp.Header, now), true
 	}
 	return time.Time{}, false
+}
+
+// graphQLRateLimitedResponse reports a GraphQL response GitHub rejected for
+// its rate limit, which arrives as HTTP 200 with a RATE_LIMITED error. It
+// reads the body and puts it back for the caller.
+func graphQLRateLimitedResponse(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusOK || resp.Request == nil || !strings.HasSuffix(resp.Request.URL.Path, "/graphql") {
+		return false
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	var payload struct {
+		Errors []struct {
+			Type string `json:"type"`
+		} `json:"errors"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	for _, e := range payload.Errors {
+		if e.Type == "RATE_LIMITED" {
+			return true
+		}
+	}
+	return false
 }
 
 // rateLimited403 reports a 403 that is a rate limit rather than a

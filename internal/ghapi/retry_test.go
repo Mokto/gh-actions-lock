@@ -47,6 +47,24 @@ func status(code int, h map[string]string) func() (*http.Response, error) {
 	}
 }
 
+func graphQLBody(body string) func() (*http.Response, error) {
+	return func() (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader([]byte(body)))}, nil
+	}
+}
+
+// graphQLRateLimitedResp is GitHub's GraphQL rate-limit rejection: HTTP 200
+// with a RATE_LIMITED error.
+func graphQLRateLimitedResp(h map[string]string) func() (*http.Response, error) {
+	return func() (*http.Response, error) {
+		resp, _ := graphQLBody(`{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`)()
+		for k, v := range h {
+			resp.Header.Set(k, v)
+		}
+		return resp, nil
+	}
+}
+
 func fail(err error) func() (*http.Response, error) {
 	return func() (*http.Response, error) { return nil, err }
 }
@@ -58,6 +76,7 @@ func TestRetryTransport_Taxonomy(t *testing.T) {
 	refused := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
 	tests := []struct {
 		name     string
+		url      string
 		attempt  func() (*http.Response, error)
 		attempts int
 		waited   time.Duration
@@ -78,6 +97,8 @@ func TestRetryTransport_Taxonomy(t *testing.T) {
 		{name: "certificate for another host", attempt: fail(x509.HostnameError{Host: "api.github.com"}), attempts: 1},
 		{name: "503", attempt: status(503, nil), attempts: 8, waited: backoffTotal, code: 503},
 		{name: "503 retry-after", attempt: status(503, map[string]string{"Retry-After": "20"}), attempts: 8, waited: 140 * time.Second, code: 503},
+		{name: "graphql rate limited", url: "https://api.github.com/graphql", attempt: graphQLRateLimitedResp(map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(testNow.Add(19 * time.Second).Unix())}), attempts: 8, waited: 26 * time.Second, code: 200},
+		{name: "graphql error that is an answer", url: "https://api.github.com/graphql", attempt: graphQLBody(`{"errors":[{"type":"NOT_FOUND","path":["a0"]}]}`), attempts: 1, code: 200},
 		{name: "500", attempt: status(500, nil), attempts: 8, waited: backoffTotal, code: 500},
 		{name: "429 retry-after seconds", attempt: status(429, map[string]string{"Retry-After": "5"}), attempts: 8, waited: 35 * time.Second, code: 429},
 		{name: "429 without headers backs off", attempt: status(429, nil), attempts: 8, waited: backoffTotal, code: 429},
@@ -101,7 +122,11 @@ func TestRetryTransport_Taxonomy(t *testing.T) {
 				calls++
 				return tt.attempt()
 			}), budget)
-			req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/repos/o/r", nil)
+			url := tt.url
+			if url == "" {
+				url = "https://api.github.com/repos/o/r"
+			}
+			req, _ := http.NewRequest(http.MethodGet, url, nil)
 			resp, err := rt.RoundTrip(req)
 
 			assert.Equal(t, tt.attempts, calls, "attempts")
