@@ -25,31 +25,10 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 	file := opts.Store.File()
 	deps := opts.Store.AllDeps()
 	refs := lockfile.NewRefIndex(file)
-	fresh := freshClosure(resolved, resolvedParents)
-	type inspection struct {
-		workflow int
-		roots    []parserlock.ActionRef
-	}
-	var inspections []inspection
+	inspections := lockedManifestInspections(parsed, report, deps, freshClosure(resolved, resolvedParents))
 	var roots []parserlock.ActionRef
-	for i, pw := range parsed {
-		wr := &report.Workflows[i]
-		// Repairable diagnostics do not exempt retained pins from inspection.
-		if isBlocked(pw) || wr.SkipCommit || wr.BlockingResolverError {
-			continue
-		}
-		// Seeds are shared across workflows, including descendants of fresh
-		// roots. Inspect the reached recorded pins, not just this workflow's
-		// previous lockfile ownership.
-		reached := pw
-		reached.Refs = slices.Clone(pw.Refs)
-		for _, o := range fresh(pw, resolve.RefSet{}) {
-			reached.Refs = append(reached.Refs, o.ref)
-		}
-		reached.ExistingDeps = deps
-		recorded := lockedManifestRoots(reached)
-		inspections = append(inspections, inspection{workflow: i, roots: recorded})
-		roots = append(roots, recorded...)
+	for _, inspection := range inspections {
+		roots = append(roots, inspection.roots...)
 	}
 	graph, err := r.ResolveLockedGraph(ctx, roots, deps)
 	if ctx.Err() != nil {
@@ -67,65 +46,97 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		// The recorded edges must include every edge discovered at the locked
-		// commits, even when a child exists elsewhere in the same lockfile.
-		// Discovery names entries as manifests spell them; match them to the
-		// recorded keys with dep.RefKey's rule, so a full SHA in another case
-		// neither fails a complete graph nor skips its entry's descendants.
-		// A spelling that reaches several entries checks each of them:
-		// their edges can differ.
-		for _, childID := range slices.SortedFunc(maps.Keys(parents), dep.Key.Compare) {
-			child := childID.String()
-			for _, parent := range lockedParents(refs, parents[childID]) {
-				action := file.Dependencies[parent]
-				found := false
-				for _, use := range action.Uses {
-					if dep.RefKeyOf(use) == childID {
-						found = true
-						break
-					}
-				}
-				if found {
-					continue
-				}
-				ref := parserlock.ParseActionRef(child)
-				f := checks.Finding{
-					WorkflowPath:       pw.Path,
-					Category:           checks.NotPinned,
-					Severity:           checks.SeverityError,
-					Confidence:         checks.ConfidenceHigh,
-					ParentNWO:          parent,
-					IncompleteLockfile: true,
-					TrackedAction:      true,
-					Detail:             fmt.Sprintf("locked manifest for %s uses %s but the lockfile omits that edge", parent, child),
-					Remediation:        "restore the graph from version control, or run `gh actions-lock --relock`",
-				}
-				if ref != nil {
-					f.Dependency = &dep.Dependency{NWO: ref.NWO(), Ref: ref.Ref}
-				}
-				wr.Findings = append(dropValid(wr.Findings), f)
-				wr.SkipCommit = true
-			}
-		}
-		if cycle := (*resolve.UsesCycleError)(nil); errors.As(err, &cycle) {
-			wr.Findings = append(dropValid(wr.Findings), usesCycleFinding(pw.Path, cycle))
-			wr.SkipCommit = true
-		}
-		if err != nil && !(wr.SkipCommit && onlyExplained(err)) {
-			wr.Findings = append(dropValid(wr.Findings), checks.Finding{
-				WorkflowPath: pw.Path,
-				Category:     checks.ReachabilityUnknown,
-				Severity:     checks.SeverityError,
-				Confidence:   checks.ConfidenceLow,
-				Detail:       fmt.Sprintf("could not verify locked dependency manifests: %s", err),
-				Remediation:  "retry; complete dependency coverage could not be established",
-			})
-			wr.SkipCommit = true
-		}
-		// Direct missing entries are diagnosed structurally. Unlocked children
-		// are named by the missing-edge findings above.
+		appendLockedManifestFindings(pw.Path, wr, file, refs, parents, err)
 	}
 	return nil
+}
+
+type lockedInspection struct {
+	workflow int
+	roots    []parserlock.ActionRef
+}
+
+func lockedManifestInspections(parsed []checks.ParsedWorkflow, report *checks.Report, deps []dep.Dependency, fresh func(checks.ParsedWorkflow, resolve.RefSet) []parityOwner) []lockedInspection {
+	var inspections []lockedInspection
+	for i, pw := range parsed {
+		wr := &report.Workflows[i]
+		// Repairable diagnostics do not exempt retained pins from inspection.
+		if isBlocked(pw) || wr.SkipCommit || wr.BlockingResolverError {
+			continue
+		}
+		// Seeds are shared across workflows, including descendants of fresh
+		// roots. Inspect the reached recorded pins, not just this workflow's
+		// previous lockfile ownership.
+		reached := pw
+		reached.Refs = slices.Clone(pw.Refs)
+		for _, o := range fresh(pw, resolve.RefSet{}) {
+			reached.Refs = append(reached.Refs, o.ref)
+		}
+		reached.ExistingDeps = deps
+		recorded := lockedManifestRoots(reached)
+		inspections = append(inspections, lockedInspection{workflow: i, roots: recorded})
+	}
+	return inspections
+}
+
+func appendLockedManifestFindings(path string, wr *checks.WorkflowReport, file parserlock.File, refs lockfile.RefIndex, parents dep.ParentMap, err error) {
+	// The recorded edges must include every edge discovered at the locked
+	// commits, even when a child exists elsewhere in the same lockfile.
+	// Discovery names entries as manifests spell them; match them to the
+	// recorded keys with dep.RefKey's rule, so a full SHA in another case
+	// neither fails a complete graph nor skips its entry's descendants.
+	// A spelling that reaches several entries checks each of them:
+	// their edges can differ.
+	for _, childID := range slices.SortedFunc(maps.Keys(parents), dep.Key.Compare) {
+		child := childID.String()
+		for _, parent := range lockedParents(refs, parents[childID]) {
+			action := file.Dependencies[parent]
+			found := false
+			for _, use := range action.Uses {
+				if dep.RefKeyOf(use) == childID {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+			ref := parserlock.ParseActionRef(child)
+			f := checks.Finding{
+				WorkflowPath:       path,
+				Category:           checks.NotPinned,
+				Severity:           checks.SeverityError,
+				Confidence:         checks.ConfidenceHigh,
+				ParentNWO:          parent,
+				IncompleteLockfile: true,
+				TrackedAction:      true,
+				Detail:             fmt.Sprintf("locked manifest for %s uses %s but the lockfile omits that edge", parent, child),
+				Remediation:        "restore the graph from version control, or run `gh actions-lock --relock`",
+			}
+			if ref != nil {
+				f.Dependency = &dep.Dependency{NWO: ref.NWO(), Ref: ref.Ref}
+			}
+			wr.Findings = append(dropValid(wr.Findings), f)
+			wr.SkipCommit = true
+		}
+	}
+	if cycle := (*resolve.UsesCycleError)(nil); errors.As(err, &cycle) {
+		wr.Findings = append(dropValid(wr.Findings), usesCycleFinding(path, cycle))
+		wr.SkipCommit = true
+	}
+	if err != nil && !(wr.SkipCommit && onlyExplained(err)) {
+		wr.Findings = append(dropValid(wr.Findings), checks.Finding{
+			WorkflowPath: path,
+			Category:     checks.ReachabilityUnknown,
+			Severity:     checks.SeverityError,
+			Confidence:   checks.ConfidenceLow,
+			Detail:       fmt.Sprintf("could not verify locked dependency manifests: %s", err),
+			Remediation:  "retry; complete dependency coverage could not be established",
+		})
+		wr.SkipCommit = true
+	}
+	// Direct missing entries are diagnosed structurally. Unlocked children
+	// are named by the missing-edge findings above.
 }
 
 // lockedRoots names each full-SHA root by every entry with its identity,
