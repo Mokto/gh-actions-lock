@@ -384,7 +384,9 @@ func (r *Resolver) ReverseLookup(ctx context.Context, deps []dep.Dependency) (ma
 				newRef = branch
 			}
 		}
-		if newRef == "" || newRef == d.Ref {
+		// An entry may record a ref containing @, but `uses:` can't name
+		// one, so such a use keeps its SHA.
+		if newRef == "" || newRef == d.Ref || strings.Contains(newRef, "@") {
 			continue
 		}
 		rewrites[d.NWO+"@"+d.Ref] = d.NWO + "@" + newRef

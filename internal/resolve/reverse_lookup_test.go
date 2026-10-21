@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/github/gh-actions-lock/internal/dep"
@@ -161,4 +162,25 @@ func TestReverseLookup_NoRewriteWhenRefUnchanged(t *testing.T) {
 	if got != "v1" {
 		t.Fatalf("expected v1, got %q", got)
 	}
+}
+
+// TestReverseLookup_KeepsSHAUseForTagWithAt: a tag such as predicate@2.0.0
+// can be recorded as an entry's ref, but `uses:` can't name it.
+func TestReverseLookup_KeepsSHAUseForTagWithAt(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	reg := &httpmock.Registry{}
+	httpmock.NoTagsNamed(reg, "actions", "attest")
+	reg.Register(httpmock.REST("GET", `repos/actions/attest/tags`), httpmock.JSONResponse(httpmock.TagListResponse("predicate@2.0.0", sha)))
+	reg.Register(httpmock.REST("GET", `repos/actions/attest/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", sha)))
+	r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+	require.NoError(t, err)
+	deps := []dep.Dependency{{NWO: "actions/attest", Ref: sha, SHA: sha, HashAlgo: "sha1"}}
+
+	rewrites, issues, err := r.ReverseLookup(context.Background(), deps)
+
+	require.NoError(t, err)
+	assert.Empty(t, issues)
+	assert.Empty(t, rewrites)
+	assert.Equal(t, sha, deps[0].Ref)
+	assert.Equal(t, "predicate@2.0.0", deps[0].Tag)
 }
