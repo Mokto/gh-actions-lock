@@ -66,7 +66,43 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 		}
 	}
 	keys := slices.Sorted(maps.Keys(workflows))
-	failed := proveIdentity(ctx, resolver, preview, keys)
+	recorded := make(map[string]parserlock.Action, len(keys))
+	for _, key := range keys {
+		recorded[key], _ = preview.Entry(key)
+	}
+	// A direct pin re-recorded with its tag no longer records its own SHA in
+	// the preview, so it is proven against the entry the run read, under
+	// the name the workflow used if the repository was renamed.
+	direct := map[int][]string{}
+	for i, e := range rec.Entries {
+		if !e.ReRecorded || e.Resolution == Unresolved {
+			continue
+		}
+		for _, key := range append([]string{e.NWO + "@" + e.Ref}, e.RenamedFrom...) {
+			pin, ok := parserlock.ParsePin(key)
+			if !ok || !store.RecordsOwnSHA(pin.Owner, pin.Repo, pin.Ref) {
+				continue
+			}
+			key = pin.String()
+			if _, seen := recorded[key]; !seen {
+				recorded[key], _ = store.Entry(key)
+			}
+			direct[i] = append(direct[i], key)
+		}
+	}
+	failed := proveIdentity(ctx, resolver, recorded)
+	for i, originals := range direct {
+		for _, key := range originals {
+			if reason, ok := failed[key]; ok {
+				e := &rec.Entries[i]
+				e.Resolution = Unresolved
+				e.Issue = "identity"
+				e.Reason = reason + "; nothing is written. Run `gh actions-lock --relock` to re-resolve it"
+				e.ReRecorded = false
+				break
+			}
+		}
+	}
 	for _, key := range keys {
 		pin, _ := parserlock.ParsePin(key)
 		if reason, ok := failed[key]; ok {
@@ -112,10 +148,11 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 // admitted only on this proof. It returns why each candidate that isn't
 // proven can't be repaired: anything short of a matching repo ID on both
 // sides and a found commit, including no API client, fails closed.
-func proveIdentity(ctx context.Context, resolver *resolve.Resolver, preview *lockfile.State, keys []string) map[string]string {
-	if len(keys) == 0 {
+func proveIdentity(ctx context.Context, resolver *resolve.Resolver, recordedByKey map[string]parserlock.Action) map[string]string {
+	if len(recordedByKey) == 0 {
 		return nil
 	}
+	keys := slices.Sorted(maps.Keys(recordedByKey))
 	failed := make(map[string]string, len(keys))
 	gh := resolver.GHClient()
 	if gh == nil {
@@ -128,7 +165,7 @@ func proveIdentity(ctx context.Context, resolver *resolve.Resolver, preview *loc
 	recorded := make([]parserlock.Action, len(keys))
 	for i, key := range keys {
 		pin, _ := parserlock.ParsePin(key)
-		recorded[i], _ = preview.Entry(key)
+		recorded[i] = recordedByKey[key]
 		_, sha, _ := strings.Cut(recorded[i].Commit, "-")
 		checks[i] = ghapi.PinCheck{Owner: pin.Owner, Repo: pin.Repo, SHA: sha}
 	}

@@ -527,6 +527,18 @@ func walkClosure(f parserlock.File, workflowKey string, live func(parserlock.Pin
 	return out, faults
 }
 
+// Descendants returns the recorded entries below the entry stored under key,
+// each with the entry whose `uses:` reached it as Parent. A write that keeps
+// the entry keeps them too.
+func (s *State) Descendants(key string) []LockedPin {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := s.file
+	f.Workflows = map[string][]string{"": {key}}
+	closure, _ := walkClosure(f, "", func(parserlock.Pin, parserlock.Action) bool { return true })
+	return slices.DeleteFunc(closure, func(lp LockedPin) bool { return lp.Parent == "" })
+}
+
 // RecordsOwnSHA reports whether the lockfile's entry for owner/repo@sha
 // records that SHA as its ref (see the RecordsOwnSHA function).
 func (s *State) RecordsOwnSHA(owner, repo, sha string) bool {

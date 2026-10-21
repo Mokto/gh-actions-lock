@@ -156,6 +156,23 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if k := byKey[pinKey(o.lp.Pin.NWO, o.lp.Pin.Ref)]; k != "" && r.Seeded(o.ref) {
 				roots[ri] = append(roots[ri], manifestNode{key: k, path: o.ref.Path})
 			}
+			// A fresh pin the lockfile already records at the same commit,
+			// such as a composite only an unselected workflow locks, is
+			// reused with its recorded descendants, so they are checked as
+			// recorded pins. Entry repair proves an own-SHA one.
+			key := lockfile.EntryKey(o.lp.Pin)
+			if recorded, ok := store.Entry(key); !ok || lockedSHA(recorded.Commit) != strings.ToLower(lockedSHA(o.lp.Action.Commit)) {
+				continue
+			}
+			for _, lp := range store.Descendants(key) {
+				if lockfile.RecordsOwnSHA(lp.Pin, lp.Action.Ref) {
+					continue
+				}
+				add(parityOwner{report: ri, pw: pw, lp: lp,
+					ref:    parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref},
+					heldBy: lockParent(lp),
+				})
+			}
 		}
 	}
 	if len(pins) == 0 {
