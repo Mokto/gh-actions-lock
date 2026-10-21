@@ -322,7 +322,7 @@ func TestPresentResults_ContainerImagesGroupedByImage(t *testing.T) {
 	assert.Contains(t, got, "used by .github/workflows/a.yml: job build, job build container")
 	assert.Contains(t, got, "used by .github/workflows/b.yml: o/a@v1")
 	assert.Contains(t, got, "pin it as alpine:3@sha256:")
-	assert.Contains(t, got, "only the maintainer of o/a@v1")
+	assert.Contains(t, got, "ask the maintainer of o/a@v1 to pin it by digest")
 }
 
 // TestPresentResults_ExcludeCategoriesSkipsImpostor verifies that excluded

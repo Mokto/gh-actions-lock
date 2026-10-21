@@ -32,7 +32,7 @@ func TestAddContainerImage(t *testing.T) {
 
 		f := wr.Findings[0]
 		assert.Equal(t, "o/a@v1", f.ParentNWO)
-		assert.Contains(t, f.Remediation, "only the maintainer of o/a@v1")
+		assert.Contains(t, f.Remediation, "ask the maintainer of o/a@v1 to pin it by digest")
 		assert.False(t, wr.NeedsAttention())
 	})
 
@@ -56,7 +56,7 @@ func TestAddContainerImage(t *testing.T) {
 		require.Len(t, wr.Findings, 2)
 		f := wr.Findings[0]
 		assert.Equal(t, "o/a@v1 builds its container from Dockerfile; the lockfile doesn't cover its base image; used by o/a@v1", f.Detail)
-		assert.Equal(t, "only the maintainer of o/a@v1 can pin its base image by digest", f.Remediation)
+		assert.Equal(t, "ask the maintainer of o/a@v1 to pin its base image by digest", f.Remediation)
 		assert.Equal(t, "o/a@v1", f.ParentNWO)
 	})
 }
