@@ -108,6 +108,7 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 			}
 			for k := range pr.wplans {
 				pr.wplans[k].Rewrites = literalRewrites(pr.wplans[k].Rewrites, iwr.wr.RewriteRefs)
+				pr.wplans[k].RequiredRewrites = literalRewrites(pr.wplans[k].RequiredRewrites, iwr.wr.RewriteRefs)
 			}
 			results[iwr.idx] = pr
 			return nil
@@ -358,7 +359,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 
 	// Build entries for all pinned deps (skip any already emitted from inventory).
 	for _, e := range buildPinnedEntries(opts, wr, deps, parentMap, rootTracker, inventorySHA) {
-		e.ReRecorded = reRecorded[e.NWO+"@"+e.Ref]
+		e.ReRecorded = reRecorded[dep.RefKey(e.NWO, e.Ref)]
 		entries = append(entries, e)
 	}
 
@@ -385,8 +386,8 @@ func literalRewrites(rewrites map[string]string, literal []parserlock.ActionRef)
 		}
 		spelled := false
 		for _, r := range literal {
-			if strings.EqualFold(r.FullName(), name) && strings.EqualFold(r.Ref, ref) {
-				out[r.FullName()+"@"+r.Ref] = newUses
+			if dep.RefKey(r.FullName(), r.Ref) == dep.RefKey(name, ref) {
+				out[r.FullName()+"@"+r.Ref] = keepSHASpelling(newUses, r.Ref)
 				spelled = true
 			}
 		}
@@ -395,6 +396,17 @@ func literalRewrites(rewrites map[string]string, literal []parserlock.ActionRef)
 		}
 	}
 	return out
+}
+
+// keepSHASpelling spells newUses' ref as the workflow wrote it when both
+// name the same full SHA: a rewrite moves a use to another name or ref,
+// never just to another case of the same commit.
+func keepSHASpelling(newUses, written string) string {
+	name, ref, ok := strings.Cut(newUses, "@")
+	if ok && parserlock.IsFullSha(ref) && dep.RefKey(name, ref) == dep.RefKey(name, written) {
+		return name + "@" + written
+	}
+	return newUses
 }
 
 // shaSpelling is the spelling to record full SHA ref under: the lockfile's,
@@ -424,9 +436,11 @@ func entryDeps(entries []resolve.Entry) []dep.Dependency {
 // transferRewrites moves each redirected root's `uses:` in this workflow
 // to the canonical repository.
 func transferRewrites(deps []dep.Dependency, rootTracker lockfile.DirectTracker, sources []parserlock.ActionRef, rewrites map[string]string) map[string]string {
+	// Rewrites are keyed by reference identity here; literalRewrites
+	// respells them as the workflow wrote them.
 	written := make(map[string]bool, len(sources))
 	for _, ref := range sources {
-		written[ref.FullName()+"@"+ref.Ref] = true
+		written[dep.RefKey(ref.FullName(), ref.Ref)] = true
 	}
 	var required map[string]string
 	for i, d := range deps {
@@ -435,7 +449,7 @@ func transferRewrites(deps []dep.Dependency, rootTracker lockfile.DirectTracker,
 		}
 		for _, ref := range d.OriginalRefs {
 			oldUse := ref.FullName() + "@" + ref.Ref
-			if !written[oldUse] {
+			if !written[dep.RefKey(ref.FullName(), ref.Ref)] {
 				continue
 			}
 			newUse := d.NWO
@@ -490,7 +504,7 @@ func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, directTracker l
 		}
 		if recorded {
 			preservedDeps[i] = true
-			out[d.Key()] = true
+			out[dep.RefKey(d.NWO, d.Ref)] = true
 		}
 	}
 	return out

@@ -5024,14 +5024,22 @@ func TestParity_FullSHARootClosureCheckedInAnyCase(t *testing.T) {
 // result verifies. The re-record needs the same identity proof as any
 // repair, so a rename that returns no repo ID blocks and writes nothing.
 func TestSHARecordedRef_RenameKeepsFullSHAUse(t *testing.T) {
+	upper, mixed := strings.ToUpper(parityTestSHA), parityTestSHA[:20]+strings.ToUpper(parityTestSHA[20:])
 	for _, repoID := range []int{1, 0} {
-		t.Run(fmt.Sprintf("repo ID %d", repoID), func(t *testing.T) {
-			testRenameKeepsFullSHAUse(t, repoID)
-		})
+		for _, sp := range []struct{ name, use, key string }{
+			{"lower", parityTestSHA, parityTestSHA},
+			{"uppercase use", upper, parityTestSHA},
+			{"mixed-case use", mixed, parityTestSHA},
+			{"mixed-case key", upper, mixed},
+		} {
+			t.Run(fmt.Sprintf("repo ID %d/%s", repoID, sp.name), func(t *testing.T) {
+				testRenameKeepsFullSHAUse(t, repoID, sp.use, sp.key)
+			})
+		}
 	}
 }
 
-func testRenameKeepsFullSHAUse(t *testing.T, repoID int) {
+func testRenameKeepsFullSHAUse(t *testing.T, repoID int, use, keySHA string) {
 	reg := &httpmock.Registry{}
 	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), transferParity(repoID))
 	reg.RegisterReusable(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
@@ -5053,10 +5061,10 @@ func testRenameKeepsFullSHAUse(t *testing.T, repoID int) {
 		httpmock.NoTagsNamed(reg, owner, "github-actions-typing")
 	}
 	isolateRunLogs(t)
-	path := writeTempWorkflow(t, strings.Replace(transferWorkflow, "@v2.2.2", "@"+parityTestSHA, 1))
-	key := "krzema12/github-actions-typing@" + parityTestSHA
+	path := writeTempWorkflow(t, strings.Replace(transferWorkflow, "@v2.2.2", "@"+use, 1))
+	key := "krzema12/github-actions-typing@" + keySHA
 	lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - '" + key + "'\n" +
-		"dependencies:\n    '" + key + "':\n        ref: '" + parityTestSHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 42\n        repo_id: 1\n"
+		"dependencies:\n    '" + key + "':\n        ref: '" + keySHA + "'\n        commit: 'sha1-" + parityTestSHA + "'\n        owner_id: 42\n        repo_id: 1\n"
 	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
 
 	_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive", path)
@@ -5069,7 +5077,7 @@ func testRenameKeepsFullSHAUse(t *testing.T, repoID int) {
 	require.NoError(t, err, stderr)
 	wf, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(wf), "uses: typesafegithub/github-actions-typing@"+parityTestSHA, "the full SHA is kept under the canonical name")
+	assert.Contains(t, string(wf), "uses: typesafegithub/github-actions-typing@"+use, "the full SHA is kept, as written, under the canonical name")
 	after := readTempLockfilePins(t)
 	assert.Contains(t, after, "'typesafegithub/github-actions-typing@"+parityTestSHA+"':")
 	assert.Contains(t, after, "ref: 'v2.2.2'")
@@ -5085,69 +5093,79 @@ func testRenameKeepsFullSHAUse(t *testing.T, repoID int) {
 // entry repair. A null or different repo ID, or an unanswered check, blocks
 // and nothing is written; a proven one is repaired and verifies.
 func TestSHARecordedRef_DirectRepairProvesIdentity(t *testing.T) {
+	upper := strings.ToUpper(parityTestSHA)
 	for _, identity := range []string{"", "no id", "replaced", "inconclusive"} {
-		t.Run(cmp.Or(identity, "proven"), func(t *testing.T) {
-			reg := &httpmock.Registry{}
-			reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
-				var body struct {
-					Variables map[string]any `json:"variables"`
-				}
-				require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
-				data := map[string]any{}
-				for i := 0; ; i++ {
-					owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
-					if !ok {
-						break
-					}
-					name := body.Variables[fmt.Sprintf("name%d", i)].(string)
-					var id any = 1
-					switch identity {
-					case "inconclusive":
-						continue
-					case "replaced":
-						id = 999
-					case "no id":
-						id = nil
-					}
-					oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
-					data[fmt.Sprintf("a%d", i)] = map[string]any{
-						"nameWithOwner": owner + "/" + name, "databaseId": id,
-						"commit": oid, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
-					}
-				}
-				return httpmock.JSONResponse(map[string]any{"data": data})(req)
+		for _, keySHA := range []string{parityTestSHA, upper, parityTestSHA[:20] + upper[20:]} {
+			t.Run(cmp.Or(identity, "proven")+"/"+cmp.Or(map[string]string{parityTestSHA: "lower key", upper: "upper key"}[keySHA], "mixed key"), func(t *testing.T) {
+				testDirectRepairProvesIdentity(t, identity, keySHA)
 			})
-			reg.RegisterReusable(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-				"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
-			}))
-			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout$`),
-				httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
-			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", parityTestSHA)))
-			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
-			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", parityTestSHA)))
-			reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/v6\.1\.0$`),
-				httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v6.1.0", parityTestSHA)))
-			httpmock.NoTagsNamed(reg, "actions", "checkout")
-			isolateRunLogs(t)
-			path := writeFullSHAWorkflow(t, parityTestSHA)
-			lockBefore := readTempLockfilePins(t)
-			wfBefore, err := os.ReadFile(path)
-			require.NoError(t, err)
-
-			_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", path)
-			wfAfter, rerr := os.ReadFile(path)
-			require.NoError(t, rerr)
-			assert.Equal(t, string(wfBefore), string(wfAfter))
-			if identity != "" {
-				require.ErrorIs(t, err, errSilent, stderr)
-				assert.Contains(t, stderr, "actions/checkout")
-				assert.Equal(t, lockBefore, readTempLockfilePins(t), "nothing is written")
-				return
-			}
-			require.NoError(t, err, stderr)
-			assert.Contains(t, readTempLockfilePins(t), "ref: 'v6.1.0'")
-			_, stderr, err = runCommandWithHTTP(t, parityFallback{reg}, "--verify", "--no-interactive", path)
-			require.NoError(t, err, stderr)
-		})
+		}
 	}
+}
+
+func testDirectRepairProvesIdentity(t *testing.T, identity, keySHA string) {
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for i := 0; ; i++ {
+			owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+			if !ok {
+				break
+			}
+			name := body.Variables[fmt.Sprintf("name%d", i)].(string)
+			var id any = 1
+			switch identity {
+			case "inconclusive":
+				continue
+			case "replaced":
+				id = 999
+			case "no id":
+				id = nil
+			}
+			oid := map[string]any{"oid": body.Variables[fmt.Sprintf("oid%d", i)]}
+			data[fmt.Sprintf("a%d", i)] = map[string]any{
+				"nameWithOwner": owner + "/" + name, "databaseId": id,
+				"commit": oid, "tag": oid, "tagRef": oid, "head": oid, "headRef": oid,
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+	}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout$`),
+		httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", parityTestSHA)))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/releases`), httpmock.JSONResponse([]map[string]any{}))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", parityTestSHA)))
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/checkout/git/ref/tags/v6\.1\.0$`),
+		httpmock.JSONResponse(httpmock.GitRefResponse("refs/tags/v6.1.0", parityTestSHA)))
+	httpmock.NoTagsNamed(reg, "actions", "checkout")
+	isolateRunLogs(t)
+	path := writeFullSHAWorkflow(t, parityTestSHA)
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(strings.ReplaceAll(readTempLockfilePins(t), parityTestSHA+"'", keySHA+"'")), 0o600))
+	lockBefore := readTempLockfilePins(t)
+	require.Contains(t, lockBefore, "'actions/checkout@"+keySHA+"'")
+	wfBefore, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", path)
+	wfAfter, rerr := os.ReadFile(path)
+	require.NoError(t, rerr)
+	assert.Equal(t, string(wfBefore), string(wfAfter))
+	if identity != "" {
+		require.ErrorIs(t, err, errSilent, stderr)
+		assert.Contains(t, stderr, "actions/checkout")
+		assert.Equal(t, lockBefore, readTempLockfilePins(t), "nothing is written")
+		return
+	}
+	require.NoError(t, err, stderr)
+	assert.Contains(t, readTempLockfilePins(t), "ref: 'v6.1.0'")
+	_, stderr, err = runCommandWithHTTP(t, parityFallback{reg}, "--verify", "--no-interactive", path)
+	require.NoError(t, err, stderr)
 }
