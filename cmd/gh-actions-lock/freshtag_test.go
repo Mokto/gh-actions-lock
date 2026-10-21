@@ -84,16 +84,17 @@ func TestFreshTagFinding(t *testing.T) {
 		iso      string
 		cooldown int
 		wantOK   bool
+		wantAge  string
 	}{
-		{"fresh", iso(24 * time.Hour), 0, true},
-		{"just under window", iso(freshTagWindow - time.Hour), 0, true},
-		{"exactly at window", iso(freshTagWindow), 0, false},
-		{"old", iso(30 * 24 * time.Hour), 0, false},
-		{"empty", "", 0, false},
-		{"unparseable", "not-a-date", 0, false},
-		{"just under cooldown", iso(10*24*time.Hour - time.Hour), 10, true},
-		{"exactly at cooldown", iso(10 * 24 * time.Hour), 10, false},
-		{"cooldown shorter than default window", iso(2 * 24 * time.Hour), 1, false},
+		{"fresh", iso(24 * time.Hour), 0, true, "1d ago"},
+		{"just under window", iso(freshTagWindow - time.Hour), 0, true, "2d ago"},
+		{"exactly at window", iso(freshTagWindow), 0, false, ""},
+		{"old", iso(30 * 24 * time.Hour), 0, false, ""},
+		{"empty", "", 0, false, ""},
+		{"unparseable", "not-a-date", 0, false, ""},
+		{"just under cooldown", iso(10*24*time.Hour - time.Minute), 10, true, "9d ago"},
+		{"exactly at cooldown", iso(10 * 24 * time.Hour), 10, false, ""},
+		{"cooldown shorter than default window", iso(2 * 24 * time.Hour), 1, false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -105,6 +106,7 @@ func TestFreshTagFinding(t *testing.T) {
 				if f.Category != checks.FreshTag || f.Severity != checks.SeverityInfo {
 					t.Errorf("finding category/severity = %s/%s", f.Category, f.Severity)
 				}
+				assert.Contains(t, f.Detail, "released "+tt.wantAge)
 			}
 		})
 	}

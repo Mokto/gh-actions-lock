@@ -207,7 +207,11 @@ func FormatTagAge(isoDate string) string {
 	if err != nil {
 		return ""
 	}
-	d := time.Since(t)
+	return FormatAge(time.Since(t))
+}
+
+// FormatAge returns a relative age string like "3d ago" for a duration.
+func FormatAge(d time.Duration) string {
 	switch {
 	case d < time.Hour:
 		return fmt.Sprintf("%dm ago", int(d.Minutes()))

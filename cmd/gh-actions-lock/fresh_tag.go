@@ -52,6 +52,7 @@ func appendCooldownConfigFindings(report *checks.Report, warnings []string) {
 // and aren't flagged.
 func injectFreshTagFindings(ctx context.Context, report *checks.Report, record *pin.Record, tagger *tag.Lister, cooldownCfg tag.CooldownConfig) {
 	seen := map[string]bool{} // NWO@tag → already flagged
+	now := time.Now()
 	for _, e := range record.Pinned() {
 		owner, repo, ok := strings.Cut(e.NWO, "/")
 		if !ok {
@@ -75,7 +76,7 @@ func injectFreshTagFindings(ctx context.Context, report *checks.Report, record *
 			_, _ = tagger.ListTags(ctx, owner, repo)
 			iso = tagger.ReleaseDate(owner, repo, tagName)
 		}
-		finding, ok := freshTagFinding(e.NWO, tagName, iso, cooldownCfg.CooldownDays(owner, repo), time.Now())
+		finding, ok := freshTagFinding(e.NWO, tagName, iso, cooldownCfg.CooldownDays(owner, repo), now)
 		if !ok {
 			continue
 		}
@@ -99,17 +100,19 @@ func freshTagFinding(nwo, tagName, iso string, cooldownDays int, now time.Time) 
 	if cooldownDays > 0 {
 		window = time.Duration(cooldownDays) * 24 * time.Hour
 	}
-	if now.Sub(released) >= window {
+	// One age drives both the decision and the message so they can't disagree.
+	age := now.Sub(released)
+	if age >= window {
 		return checks.Finding{}, false
 	}
 	detail := fmt.Sprintf(
 		"%s@%s was released %s — pinned to a very recent tag with no Dependabot cooldown configured; add a github-actions `cooldown` block if you'd rather let fresh releases settle",
-		nwo, tagName, tag.FormatTagAge(iso),
+		nwo, tagName, tag.FormatAge(age),
 	)
 	if cooldownDays > 0 {
 		detail = fmt.Sprintf(
 			"pinned tag %s@%s was released %s, newer than your configured cooldown (%d %s); cooldown only warns and does not hold back fresh releases, so review this release before merging",
-			nwo, tagName, tag.FormatTagAge(iso), cooldownDays, ui.Pluralize(cooldownDays, "day", "days"),
+			nwo, tagName, tag.FormatAge(age), cooldownDays, ui.Pluralize(cooldownDays, "day", "days"),
 		)
 	}
 	return checks.Finding{
