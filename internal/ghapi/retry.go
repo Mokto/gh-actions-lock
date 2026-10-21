@@ -271,9 +271,7 @@ func transportReason(err error) string {
 // retrying, and when GitHub said a retry could succeed (zero if it didn't).
 func retryableResponse(resp *http.Response, now time.Time) (time.Time, bool) {
 	switch {
-	case resp.StatusCode >= 500:
-		return time.Time{}, true
-	case resp.StatusCode == http.StatusTooManyRequests, rateLimited403(resp.StatusCode, resp.Header):
+	case resp.StatusCode >= 500, resp.StatusCode == http.StatusTooManyRequests, rateLimited403(resp.StatusCode, resp.Header):
 		return retryAfter(resp.Header, now), true
 	}
 	return time.Time{}, false

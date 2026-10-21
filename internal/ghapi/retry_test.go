@@ -77,6 +77,7 @@ func TestRetryTransport_Taxonomy(t *testing.T) {
 		{name: "untrusted certificate", attempt: fail(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}), attempts: 1},
 		{name: "certificate for another host", attempt: fail(x509.HostnameError{Host: "api.github.com"}), attempts: 1},
 		{name: "503", attempt: status(503, nil), attempts: 8, waited: backoffTotal, code: 503},
+		{name: "503 retry-after", attempt: status(503, map[string]string{"Retry-After": "20"}), attempts: 8, waited: 140 * time.Second, code: 503},
 		{name: "500", attempt: status(500, nil), attempts: 8, waited: backoffTotal, code: 500},
 		{name: "429 retry-after seconds", attempt: status(429, map[string]string{"Retry-After": "5"}), attempts: 8, waited: 35 * time.Second, code: 429},
 		{name: "429 without headers backs off", attempt: status(429, nil), attempts: 8, waited: backoffTotal, code: 429},
