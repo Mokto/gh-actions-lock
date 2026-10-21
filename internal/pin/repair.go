@@ -97,7 +97,7 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 				e := &rec.Entries[i]
 				e.Resolution = Unresolved
 				e.Issue = "identity"
-				e.Reason = reason + "; nothing is written. Run `gh actions-lock --relock` to re-resolve it"
+				e.Reason = identityAdvice(reason, nil)
 				e.ReRecorded = false
 				break
 			}
@@ -112,7 +112,7 @@ func PlanEntryRepairs(ctx context.Context, rec *Record, store *lockfile.State, r
 				SHA:        pin.Ref,
 				Resolution: Unresolved,
 				Issue:      "identity",
-				Reason:     reason + "; nothing is written. Run `gh actions-lock --relock` to re-resolve it",
+				Reason:     identityAdvice(reason, parents[key]),
 				Workflows:  workflows[key],
 				RequiredBy: slices.Sorted(slices.Values(parents[key])),
 			})
@@ -187,4 +187,14 @@ func proveIdentity(ctx context.Context, resolver *resolve.Resolver, recordedByKe
 		}
 	}
 	return failed
+}
+
+// identityAdvice ends a failed identity proof. --relock can't fix it: it
+// re-records the same entry, which fails the same proof.
+func identityAdvice(reason string, parents []string) string {
+	advice := reason + "; nothing is written. Retry if the check was inconclusive, or change to a verified repository and ref"
+	if len(parents) > 0 {
+		advice += "; for a pin a composite uses, upgrade or replace " + strings.Join(slices.Sorted(slices.Values(parents)), ", ")
+	}
+	return advice
 }

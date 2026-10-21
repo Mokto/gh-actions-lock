@@ -1546,6 +1546,10 @@ func TestSHARecordedRef_FixReRecords(t *testing.T) {
 				if tt.refused != "" {
 					require.ErrorIs(t, err, errSilent, stderr)
 					assert.Contains(t, stderr, tt.refused)
+					if tt.unconfirmed {
+						assert.Contains(t, stderr, "Retry if the check was inconclusive, or change to a verified repository and ref")
+						assert.NotContains(t, stderr, "--relock` to re-resolve", "--relock re-records the same entry")
+					}
 					assert.Equal(t, lockBefore, lock)
 					return
 				}
@@ -2058,7 +2062,8 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 			if tt.identity != "" {
 				require.ErrorIs(t, err, errSilent, stderr)
 				assert.Contains(t, stderr, "actions/cache@"+parityTestSHA)
-				assert.Contains(t, stderr, "--relock")
+				assert.Contains(t, stderr, "Retry if the check was inconclusive, or change to a verified repository and ref; for a pin a composite uses, upgrade or replace actions/checkout@v6.1.0")
+				assert.NotContains(t, stderr, "--relock", "--relock re-records the same entry")
 				assert.Equal(t, lock, after)
 				return
 			}
@@ -2083,7 +2088,9 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 func TestSHARecordedRef_SameCommitTagAndSHA(t *testing.T) {
 	const head = "dddddddddddddddddddddddddddddddddddddddd"
 	reg := &httpmock.Registry{}
-	// The parity stub goes first: a repo stub matches any query for the repo.
+	// The parity and manifest stubs go first: a repo stub matches any query
+	// for the repo.
+	registerLockedManifests(reg, nil)
 	for range 3 {
 		reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOKWithIDs(map[string]int{"checkout": 1, "cache": 1}))
 	}
@@ -3086,6 +3093,73 @@ jobs:
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
 	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
+// TestParity_OnboardingSiblingSubActionSkipsReplacedChildren: onboarding
+// org/actions/b@v1 while an unselected workflow locks org/actions/a@v1 at
+// the same commit reads b's manifest, so the onboarded workflow doesn't
+// keep a's recorded children. a's unavailable child doesn't block it.
+func TestParity_OnboardingSiblingSubActionSkipsUnusedChildren(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			if nwo == "octo/gone" {
+				data["a"+i] = nil
+				continue
+			}
+			data["a"+i] = map[string]any{
+				"nameWithOwner": nwo,
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": v},
+				"tag":           map[string]any{"oid": v},
+				"tagRef":        map[string]any{"oid": v},
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQLForRepo("org", "actions"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("org/actions", rootSHA, nodeActionYAML)},
+	}))
+	useDefaultTransport(t, reg)
+	writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: org/actions/a@v1
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'org/actions@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'octo/gone@v1'\n" +
+		"  'octo/gone@v1':\n    ref: 'v1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'org/actions@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+	path := filepath.Join(".github", "workflows", "other.yml")
+	require.NoError(t, os.WriteFile(path, []byte("name: other\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: org/actions/b@v1\n"), 0o600))
+
+	p, err := runParity(t, reg, "--no-narrow", "--no-interactive", path)
+	require.NoError(t, err, "%+v", p.Findings)
+	for _, f := range p.Findings {
+		assert.NotContains(t, f.Detail, "octo/gone", "a's replaced child is not checked")
+	}
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	assert.Contains(t, string(after), "'.github/workflows/other.yml'")
+	assert.Contains(t, string(after), "'.github/workflows/workflow.yml':\n        - 'org/actions@v1'", "the unselected workflow keeps its pins")
 }
 
 // TestParity_SharedMutablePinAcceptsMoved: actions/checkout@v4 is used

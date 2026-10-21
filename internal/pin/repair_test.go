@@ -21,3 +21,24 @@ func TestProveIdentity_NoClientFailsClosed(t *testing.T) {
 	assert.Contains(t, failed, key)
 	assert.Empty(t, proveIdentity(context.Background(), &resolve.Resolver{}, nil), "no candidates, nothing to prove")
 }
+
+// TestIdentityAdvice: a failed proof never points at --relock, which
+// re-records the same entry; a composite's pin names the composite.
+func TestIdentityAdvice(t *testing.T) {
+	tests := []struct {
+		name    string
+		parents []string
+		want    string
+	}{
+		{name: "workflow pin", want: "bad; nothing is written. Retry if the check was inconclusive, or change to a verified repository and ref"},
+		{name: "composite pin", parents: []string{"octo/z@v1", "octo/a@v1"},
+			want: "bad; nothing is written. Retry if the check was inconclusive, or change to a verified repository and ref; for a pin a composite uses, upgrade or replace octo/a@v1, octo/z@v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := identityAdvice("bad", tt.parents)
+			assert.Equal(t, tt.want, got)
+			assert.NotContains(t, got, "--relock")
+		})
+	}
+}
