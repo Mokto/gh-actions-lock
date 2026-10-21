@@ -11,9 +11,11 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/dockerimage"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/pinpool"
 	"github.com/github/gh-actions-lock/internal/uses"
+	"gopkg.in/yaml.v3"
 )
 
 const localActionWarningPrefix = "Local actions are allowed but never followed or locked"
@@ -347,17 +349,27 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 		var nextPending []resolutionRequest
 		for i := range deps {
 			yml := actionYMLs[i]
+			// Name the sub-action: two actions in one repository can run
+			// different images.
+			via := requested[i].FullName() + "@" + requested[i].Ref
 			// No manifest: a reusable workflow or a Dockerfile-only action.
 			// Fetching rejected anything else.
 			if yml == "" {
+				if files.dockerfiles[i] {
+					g.addImage(requested[i], dockerimage.Image{Ref: "Dockerfile", Via: via})
+				}
 				continue
 			}
 
 			meta, parseErr := parserlock.ParseActionMeta(yml)
 			if parseErr != nil {
 				fail(requested[i], fmt.Errorf("reading manifest for %s: %w", deps[i].Key(), parseErr))
+				continue
 			}
-			if parseErr != nil || meta.Execution != parserlock.ExecComposite {
+			for _, ref := range manifestImages(meta, yml) {
+				g.addImage(requested[i], dockerimage.Image{Ref: ref, Via: via})
+			}
+			if meta.Execution != parserlock.ExecComposite {
 				continue
 			}
 
@@ -432,10 +444,12 @@ func (r *Resolver) resolveRecursive(ctx context.Context, refs []parserlock.Actio
 }
 
 type actionFileResolution struct {
-	deps      []dep.Dependency
-	ymls      []string
-	requested []parserlock.ActionRef
-	failures  []resolutionFailure
+	deps []dep.Dependency
+	ymls []string
+	// dockerfiles marks Dockerfile-only actions, aligned with deps.
+	dockerfiles []bool
+	requested   []parserlock.ActionRef
+	failures    []resolutionFailure
 }
 
 type resolutionFailure struct {
@@ -453,10 +467,11 @@ type resolutionFailure struct {
 // The returned requests align with the returned deps.
 func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []resolutionRequest, depth int, resolveDone, resolveTotal *atomic.Int64, locked bool) (actionFileResolution, error) {
 	type resolveResult struct {
-		dep dep.Dependency
-		yml string
-		ok  bool
-		err error
+		dep        dep.Dependency
+		yml        string
+		dockerfile bool
+		ok         bool
+		err        error
 	}
 	results := make([]resolveResult, len(refs))
 
@@ -470,7 +485,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 		}
 		if entry, ok := cache.Get(key); ok {
 			entry.dep.Ref = request.ref.Ref
-			results[i] = resolveResult{dep: entry.dep, yml: entry.actionYML, ok: true}
+			results[i] = resolveResult{dep: entry.dep, yml: entry.actionYML, dockerfile: entry.dockerfile, ok: true}
 		} else {
 			uncachedIdx = append(uncachedIdx, i)
 		}
@@ -487,6 +502,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 			}
 			out.deps = append(out.deps, res.dep)
 			out.ymls = append(out.ymls, res.yml)
+			out.dockerfiles = append(out.dockerfiles, res.dockerfile)
 			out.requested = append(out.requested, refs[i].ref)
 		}
 		return out
@@ -574,13 +590,13 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 					if res[j].OriginalNWO != "" {
 						d.OriginalRefs = []parserlock.ActionRef{ref}
 					}
-					entry := resolvedEntry{dep: d, actionYML: res[j].ActionYML}
+					entry := resolvedEntry{dep: d, actionYML: res[j].ActionYML, dockerfile: res[j].Dockerfile}
 					if locked {
 						r.lockedContentCache.Put(ghapi.ForActionRef(ref.Owner, ref.Repo, ref.Path, refs[idx].fetchRef), entry)
 					} else {
 						r.cache.Put(cacheKey(ref), entry)
 					}
-					results[idx] = resolveResult{dep: d, yml: res[j].ActionYML, ok: true}
+					results[idx] = resolveResult{dep: d, yml: res[j].ActionYML, dockerfile: res[j].Dockerfile, ok: true}
 				} else if j < len(res) && res[j].Err != nil {
 					results[idx].err = fmt.Errorf("%s@%s: %w", ref.NWO(), ref.Ref, res[j].Err)
 				}
@@ -604,6 +620,32 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 	}
 
 	return flatten(), poolErr
+}
+
+// manifestImages lists the images an action manifest runs: a Docker
+// action's runs.image, or a composite's `docker://` steps.
+func manifestImages(meta *parserlock.ActionMeta, yml string) []string {
+	var images []string
+	for _, use := range meta.NestedUses {
+		if use = strings.TrimSpace(use); dockerimage.IsDockerUses(use) {
+			images = append(images, use)
+		}
+	}
+	if meta.Execution == parserlock.ExecDocker {
+		var manifest struct {
+			Runs struct {
+				Image string `yaml:"image"`
+			} `yaml:"runs"`
+		}
+		// ParseActionMeta already accepted this YAML; an image that won't
+		// decode is simply not reported.
+		if yaml.Unmarshal([]byte(yml), &manifest) == nil {
+			if image := strings.TrimSpace(manifest.Runs.Image); image != "" {
+				images = append(images, image)
+			}
+		}
+	}
+	return images
 }
 
 // isWorkflowCallee reports whether path names a reusable workflow, which has

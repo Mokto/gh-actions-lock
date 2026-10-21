@@ -61,6 +61,9 @@ func checkLockedManifests(ctx context.Context, opts RunOptions, parsed []checks.
 						retained = append(retained, manifest.Ref)
 						covered[key] = true
 						appendLocalActionNotices(wr, manifest.LocalActions)
+						for _, image := range manifest.ContainerImages {
+							appendContainerImageFinding(wr, image)
+						}
 					}
 				}
 			}

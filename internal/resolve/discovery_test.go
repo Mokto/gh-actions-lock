@@ -10,6 +10,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/dockerimage"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pinpool"
@@ -500,4 +501,108 @@ func TestResolveAllRecursiveFetchesSubActionsAtStickyCommit(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, deps, 1)
 	assert.Equal(t, locked, deps[0].SHA)
+}
+
+func TestResolveGraphCollectsContainerImages(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	manifests := map[string]string{
+		"parent": "runs:\n  using: composite\n  steps:\n" +
+			"    - uses: docker://alpine:3\n    - uses: docker://alpine:3\n" +
+			"    - uses: docker://alpine@sha256:0123\n    - uses: o/child@v1\n    - uses: o/child/scan@v1\n",
+		"child":      "runs:\n  using: Docker\n  image: docker://ubuntu:24.04\n",
+		"child/scan": "runs:\n  using: docker\n  image: Dockerfile\n",
+	}
+	for _, locked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("locked=%t", locked), func(t *testing.T) {
+			r := &Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}
+			var recorded []dep.Dependency
+			for name, manifest := range manifests {
+				repo, path, _ := strings.Cut(name, "/")
+				d := dep.Dependency{NWO: "o/" + repo, Path: path, Ref: "v1", SHA: sha}
+				entry := resolvedEntry{dep: d, actionYML: manifest}
+				if locked {
+					r.lockedContentCache.Put(ghapi.ForActionRef("o", repo, path, sha), entry)
+				} else {
+					r.cache.Put(ghapi.ForActionRef("o", repo, path, "v1"), entry)
+				}
+				if path == "" {
+					recorded = append(recorded, d)
+				}
+			}
+			roots := []parserlock.ActionRef{{Owner: "o", Repo: "parent", Ref: "v1"}}
+			for range 2 {
+				var g *Graph
+				var err error
+				if locked {
+					g, err = r.ResolveLockedGraph(context.Background(), roots, recorded)
+				} else {
+					g, err = r.ResolveGraph(context.Background(), roots)
+				}
+				require.NoError(t, err)
+				assert.ElementsMatch(t, []dockerimage.Image{
+					{Ref: "docker://alpine:3", Via: "o/parent@v1"},
+					{Ref: "docker://ubuntu:24.04", Via: "o/child@v1"},
+					{Ref: "Dockerfile", Via: "o/child/scan@v1"},
+				}, g.ContainerImages, "digest pins are skipped and repeats collapse")
+
+				manifests, err := g.Manifests(roots)
+				require.NoError(t, err)
+				byRef := map[string][]dockerimage.Image{}
+				for _, m := range manifests {
+					byRef[m.Ref.FullName()] = append(byRef[m.Ref.FullName()], m.ContainerImages...)
+				}
+				assert.Equal(t, []dockerimage.Image{{Ref: "docker://alpine:3", Via: "o/parent@v1"}}, byRef["o/parent"],
+					"each manifest carries only its own images")
+			}
+		})
+	}
+}
+
+func TestResolveGraphSkipsUnjudgeableImages(t *testing.T) {
+	for _, image := range []string{"docker://${{ inputs.image }}", "${{ inputs.dockerfile }}", "docker://", ""} {
+		t.Run(image, func(t *testing.T) {
+			r := seedCache(&Resolver{MaxRecursionDepth: DefaultMaxRecursionDepth}, map[ghapi.ActionRef]resolvedEntry{
+				ghapi.ForActionRef("o", "r", "", "v1"): {
+					dep:       dep.Dependency{NWO: "o/r", Ref: "v1", SHA: strings.Repeat("a", 40)},
+					actionYML: "runs:\n  using: docker\n  image: '" + image + "'\n",
+				},
+			})
+			g, err := r.ResolveGraph(context.Background(), []parserlock.ActionRef{{Owner: "o", Repo: "r", Ref: "v1"}})
+			require.NoError(t, err)
+			assert.Empty(t, g.ContainerImages)
+		})
+	}
+}
+
+// TestResolveGraphDockerfileOnlyActionImage reads the Dockerfile flag from
+// the action file batch already fetched; it makes no further request.
+func TestResolveGraphDockerfileOnlyActionImage(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, locked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("locked=%t", locked), func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			reg.Register(httpmock.GraphQL(`file: file\(path`), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": map[string]any{
+					"nameWithOwner": "o/root",
+					"object":        map[string]any{"oid": sha, "dockerfile": map[string]any{"oid": sha}},
+				}},
+			}))
+			r, err := New("github.com", pinpool.New(2, nil), WithTransport(reg))
+			require.NoError(t, err)
+			roots := []parserlock.ActionRef{{Owner: "o", Repo: "root", Path: "action", Ref: "v1"}}
+			for range 2 {
+				var g *Graph
+				if locked {
+					g, err = r.ResolveLockedGraph(context.Background(), roots, []dep.Dependency{{NWO: "o/root", Ref: "v1", SHA: sha}})
+				} else {
+					g, err = r.ResolveGraph(context.Background(), roots)
+				}
+				require.NoError(t, err)
+				assert.Equal(t, []dockerimage.Image{{Ref: "Dockerfile", Via: "o/root/action@v1"}}, g.ContainerImages,
+					"the cached flag survives a second resolution")
+			}
+			assert.Len(t, reg.Requests, 1)
+		})
+	}
 }

@@ -204,3 +204,30 @@ func TestDiagnoseOneParsed_ContainerImages(t *testing.T) {
 		})
 	}
 }
+
+func TestAppendContainerImageFinding_RemoteImagesNameTheAction(t *testing.T) {
+	wr := checks.WorkflowReport{Path: ".github/workflows/ci.yml"}
+	images := []dockerimage.Image{
+		{Ref: "docker://ghcr.io/o/img:v1", Via: "o/r@v1"},
+		{Ref: "Dockerfile", Via: "o/build@v2"},
+	}
+	for range 2 {
+		for _, image := range images {
+			appendContainerImageFinding(&wr, image)
+		}
+	}
+
+	require.Len(t, wr.Findings, 2, "repeated discovery is reported once")
+	assert.Equal(t, "o/r@v1", wr.Findings[0].ParentNWO)
+	assert.Contains(t, wr.Findings[0].Detail, "the lock pins the action's commit, not the image")
+	assert.Contains(t, wr.Findings[0].Remediation, "action's maintainer")
+	assert.Equal(t, "o/build@v2", wr.Findings[1].ParentNWO)
+
+	sub := checks.WorkflowReport{Path: ".github/workflows/ci.yml"}
+	appendContainerImageFinding(&sub, dockerimage.Image{Ref: "docker://img:1", Via: "o/r/scan@v1"})
+	require.Len(t, sub.Findings, 1)
+	assert.Equal(t, "o/r@v1", sub.Findings[0].ParentNWO, "required_by keeps the dependency key contract")
+	assert.Contains(t, sub.Findings[0].Detail, "(pulled by o/r/scan@v1)")
+	assert.Contains(t, wr.Findings[1].Detail, "built on the runner at run time")
+	assert.False(t, hasIssues(wr.Findings), "pinned workflows stay valid")
+}

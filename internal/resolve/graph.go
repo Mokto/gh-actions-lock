@@ -8,6 +8,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/dockerimage"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 )
 
@@ -20,7 +21,10 @@ import (
 type Graph struct {
 	// LocalActions discloses opaque workspace references, not graph edges.
 	LocalActions []string
-	nodes        map[ghapi.ActionRef]*graphNode
+	// ContainerImages are the images resolved actions run without a digest
+	// pin, read from manifests already fetched.
+	ContainerImages []dockerimage.Image
+	nodes           map[ghapi.ActionRef]*graphNode
 	// order lists resolved nodes in resolution order.
 	order []ghapi.ActionRef
 	roots []ghapi.ActionRef
@@ -37,6 +41,7 @@ type graphNode struct {
 	children     []graphEdge
 	err          error
 	localActions []string
+	images       []dockerimage.Image
 }
 
 // graphEdge is one `uses:` as its manifest writes it. A manifest can't be
@@ -77,6 +82,21 @@ func (g *Graph) setResolved(ref parserlock.ActionRef, d dep.Dependency) {
 	g.order = append(g.order, cacheKey(ref))
 }
 
+// addImage records an image an action runs, once per node and once in the
+// whole graph, mirroring localActions.
+func (g *Graph) addImage(ref parserlock.ActionRef, image dockerimage.Image) {
+	if !image.Mutable() {
+		return
+	}
+	n := g.nodes[g.node(ref)]
+	if !slices.Contains(n.images, image) {
+		n.images = append(n.images, image)
+	}
+	if !slices.Contains(g.ContainerImages, image) {
+		g.ContainerImages = append(g.ContainerImages, image)
+	}
+}
+
 func (g *Graph) addError(ref parserlock.ActionRef, err error) {
 	n := g.nodes[g.node(ref)]
 	n.err = errors.Join(n.err, err)
@@ -104,10 +124,11 @@ func (g *Graph) Roots() []parserlock.ActionRef {
 
 // Manifest preserves an action file's path and its own dependency edges.
 type Manifest struct {
-	Ref          parserlock.ActionRef
-	Entry        Entry
-	Parents      dep.ParentMap
-	LocalActions []string
+	Ref             parserlock.ActionRef
+	Entry           Entry
+	Parents         dep.ParentMap
+	LocalActions    []string
+	ContainerImages []dockerimage.Image
 }
 
 // Manifests keeps sibling action files separate while deriving their entry
@@ -136,7 +157,7 @@ func (g *Graph) Manifests(roots []parserlock.ActionRef) ([]Manifest, error) {
 		err = errors.Join(err, flatErr)
 		for _, entry := range entries {
 			if entry.Root {
-				out = append(out, Manifest{Ref: n.ref, Entry: entry, Parents: parents, LocalActions: slices.Clone(n.localActions)})
+				out = append(out, Manifest{Ref: n.ref, Entry: entry, Parents: parents, LocalActions: slices.Clone(n.localActions), ContainerImages: slices.Clone(n.images)})
 			}
 		}
 	}

@@ -75,6 +75,9 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 		liveDeps, resolvedParents, flatErr = graph.Flatten()
 		resolveErr = errors.Join(resolveErr, flatErr)
 		appendLocalActionNotices(&wr, graph.LocalActions)
+		for _, image := range graph.ContainerImages {
+			appendContainerImageFinding(&wr, image)
+		}
 		if resolveErr != nil {
 			blockingResolverError := false
 			if resolve.IsInvalidSelfRepositoryRef(resolveErr) {

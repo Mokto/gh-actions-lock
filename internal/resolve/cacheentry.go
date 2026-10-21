@@ -12,6 +12,9 @@ import "github.com/github/gh-actions-lock/internal/dep"
 type resolvedEntry struct {
 	dep       dep.Dependency
 	actionYML string
+	// dockerfile marks a Dockerfile-only action: no manifest, built on the
+	// runner from the Dockerfile in its directory.
+	dockerfile bool
 }
 
 // tagPeel records the outcome of a PeelTagObject lookup so repeated checks

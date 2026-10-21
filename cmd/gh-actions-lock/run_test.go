@@ -2423,3 +2423,117 @@ jobs:
 		}
 	}
 }
+
+// transportFunc adapts a function to http.RoundTripper.
+type transportFunc func(*http.Request) (*http.Response, error)
+
+func (f transportFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// TestRemoteContainerImageWarnings reads images from the action files the
+// resolver already fetches: the transport fails any other request.
+func TestRemoteContainerImageWarnings(t *testing.T) {
+	tests := []struct {
+		name       string
+		manifest   string
+		dockerfile bool
+		detail     string
+	}{
+		{
+			name:     "docker action by tag",
+			manifest: "runs:\n  using: docker\n  image: docker://alpine:3\n",
+			detail:   "alpine:3 (pulled by actions/checkout@v4.2.2) is not covered by the actions lockfile; the lock pins the action's commit, not the image, and container image tags are mutable",
+		},
+		{
+			name:     "docker action by digest",
+			manifest: "runs:\n  using: docker\n  image: docker://alpine@sha256:0123456789abcdef\n",
+		},
+		{
+			name:     "docker action Dockerfile",
+			manifest: "runs:\n  using: docker\n  image: Dockerfile\n",
+			detail:   "Dockerfile (built by actions/checkout@v4.2.2) is not covered by the actions lockfile; the lock pins the action's commit, but the image and its base images are built on the runner at run time",
+		},
+		{
+			name:       "Dockerfile-only action",
+			dockerfile: true,
+			detail:     "Dockerfile (built by actions/checkout@v4.2.2) is not covered by the actions lockfile; the lock pins the action's commit, but the image and its base images are built on the runner at run time",
+		},
+		{
+			name:     "composite docker step",
+			manifest: "runs:\n  using: composite\n  steps:\n    - uses: docker://ghcr.io/o/img:1\n",
+			detail:   "ghcr.io/o/img:1 (pulled by actions/checkout@v4.2.2) is not covered by the actions lockfile; the lock pins the action's commit, not the image, and container image tags are mutable",
+		},
+	}
+	const sha = "cccccccccccccccccccccccccccccccccccccccc"
+	for _, tt := range tests {
+		for _, verify := range []bool{false, true} {
+			for _, jsonOutput := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/verify=%t/json=%t", tt.name, verify, jsonOutput), func(t *testing.T) {
+					var pins []string
+					if verify {
+						pins = []string{"actions/checkout@v4.2.2=sha1-" + sha}
+					}
+					path := writeTempWorkflow(t, "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4.2.2\n", pins...)
+					repo := testRepoResponse("actions/checkout", sha, tt.manifest)
+					if tt.dockerfile {
+						object := repo["object"].(map[string]any)
+						object["file"] = nil
+						object["dockerfile"] = map[string]any{"oid": sha}
+					}
+					rt := transportFunc(func(req *http.Request) (*http.Response, error) {
+						switch {
+						case httpmock.GraphQL(`commit: object\(oid`)(req):
+							return parityOK(req)
+						case httpmock.GraphQL(`file: file\(path`)(req):
+							return httpmock.JSONResponse(map[string]any{"data": map[string]any{"a0": repo}})(req)
+						case req.URL.Path == "/repos/actions/checkout":
+							return httpmock.JSONResponse(map[string]any{"id": 1, "owner": map[string]any{"id": 1}})(req)
+						case strings.HasSuffix(req.URL.Path, "/releases"):
+							return httpmock.JSONResponse([]any{})(req)
+						}
+						return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL)
+					})
+					args := []string{"--no-narrow", "--no-interactive"}
+					if verify {
+						args = append(args, "--verify")
+					}
+					if jsonOutput {
+						args = append(args, "--json=valid,findings")
+					}
+					stdout, stderr, err := runCommandWithHTTP(t, rt, append(args, path)...)
+					require.NoError(t, err, "container image warnings never fail the run: %s", stderr)
+					if !jsonOutput {
+						if tt.detail == "" {
+							assert.NotContains(t, stderr, "not covered by the actions lockfile")
+						} else {
+							assert.Contains(t, stderr, tt.detail)
+						}
+						return
+					}
+					var out struct {
+						Findings []struct {
+							Category   string `json:"category"`
+							Severity   string `json:"severity"`
+							RequiredBy string `json:"required_by"`
+							Detail     string `json:"detail"`
+						} `json:"findings"`
+					}
+					require.NoError(t, json.Unmarshal([]byte(stdout), &out))
+					var images []string
+					for _, f := range out.Findings {
+						if f.Category != "container-image" {
+							continue
+						}
+						images = append(images, f.Detail)
+						assert.Equal(t, "warning", f.Severity)
+						assert.Equal(t, "actions/checkout@v4.2.2", f.RequiredBy)
+					}
+					if tt.detail == "" {
+						assert.Empty(t, images)
+					} else {
+						assert.Equal(t, []string{tt.detail}, images)
+					}
+				})
+			}
+		}
+	}
+}
