@@ -76,7 +76,7 @@ func runVerifyLocal(opts *checkOptions, out io.Writer, console *ui.UI) error {
 	}
 
 	if !valid {
-		if opts.jsonFields == "" {
+		if opts.jsonFields == "" && hasAutoFixable(report) {
 			console.TermDetail("Run without --verify-local to resolve and pin missing actions and migrate `./…` refs to `$/…`.")
 		}
 		return errSilent
@@ -161,4 +161,21 @@ func ownSHAEntryFinding(e lockfile.OwnSHAEntry) checks.Finding {
 	}
 	f.Detail = fmt.Sprintf("lock entry for %s, %s, records ref %s, a commit SHA rather than the tag or branch it was taken from; the Actions backend rejects this pin", e.Key, where, parserlock.ShortSHA(pin.Ref))
 	return f
+}
+
+// hasAutoFixable reports whether a plain run can fix any blocking finding.
+func hasAutoFixable(report *checks.Report) bool {
+	for _, f := range report.RepoFindings {
+		if !f.IsValid() {
+			return true
+		}
+	}
+	for _, wr := range report.Workflows {
+		for _, f := range wr.Findings {
+			if !f.IsValid() && (format.IsAutoFixable(f.Category) || f.Category == checks.LocalAction) {
+				return true
+			}
+		}
+	}
+	return false
 }

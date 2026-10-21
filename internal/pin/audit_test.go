@@ -1,6 +1,7 @@
 package pin
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,4 +65,46 @@ func TestCarryVerified(t *testing.T) {
 	assert.True(t, got[checks.VerifiedKey("o/child@v4", a)])
 	assert.False(t, got[checks.VerifiedKey("o/child@v4.2.0", b)], "a sibling ref at the same commit gains nothing")
 	assert.False(t, verified[checks.VerifiedKey("o/child@v4.2.1", b)], "the report's own evidence is left alone")
+}
+
+// TestAuditRechecksWithoutBlockedWriters: a.yml's deferred finding holds only
+// because b.yml's write moves the shared entry to a verified commit. b.yml's
+// own deferred finding holds on nothing, which blocks b.yml, so a recheck
+// without b.yml's write must restore a.yml's finding too.
+func TestAuditRechecksWithoutBlockedWriters(t *testing.T) {
+	a, b := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	wfA, wfB := ".github/workflows/a.yml", ".github/workflows/b.yml"
+	path := filepath.Join(t.TempDir(), "actions.lock")
+	body := "version: v0.0.3\nworkflows:\n  " + wfA + ":\n    - o/shared@v1\n  " + wfB + ":\n    - o/shared@v1\n    - o/other@v1\ndependencies:\n" +
+		"  o/shared@v1:\n    ref: v1\n    commit: sha1-" + a + "\n    owner_id: 1\n    repo_id: 2\n" +
+		"  o/other@v1:\n    ref: v1\n    commit: sha1-" + a + "\n    owner_id: 1\n    repo_id: 3\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	store, err := lockfile.LoadStateAt(path, nil)
+	require.NoError(t, err)
+
+	deferred := func(wf, key string) checks.WorkflowReport {
+		f := checks.Finding{WorkflowPath: wf, Category: checks.UnreachablePin, Severity: checks.SeverityError, Confidence: checks.ConfidenceHigh, Detail: key}
+		return checks.WorkflowReport{Path: wf, Deferred: []checks.Deferred{{Key: key, Ref: "v1", Commit: a, Finding: f}}}
+	}
+	report := &checks.Report{
+		Workflows: []checks.WorkflowReport{deferred(wfA, "o/shared@v1"), deferred(wfB, "o/other@v1")},
+		Verified:  map[string]bool{checks.VerifiedKey("o/shared@v1", b): true},
+	}
+	entry := func(nwo, sha, wf string, res Resolution) Entry {
+		return Entry{NWO: nwo, Ref: "v1", Tag: "v1", SHA: sha, Resolution: res, Workflows: []string{wf}, Direct: true, FromLock: res == Verified}
+	}
+	rec := &Record{
+		Entries: []Entry{
+			entry("o/shared", a, wfA, Verified),
+			entry("o/shared", b, wfB, Pinned),
+			entry("o/other", a, wfB, Verified),
+		},
+		Workflows: []WorkflowPlan{{Path: wfA}, {Path: wfB}},
+	}
+
+	require.NoError(t, Audit(context.Background(), rec, store, report, nil))
+	for _, wr := range report.Workflows {
+		assert.True(t, wr.Deferred[0].Restored, "%s keeps its finding", wr.Path)
+		assert.True(t, wr.SkipCommit, "%s is not written", wr.Path)
+	}
 }

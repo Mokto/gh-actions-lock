@@ -108,6 +108,7 @@ func TestNarrowDirectDeps_SameNWOSiblingRefsNormalizeIndependently(t *testing.T)
 		deps,
 		direct,
 		preserved,
+		nil,
 	)
 	require.NoError(t, err)
 	assert.Empty(t, issues)

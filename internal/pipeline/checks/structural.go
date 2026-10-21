@@ -7,6 +7,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/lockfile"
+	"github.com/github/gh-actions-lock/internal/workflowfile"
 )
 
 // checkUntracked emits NotPinned for a workflow with no uses: refs that
@@ -190,6 +191,38 @@ func checkStale(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 				Ref: p.Ref,
 				SHA: p.SHA(),
 			},
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// checkLockGraph emits an IncompleteLockfile error for each recorded edge
+// of the workflow's closure whose child has no dependencies entry. A plain
+// run keeps recorded edges as they are, so only --relock repairs it.
+func checkLockGraph(pw ParsedWorkflow, lf parserlock.File) []Finding {
+	use := lockfile.RootUse(pw.Refs)
+	live := func(p parserlock.Pin, a parserlock.Action) bool {
+		_, ok := use(p, a.Commit)
+		return ok
+	}
+	var out []Finding
+	for _, fault := range lockfile.GraphFaults(lf, workflowfile.KeyFromPath(pw.Path), live) {
+		f := Finding{
+			WorkflowPath: pw.Path,
+			Category:     IncompleteLockfile,
+			Severity:     SeverityError,
+			Confidence:   ConfidenceHigh,
+			Detail:       "lock graph is incomplete: " + fault.String(),
+			Remediation:  "run `gh actions-lock --relock` to rebuild the workflow's lock graph",
+		}
+		// Name the entry whose edge can't be followed.
+		key := fault.Parent
+		if key == "" {
+			key = fault.Child
+		}
+		if p, ok := parserlock.ParsePin(key); ok {
+			f.Dependency = &dep.Dependency{NWO: p.NWO, Ref: p.Ref, SHA: lockedPin{Commit: lf.Dependencies[key].Commit}.SHA()}
 		}
 		out = append(out, f)
 	}

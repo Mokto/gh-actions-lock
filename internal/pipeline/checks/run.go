@@ -30,6 +30,7 @@ func RunChecks(ctx context.Context, pw ParsedWorkflow, lf parserlock.File, r Che
 	out = append(out, checkShaAsRef(pw, depIndex)...)
 	out = append(out, checkRefChanged(pw, depPins)...)
 	out = append(out, checkStale(pw, depPins)...)
+	out = append(out, checkLockGraph(pw, lf)...)
 
 	if r != nil {
 		out = append(out, checkMisleadingSha(ctx, pw, r)...)

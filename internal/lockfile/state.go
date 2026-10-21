@@ -54,6 +54,12 @@ type State struct {
 	hostname        string
 	// preview marks a copy from Preview, which Save refuses.
 	preview bool
+	// read holds the children this run's manifest reads found per entry,
+	// reused the entries this run took from the lockfile unread, and
+	// recorded each entry's `uses:` before this run touched it (see Set).
+	read     map[string]map[string]bool
+	reused   map[string]bool
+	recorded map[string][]string
 }
 
 // ErrCorruptLockfile reports that a lockfile exists on disk but its contents
@@ -447,44 +453,78 @@ type LockedPin struct {
 func (s *State) Closure(workflowKey string, live func(parserlock.Pin, parserlock.Action) bool) []LockedPin {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []LockedPin
-	seen := map[string]bool{}
-	add := func(key, parent string) (parserlock.Action, bool) {
-		if seen[key] {
-			return parserlock.Action{}, false
-		}
-		seen[key] = true
-		pin, ok := parserlock.ParsePin(key)
-		action, found := s.file.Dependencies[key]
-		if !ok || !found {
-			return parserlock.Action{}, false
-		}
-		out = append(out, LockedPin{Pin: pin, Action: action, Parent: parent})
-		return action, true
+	out, _ := walkClosure(s.file, workflowKey, live)
+	return out
+}
+
+// GraphFault is a recorded edge whose Child has no dependencies entry.
+// Parent is empty for an edge from the workflow itself. The lockfile
+// parser rejects cycles, so a loaded graph has none to report.
+type GraphFault struct {
+	Parent string
+	Child  string
+}
+
+func (g GraphFault) String() string {
+	from := "the workflow"
+	if g.Parent != "" {
+		from = g.Parent
 	}
+	return fmt.Sprintf("%s uses %s, which has no dependencies entry", from, g.Child)
+}
+
+// GraphFaults reports the edges of workflowKey's recorded closure, rooted at
+// the pins live accepts, whose child has no entry.
+func GraphFaults(f parserlock.File, workflowKey string, live func(parserlock.Pin, parserlock.Action) bool) []GraphFault {
+	_, faults := walkClosure(f, workflowKey, live)
+	return faults
+}
+
+// walkClosure walks workflowKey's recorded `uses:` graph from the roots live
+// accepts. Each pin is reported once, as direct when the workflow lists it,
+// so traversal order can't make a root transitive.
+func walkClosure(f parserlock.File, workflowKey string, live func(parserlock.Pin, parserlock.Action) bool) ([]LockedPin, []GraphFault) {
+	var out []LockedPin
+	var faults []GraphFault
+	reported := map[string]bool{}
+	report := func(key, parent string) {
+		if reported[key] {
+			return
+		}
+		reported[key] = true
+		pin, _ := parserlock.ParsePin(key)
+		out = append(out, LockedPin{Pin: pin, Action: f.Dependencies[key], Parent: parent})
+	}
+	done := map[string]bool{}
 	var walk func(key, parent string)
 	walk = func(key, parent string) {
-		if action, ok := add(key, parent); ok {
-			for _, child := range action.Uses {
-				walk(child, key)
-			}
+		if done[key] {
+			return
 		}
-	}
-	// Claim every root first, so traversal order can't make one transitive.
-	var roots []string
-	for _, key := range s.file.Workflows[workflowKey] {
-		if pin, ok := parserlock.ParsePin(key); ok && live(pin, s.file.Dependencies[key]) {
-			if _, ok := add(key, ""); ok {
-				roots = append(roots, key)
-			}
+		done[key] = true
+		action, found := f.Dependencies[key]
+		if _, ok := parserlock.ParsePin(key); !ok || !found {
+			faults = append(faults, GraphFault{Parent: parent, Child: key})
+			return
 		}
-	}
-	for _, key := range roots {
-		for _, child := range s.file.Dependencies[key].Uses {
+		report(key, parent)
+		for _, child := range action.Uses {
 			walk(child, key)
 		}
 	}
-	return out
+	var roots []string
+	for _, key := range f.Workflows[workflowKey] {
+		if pin, ok := parserlock.ParsePin(key); ok && live(pin, f.Dependencies[key]) {
+			if _, found := f.Dependencies[key]; found {
+				report(key, "")
+			}
+			roots = append(roots, key)
+		}
+	}
+	for _, key := range roots {
+		walk(key, "")
+	}
+	return out, faults
 }
 
 // RecordsOwnSHA reports whether the lockfile's entry for owner/repo@sha
@@ -603,7 +643,9 @@ func (s *State) AllDeps() []dep.Dependency {
 // parentMap is the resolver's child → []parent map (Dependency.Key() form:
 // NWO@Ref, without the SHA suffix), as returned by Resolver.ParentMap. Set
 // uses it to build per-action `uses:` lists by inversion. Both sides are
-// translated into canonical pin keys (NWO@Ref:algo-hex).
+// translated into canonical pin keys (NWO@Ref:algo-hex). A dep whose
+// manifest this run read gets the edges it found; one taken from the
+// lockfile unread keeps its recorded edges (see admitUses).
 //
 // directKeys is the set of Dependency.Key() values (NWO@Ref) that the
 // workflow file uses directly. It is authoritative for the workflow's
@@ -723,15 +765,6 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 		if !ok {
 			return fmt.Errorf("resolving repo IDs for %s/%s: not in cache after pre-resolve", pin.Owner, pin.Repo)
 		}
-		// Merge uses: each workflow contributes its own transitive edges.
-		// A dep that is a parent in one workflow but direct (no children)
-		// in another must not clobber the first workflow's uses list.
-		usesSet := make(map[string]bool)
-		if children, ok := parentToChildren[pinKey]; ok {
-			for c := range children {
-				usesSet[c] = true
-			}
-		}
 		// The action's Ref must match the pin key's ref (which is d.Ref).
 		// Preserve existing ref when the dep arrives without one (carried
 		// unchanged from a previous lockfile).
@@ -746,32 +779,30 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 			}
 		}
 		existing, ok := s.file.Dependencies[pinKey]
-		if ok {
-			if ref == "" {
-				ref = existing.Ref
-			}
-			for _, u := range existing.Uses {
-				usesSet[u] = true
-			}
+		if ok && ref == "" {
+			ref = existing.Ref
 		}
-		for _, from := range d.RenamedFrom {
-			if renamed, found := s.file.Dependencies[from]; !ok && found && strings.HasSuffix(renamed.Commit, "-"+d.SHA) {
-				for _, u := range renamed.Uses {
-					usesSet[u] = true
-				}
-			}
-		}
-		oldRef := d.OriginalRef
-		if !isSHARef(d.Ref) && isSHARef(oldRef) {
+		var shaExisting parserlock.Action
+		shaOK := false
+		if !isSHARef(d.Ref) && isSHARef(d.OriginalRef) {
 			shaPin := pin
-			shaPin.Ref = oldRef
-			if shaExisting, shaOK := s.file.Dependencies[shaPin.String()]; shaOK {
-				if !ok && ref == "" {
-					ref = shaExisting.Ref
+			shaPin.Ref = d.OriginalRef
+			shaExisting, shaOK = s.file.Dependencies[shaPin.String()]
+			if shaOK && !ok && ref == "" {
+				ref = shaExisting.Ref
+			}
+		}
+		usesSet := s.admitUses(pinKey, d.FromLock, parentToChildren[pinKey])
+		if d.FromLock {
+			for _, from := range d.RenamedFrom {
+				if renamed, found := s.file.Dependencies[from]; !ok && found && strings.HasSuffix(renamed.Commit, "-"+d.SHA) {
+					for _, u := range renamed.Uses {
+						usesSet[u] = true
+					}
 				}
-				for _, u := range shaExisting.Uses {
-					usesSet[u] = true
-				}
+			}
+			for _, u := range shaExisting.Uses {
+				usesSet[u] = true
 			}
 		}
 		var uses []string
@@ -797,6 +828,62 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 	sort.Strings(directPins)
 	s.file.Workflows[workflowKey] = directPins
 	return nil
+}
+
+// KeepEdges makes Set keep the recorded edges of every entry the recorded
+// closures of workflowKeys reach. Call it with the workflows a run doesn't
+// write: a manifest read covers only the sub-actions this run uses, and
+// those workflows may use others of the same entry.
+func (s *State) KeepEdges(workflowKeys []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all := func(parserlock.Pin, parserlock.Action) bool { return true }
+	for _, wf := range workflowKeys {
+		closure, _ := walkClosure(s.file, wf, all)
+		for _, lp := range closure {
+			s.admitUses(lp.Pin.String(), true, nil)
+		}
+	}
+}
+
+// admitUses returns the `uses:` Set records for key, given the children
+// this call found for it. A manifest read replaces the edges recorded before
+// this run, so a child the manifest dropped goes; reads in several workflows
+// union, as each may read a different sub-action. An entry this run also
+// took from the lockfile unread keeps its recorded edges, since one of its
+// sub-actions went unread. Requires s.mu.
+func (s *State) admitUses(key string, fromLock bool, children map[string]bool) map[string]bool {
+	if s.read == nil {
+		s.read, s.reused = map[string]map[string]bool{}, map[string]bool{}
+	}
+	if _, seen := s.recorded[key]; !seen {
+		if s.recorded == nil {
+			s.recorded = map[string][]string{}
+		}
+		s.recorded[key] = s.file.Dependencies[key].Uses
+	}
+	if fromLock {
+		s.reused[key] = true
+	} else {
+		if s.read[key] == nil {
+			s.read[key] = map[string]bool{}
+		}
+		maps.Copy(s.read[key], children)
+	}
+	uses := maps.Clone(s.read[key])
+	if uses == nil {
+		uses = map[string]bool{}
+	}
+	if s.reused[key] {
+		maps.Copy(uses, children)
+		for _, u := range s.file.Dependencies[key].Uses {
+			uses[u] = true
+		}
+		for _, u := range s.recorded[key] {
+			uses[u] = true
+		}
+	}
+	return uses
 }
 
 // Save persists the lockfile to disk, garbage-collecting orphan action

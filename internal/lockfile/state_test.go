@@ -1002,7 +1002,7 @@ func TestState_SetUnionsUsesAcrossRenames(t *testing.T) {
 	store.file.Dependencies["older/a@v1"] = parserlock.Action{Ref: "v1", Commit: "sha1-" + sha, Uses: []string{"actions/setup-go@v5"}}
 	store.file.Dependencies["stale/a@v1"] = parserlock.Action{Ref: "v1", Commit: "sha1-" + strings.Repeat("f", 40), Uses: []string{"evil/x@v1"}}
 
-	d := dep.Dependency{NWO: "new/a", Ref: "v1", Tag: "v1", SHA: sha, HashAlgo: "sha1", RenamedFrom: []string{"old/a@v1", "older/a@v1", "stale/a@v1"}}
+	d := dep.Dependency{NWO: "new/a", Ref: "v1", Tag: "v1", SHA: sha, HashAlgo: "sha1", RenamedFrom: []string{"old/a@v1", "older/a@v1", "stale/a@v1"}, FromLock: true}
 	if err := store.Set(context.Background(), ".github/workflows/ci.yml", []dep.Dependency{d}, nil, nil); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -1101,5 +1101,134 @@ func TestLoadStateCanonicalizesFullSHAs(t *testing.T) {
 		_, err := load(t, "o/comp@rel@1", entry("o/comp@rel@1", "rel@1", lower, ""))
 		require.ErrorIs(t, err, ErrCorruptLockfile)
 		assert.ErrorContains(t, err, "ref containing @")
+	})
+}
+
+func TestGraphFaults(t *testing.T) {
+	const wf = ".github/workflows/ci.yml"
+	sha := "sha1-" + strings.Repeat("a", 40)
+	all := func(parserlock.Pin, parserlock.Action) bool { return true }
+	tests := []struct {
+		name string
+		deps map[string]parserlock.Action
+		root []string
+		live func(parserlock.Pin, parserlock.Action) bool
+		want []GraphFault
+	}{
+		{
+			name: "a whole graph has none",
+			deps: map[string]parserlock.Action{"o/a@v1": {Commit: sha, Uses: []string{"o/b@v1"}}, "o/b@v1": {Commit: sha}},
+			root: []string{"o/a@v1"},
+		},
+		{
+			name: "a child with no entry",
+			deps: map[string]parserlock.Action{"o/a@v1": {Commit: sha, Uses: []string{"o/b@v1"}}},
+			root: []string{"o/a@v1"},
+			want: []GraphFault{{Parent: "o/a@v1", Child: "o/b@v1"}},
+		},
+		{
+			name: "a descendant with no entry",
+			deps: map[string]parserlock.Action{"o/a@v1": {Commit: sha, Uses: []string{"o/b@v1"}}, "o/b@v1": {Commit: sha, Uses: []string{"o/c@v1"}}},
+			root: []string{"o/a@v1"},
+			want: []GraphFault{{Parent: "o/b@v1", Child: "o/c@v1"}},
+		},
+		{
+			name: "a root with no entry",
+			root: []string{"o/a@v1"},
+			want: []GraphFault{{Child: "o/a@v1"}},
+		},
+		{
+			name: "a root the workflow no longer uses is skipped",
+			deps: map[string]parserlock.Action{"o/a@v1": {Commit: sha, Uses: []string{"o/b@v1"}}},
+			root: []string{"o/a@v1"},
+			live: func(parserlock.Pin, parserlock.Action) bool { return false },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			live := tt.live
+			if live == nil {
+				live = all
+			}
+			f := parserlock.File{Dependencies: tt.deps, Workflows: map[string][]string{wf: tt.root}}
+			assert.Equal(t, tt.want, GraphFaults(f, wf, live))
+		})
+	}
+}
+
+func TestState_SetReplacesUsesOfReadEntries(t *testing.T) {
+	const wf = ".github/workflows/ci.yml"
+	sha := strings.Repeat("a", 40)
+	comp := dep.Dependency{NWO: "o/comp", Ref: "v1", SHA: sha}
+	child := dep.Dependency{NWO: "o/child", Ref: "v2", SHA: sha}
+	stale := dep.Dependency{NWO: "o/stale", Ref: "v1", SHA: sha}
+	newStore := func(t *testing.T) *State {
+		t.Helper()
+		store, err := LoadState(t.TempDir(), fakeMetadataResolver{})
+		require.NoError(t, err)
+		require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{comp, stale},
+			dep.ParentMap{stale.Key(): {comp.Key()}}, map[string]bool{comp.Key(): true}))
+		require.NoError(t, store.Save())
+		store, err = LoadStateAt(store.lockPath, fakeMetadataResolver{})
+		require.NoError(t, err)
+		return store
+	}
+	fromLock := func(d dep.Dependency) dep.Dependency {
+		d.FromLock = true
+		return d
+	}
+	direct := map[string]bool{comp.Key(): true}
+	read := dep.ParentMap{child.Key(): {comp.Key()}}
+
+	t.Run("a read entry gets the edges its manifest has", func(t *testing.T) {
+		store := newStore(t)
+		require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{comp, child}, read, direct))
+		assert.Equal(t, []string{"o/child@v2"}, store.File().Dependencies["o/comp@v1"].Uses)
+	})
+	t.Run("an entry reused unread keeps its recorded edges", func(t *testing.T) {
+		store := newStore(t)
+		require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{fromLock(comp)}, nil, direct))
+		assert.Equal(t, []string{"o/stale@v1"}, store.File().Dependencies["o/comp@v1"].Uses)
+	})
+	t.Run("reads in several workflows union", func(t *testing.T) {
+		store := newStore(t)
+		other := dep.Dependency{NWO: "o/other", Ref: "v1", SHA: sha}
+		require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{comp, child}, read, direct))
+		require.NoError(t, store.Set(context.Background(), ".github/workflows/b.yml", []dep.Dependency{comp, other},
+			dep.ParentMap{other.Key(): {comp.Key()}}, direct))
+		assert.Equal(t, []string{"o/child@v2", "o/other@v1"}, store.File().Dependencies["o/comp@v1"].Uses)
+	})
+	t.Run("an entry also reused unread keeps its recorded edges, whatever the order", func(t *testing.T) {
+		for _, readFirst := range []bool{true, false} {
+			store := newStore(t)
+			sets := []func() error{
+				func() error {
+					return store.Set(context.Background(), wf, []dep.Dependency{comp, child}, read, direct)
+				},
+				func() error {
+					return store.Set(context.Background(), ".github/workflows/b.yml", []dep.Dependency{fromLock(comp)}, nil, direct)
+				},
+			}
+			if !readFirst {
+				slices.Reverse(sets)
+			}
+			for _, set := range sets {
+				require.NoError(t, set())
+			}
+			assert.Equal(t, []string{"o/child@v2", "o/stale@v1"}, store.File().Dependencies["o/comp@v1"].Uses, "readFirst=%v", readFirst)
+		}
+	})
+	t.Run("a rediscovered entry the graph lost drops its obsolete edges", func(t *testing.T) {
+		store := newStore(t)
+		obsolete := dep.Dependency{NWO: "o/obsolete", Ref: "v1", SHA: sha}
+		require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{comp, child, obsolete},
+			dep.ParentMap{child.Key(): {comp.Key()}, obsolete.Key(): {child.Key()}}, direct))
+		require.NoError(t, store.Save())
+		store, err := LoadStateAt(store.lockPath, fakeMetadataResolver{})
+		require.NoError(t, err)
+		delete(store.file.Dependencies, "o/comp@v1")
+
+		require.NoError(t, store.Set(context.Background(), wf, []dep.Dependency{comp, child}, read, direct))
+		assert.Empty(t, store.File().Dependencies["o/child@v2"].Uses)
 	})
 }

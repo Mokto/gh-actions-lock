@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/workflowfile"
@@ -111,6 +112,17 @@ func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, 
 			return fmt.Errorf("updating lockfile: %w", err)
 		}
 	}
+	writtenKeys := make(map[string]bool, len(workflows))
+	for _, wp := range workflows {
+		writtenKeys[workflowfile.KeyFromPath(wp.Path)] = true
+	}
+	var unwritten []string
+	for _, wf := range store.WorkflowKeys() {
+		if !writtenKeys[wf] {
+			unwritten = append(unwritten, wf)
+		}
+	}
+	store.KeepEdges(unwritten)
 	pinnedByWorkflow := groupPinnedByWorkflow(rec)
 	for _, wp := range workflows {
 		wfPath := wp.Path
@@ -121,6 +133,15 @@ func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, 
 		deps = retainUnresolvablePins(rec, store, wfPath, deps, directKeys)
 		if err := store.Set(ctx, wfKey, deps, parentMap, directKeys); err != nil {
 			return fmt.Errorf("updating lockfile for %s: %w", wfPath, err)
+		}
+	}
+	// A written workflow's closure can reach entries it shares with
+	// workflows this run doesn't write, so check each one whole.
+	f := store.File()
+	all := func(parserlock.Pin, parserlock.Action) bool { return true }
+	for _, wp := range workflows {
+		if faults := lockfile.GraphFaults(f, workflowfile.KeyFromPath(wp.Path), all); len(faults) > 0 {
+			return fmt.Errorf("refusing to write %s: its lock graph is incomplete: %s; run `gh actions-lock --relock` to rebuild it", wp.Path, faults[0])
 		}
 	}
 	return nil
@@ -202,6 +223,7 @@ func groupPinnedByWorkflow(rec *Record) map[string][]dep.Dependency {
 				RenamedFrom: e.RenamedFrom,
 				Branch:      e.OnBranch,
 				Tag:         e.Tag,
+				FromLock:    e.FromLock,
 			})
 		}
 	}
