@@ -384,6 +384,48 @@ jobs:
 	}
 }
 
+// TestParity_RenamedExactTagBehindBlocks: a same-ID rename only warns, and
+// must not hide an exact tag locked behind its commit.
+func TestParity_RenamedExactTagBehindBlocks(t *testing.T) {
+	for name, args := range map[string][]string{
+		"verify":  {"--verify"},
+		"no-fix":  {"--no-fix"},
+		"default": {"--no-onboard", "--no-narrow", "--no-interactive"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": map[string]any{
+					"nameWithOwner": "typesafegithub/github-actions-typing",
+					"databaseId":    1,
+					"commit":        map[string]any{"oid": parityTestSHA},
+					"tag":           map[string]any{"oid": parityTestMoved},
+					"tagRef":        map[string]any{},
+				}},
+			}))
+			reg.Register(httpmock.REST("GET", `compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
+				httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
+			path := writeTempWorkflow(t, transferWorkflow, "krzema12/github-actions-typing@v2.2.2=sha1-"+parityTestSHA)
+			lockPath := filepath.Join(".github", "workflows", "actions.lock")
+			before, err := os.ReadFile(lockPath)
+			require.NoError(t, err)
+
+			p, err := runParity(t, parityFallback{reg}, append(args, path)...)
+			require.ErrorIs(t, err, errSilent)
+			assert.False(t, p.Valid)
+			sev := map[string]string{}
+			for _, f := range p.Findings {
+				sev[f.Category] = f.Severity
+			}
+			assert.Equal(t, "warning", sev["repo-renamed"], "%+v", p.Findings)
+			assert.Equal(t, "error", sev["tag-commit-mismatch"], "%+v", p.Findings)
+			after, err := os.ReadFile(lockPath)
+			require.NoError(t, err)
+			assert.Equal(t, string(before), string(after), "nothing is written")
+		})
+	}
+}
+
 // TestParity_TerminalSeverity: the terminal must agree with the exit code.
 // A fail-closed history check prints as an error, never a warning, and so
 // does an exact tag locked behind its commit.
@@ -2891,7 +2933,7 @@ func TestParity_ExactTagBehindInCompositeNamesHolder(t *testing.T) {
 	require.ErrorIs(t, err, errSilent)
 	require.Len(t, p.Findings, 1, "%+v", p.Findings)
 	assert.Equal(t, "tag-commit-mismatch", p.Findings[0].Category)
-	assert.Equal(t, "upgrade octo/root@v1 or run `gh actions-lock --relock`", p.Findings[0].Remediation)
+	assert.Equal(t, "upgrade or replace octo/root@v1; `gh actions-lock --relock` helps only if octo/root@v1 itself advances", p.Findings[0].Remediation)
 
 	// The composite didn't move, so --relock keeps its recorded entry:
 	// the run blocks, writes nothing, and points only at the composite.

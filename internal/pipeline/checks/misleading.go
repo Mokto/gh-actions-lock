@@ -155,10 +155,12 @@ func UnreachableRemediation(holder, nwo string) string {
 
 // TagCommitMismatchRemediation is the next step for an exact-tag entry
 // locked behind its tag. holder (NWO@ref) is the composite that pins it, or
-// "" for the workflow's own use.
+// "" for the workflow's own use. --relock keeps an unchanged composite's
+// recorded entries, so for a held entry it helps only once the composite
+// itself advances.
 func TagCommitMismatchRemediation(holder string) string {
 	if holder != "" {
-		return fmt.Sprintf("upgrade %s or run `gh actions-lock --relock`", holder)
+		return fmt.Sprintf("upgrade or replace %s; `gh actions-lock --relock` helps only if %s itself advances", holder, holder)
 	}
 	return "run `gh actions-lock --relock` to lock the tag's commit, or change `uses:` to the release you want"
 }

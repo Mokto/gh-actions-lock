@@ -209,11 +209,13 @@ func TestCheckPins_RefLookup(t *testing.T) {
 		reg := &httpmock.Registry{}
 		defer reg.Verify(t)
 		reg.Register(httpmock.REST("GET", `^/repos/o/r$`), httpmock.JSONResponse(map[string]any{"full_name": "o/r"}))
-		for range 2 {
+		for range 3 {
 			reg.Register(httpmock.REST("GET", `^/repos/o/r/commits/`+paritySHA+`$`), httpmock.JSONResponse(map[string]any{"sha": paritySHA}))
 		}
 		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/tags/main$`), httpmock.StatusResponse(http.StatusNotFound))
 		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/heads/main$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/main", parityMoved)))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/tags/v2\.0\.0$`), httpmock.StatusResponse(http.StatusNotFound))
+		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/heads/v2\.0\.0$`), httpmock.JSONResponse(httpmock.GitRefResponse("refs/heads/v2.0.0", parityMoved)))
 		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/tags/pull/1/head$`), httpmock.StatusResponse(http.StatusNotFound))
 		reg.Register(httpmock.REST("GET", `^/repos/o/r/git/ref/heads/pull/1/head$`), httpmock.StatusResponse(http.StatusNotFound))
 
@@ -222,11 +224,16 @@ func TestCheckPins_RefLookup(t *testing.T) {
 		states := c.CheckPins(context.Background(), []PinCheck{
 			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "main"},
 			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "pull/1/head"},
+			{Owner: "o", Repo: "r", SHA: paritySHA, Head: "v2.0.0"},
 		})
-		require.NoError(t, states[0].Err)
-		require.NoError(t, states[1].Err)
+		for _, s := range states {
+			require.NoError(t, s.Err)
+		}
 		assert.Equal(t, parityMoved, states[0].HeadOID)
+		assert.False(t, states[0].HeadIsTag)
 		assert.Empty(t, states[1].HeadOID, "a pull request head is not a tag or branch")
+		assert.Equal(t, parityMoved, states[2].HeadOID)
+		assert.False(t, states[2].HeadIsTag, "a branch named like a release is not a tag")
 	})
 }
 

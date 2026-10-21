@@ -215,48 +215,60 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if ok && (f.Severity == checks.SeverityError || st.Err != nil) {
 				unhealthy[pinKey(pins[i].Owner+"/"+pins[i].Repo, pins[i].SHA)] = true
 			}
-			if o.fresh {
-				f.FreshRef = true
-			} else {
-				f.RecordedRef = o.lp.Action.Ref
+			var found []checks.Finding
+			if ok {
+				found = append(found, f)
 			}
-			if !ok && tagMoved[i] {
+			// A same-ID rename doesn't vouch for the commit, so the tag is
+			// still checked alongside it.
+			renamed := ok && f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning
+			if tagMoved[i] && (!ok || renamed) {
 				switch {
 				case exactTag(o.lp.Pin.Ref):
-					f, ok = tagCommitMismatchFinding(o.pw, o.ref, o.lp, pins[i], st), true
+					found = append(found, tagCommitMismatchFinding(o.pw, o.ref, o.lp, pins[i], st))
 				case mode.verify:
-					f, ok = movedTagFinding(o.pw, o.ref, o.lp, pins[i], st), true
+					found = append(found, movedTagFinding(o.pw, o.ref, o.lp, pins[i], st))
 				}
 			}
 			wr := &report.Workflows[o.report]
-			if !ok {
+			if len(found) == 0 {
 				if o.fresh {
 					verified[checks.VerifiedKey(lockfile.EntryKey(o.lp.Pin), pins[i].SHA)] = true
 				}
 				continue
 			}
-			verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
-			if verdict != verdictKeep {
-				wr.Deferred = append(wr.Deferred, checks.Deferred{
-					Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
-				})
+			clean := true
+			for _, f := range found {
+				if o.fresh {
+					f.FreshRef = true
+				} else {
+					f.RecordedRef = o.lp.Action.Ref
+				}
+				verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
+				if verdict != verdictKeep {
+					wr.Deferred = append(wr.Deferred, checks.Deferred{
+						Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
+					})
+				}
+				if verdict == verdictExcuse {
+					clean = false
+					continue
+				}
+				// Dependabot reads back only actions.lock, so a rewritten `uses:`
+				// would never ship; keep the pin under the name the workflow uses.
+				if f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning && o.lp.Parent == "" && !ghapi.DependabotProxy() {
+					r.Redirect(o.lp.Pin.Owner, o.lp.Pin.Repo, o.ref, st.NameWithOwner)
+				}
+				if f.Severity == checks.SeverityError {
+					clean = false
+					wr.Findings = dropValid(wr.Findings)
+					wr.SkipCommit = true
+				}
+				wr.Findings = append(wr.Findings, f)
 			}
-			if verdict == verdictExcuse {
-				continue
-			}
-			if o.fresh && f.Severity != checks.SeverityError {
+			if o.fresh && clean {
 				verified[checks.VerifiedKey(lockfile.EntryKey(o.lp.Pin), pins[i].SHA)] = true
 			}
-			// Dependabot reads back only actions.lock, so a rewritten `uses:`
-			// would never ship; keep the pin under the name the workflow uses.
-			if f.Category == checks.RepoRenamed && f.Severity == checks.SeverityWarning && o.lp.Parent == "" && !ghapi.DependabotProxy() {
-				r.Redirect(o.lp.Pin.Owner, o.lp.Pin.Repo, o.ref, st.NameWithOwner)
-			}
-			if f.Severity == checks.SeverityError {
-				wr.Findings = dropValid(wr.Findings)
-				wr.SkipCommit = true
-			}
-			wr.Findings = append(wr.Findings, f)
 		}
 	}
 	return checkManifests(ctx, r, store.File(), byKey, report, roots, unhealthy)
