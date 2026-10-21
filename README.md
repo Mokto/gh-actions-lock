@@ -43,6 +43,13 @@ way the runner checks it at job start: the repository was not renamed or
 transferred, the pinned commit still exists, and it is still in the history of
 the tag or branch the lockfile recorded. A failed check blocks the run.
 
+A locked composite's dependencies are re-checked too. Each locked action's
+`action.yml` (or `action.yaml`) is read at its locked commit. A run fails if
+the file is missing, or if the composite uses an action its lockfile entry
+doesn't record. A manifest that can't be read fails the run as a retryable
+error (`"retryable": true` in `--json`). `--relock` skips this check unless the run is read-only,
+because it re-reads every manifest anyway.
+
 Writes are all or nothing: if a run finds any error it cannot fix itself, it
 changes no workflow and no lockfile entry, not even for workflows that are
 otherwise fine.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -87,6 +88,15 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		owners[i] = append(owners[i], o)
 	}
 	fresh := freshClosure(resolved, parents)
+	// Recorded entries skip resolution, so nothing else reads their
+	// manifests. A run that rewrites an entry reads its replacement live.
+	roots := map[int][]manifestNode{}
+	byKey := map[string]string{}
+	for k := range store.File().Dependencies {
+		if p, ok := parserlock.ParsePin(k); ok {
+			byKey[pinKey(p.NWO, p.Ref)] = k
+		}
+	}
 	for _, pw := range parsed {
 		ri, ok := reportIdx[pw.Path]
 		if !ok || isBlocked(pw) {
@@ -124,10 +134,16 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				ref = parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref}
 			}
 			k := lp.Pin.String()
-			add(parityOwner{report: ri, pw: pw, lp: lp, ref: ref,
+			o := parityOwner{report: ri, pw: pw, lp: lp, ref: ref,
 				away:   plannedAway(lp, edges[k], effects[checks.PruneKey(lp.Pin.NWO, lp.Pin.Ref, lockedSHA(lp.Action.Commit))]),
 				heldBy: heldBy(lp, edges[k]),
-			})
+			}
+			add(o)
+			if key := byKey[pinKey(lp.Pin.NWO, lp.Pin.Ref)]; key != "" && lp.Parent == "" && (mode.readOnly || !mode.relock && !o.away) {
+				for _, path := range rootPaths(recorded, lp) {
+					roots[ri] = append(roots[ri], manifestNode{key: key, path: path})
+				}
+			}
 		}
 		if pw.Resolved {
 			continue
@@ -135,6 +151,11 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		for _, o := range fresh(pw, recordedKeys) {
 			o.report = ri
 			add(o)
+			// A seeded pin, a composite's child included, was copied from
+			// the lockfile with its recorded children, not read.
+			if k := byKey[pinKey(o.lp.Pin.NWO, o.lp.Pin.Ref)]; k != "" && r.Seeded(o.ref) {
+				roots[ri] = append(roots[ri], manifestNode{key: k, path: o.ref.Path})
+			}
 		}
 	}
 	if len(pins) == 0 {
@@ -175,6 +196,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 		}
 	}
+	unhealthy := map[string]bool{}
 	verified := map[string]bool{}
 	defer func() {
 		if report.Verified == nil {
@@ -187,6 +209,10 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	for i, st := range states {
 		for _, o := range owners[i] {
 			f, ok := parityFinding(o.pw, o.ref, o.lp, pins[i], st)
+			// A pin parity blocks or can't check is not worth reading.
+			if ok && (f.Severity == checks.SeverityError || st.Err != nil) {
+				unhealthy[pinKey(pins[i].Owner+"/"+pins[i].Repo, pins[i].SHA)] = true
+			}
 			if o.fresh {
 				f.FreshRef = true
 			} else {
@@ -226,7 +252,23 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			wr.Findings = append(wr.Findings, f)
 		}
 	}
-	return nil
+	return checkManifests(ctx, r, store.File(), byKey, report, roots, unhealthy)
+}
+
+// rootPaths are the sub-action paths through which a workflow's recorded
+// uses reach the root entry lp, matched as lockfile.RootUse matches them.
+func rootPaths(recorded []parserlock.ActionRef, lp lockfile.LockedPin) []string {
+	var out []string
+	sha := lockedSHA(lp.Action.Commit)
+	for _, ref := range recorded {
+		if !strings.EqualFold(ref.NWO(), lp.Pin.NWO) || slices.Contains(out, ref.Path) {
+			continue
+		}
+		if ref.Ref == lp.Pin.Ref || parserlock.IsFullSha(ref.Ref) && strings.EqualFold(ref.Ref, sha) {
+			out = append(out, ref.Path)
+		}
+	}
+	return out
 }
 
 type parityOwner struct {

@@ -103,6 +103,10 @@ const (
 	// honor (e.g. semver-*-days or include/exclude). Surfaced so the ignored
 	// configuration is never silent.
 	CooldownConfigIgnored Category = "cooldown-config-ignored"
+	// IncompleteLockfile means a locked action's manifest at its locked
+	// commit doesn't match its lockfile entry: it uses an action the entry
+	// doesn't record, or it is missing. A plain run doesn't repair it.
+	IncompleteLockfile Category = "incomplete-lockfile"
 )
 
 // IsInconclusive reports whether c represents a diagnostic that

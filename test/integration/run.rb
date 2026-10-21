@@ -560,6 +560,19 @@ def checkout_parity(body)
   [200, { "Content-Type" => "application/json" }, JSON.generate({ data: data })]
 end
 
+# Answer a read of locked manifests: each alias is a node action at the
+# commit it asked for.
+def checkout_manifests(body)
+  data = {}
+  (body["variables"] || {}).each do |k, v|
+    next unless (m = k.match(/\Aexpr(\d+)\z/))
+    data["a#{m[1]}"] = { nameWithOwner: "actions/checkout",
+                         object: { oid: v.delete_suffix("^{commit}"),
+                                   file: { object: { text: "name: Checkout\nruns:\n  using: node20\n" } } } }
+  end
+  [200, { "Content-Type" => "application/json" }, JSON.generate({ data: data })]
+end
+
 # Resolve actions/checkout to a moved ref's live SHA.
 def checkout_graphql_ref_move(srv, live_sha)
   srv.on(:POST, %r{/graphql$}) do |req|
@@ -680,7 +693,9 @@ STUB_WIRING = {
   dbot_renamed_repo_warns: ->(s) {
     s.stub_server do |srv|
       srv.on(:POST, %r{/graphql$}) do |req|
-        status, headers, body = checkout_parity(JSON.parse(req.body))
+        parsed = JSON.parse(req.body)
+        next checkout_manifests(parsed) if parsed["query"].include?("file: file(path")
+        status, headers, body = checkout_parity(parsed)
         [status, headers, body.gsub('"actions/checkout"', '"actions/checkout-renamed"')]
       end
     end

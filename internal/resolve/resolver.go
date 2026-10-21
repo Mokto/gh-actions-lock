@@ -157,9 +157,16 @@ func (r *Resolver) SeedFromLockfile(deps []dep.Dependency) {
 		}
 		r.cache.Put(
 			ghapi.ForActionRef(owner, repo, d.Path, d.Ref),
-			resolvedEntry{dep: d},
+			resolvedEntry{dep: d, seeded: true},
 		)
 	}
+}
+
+// Seeded reports whether ref resolved from a lockfile seed rather than a
+// live read, so nothing has checked its manifest this run.
+func (r *Resolver) Seeded(ref parserlock.ActionRef) bool {
+	e, ok := r.cache.Get(cacheKey(ref))
+	return ok && e.seeded
 }
 
 // Redirect re-labels the entry seeded for owner/repo under its canonical

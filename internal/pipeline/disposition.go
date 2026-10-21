@@ -14,6 +14,8 @@ type parityMode struct {
 	relock bool
 	// acceptMoved implies relock.
 	acceptMoved bool
+	// readOnly runs write nothing, so every recorded entry stays as is.
+	readOnly bool
 }
 
 // paritySubject is the lock entry a parity finding is about.

@@ -71,6 +71,9 @@ type Finding struct {
 	Detail      string `json:"detail"`
 	Remediation string `json:"remediation,omitempty"`
 	DocURL      string `json:"doc_url,omitempty"`
+	// Retryable marks a check GitHub didn't answer (an outage or rate
+	// limit): the finding blocks, but re-running may clear it.
+	Retryable bool `json:"retryable,omitempty"`
 }
 
 // Dependency is the JSON-safe view of a resolved dependency, deduplicated
@@ -120,6 +123,7 @@ func findingFromReport(f checks.Finding) Finding {
 		Detail:      f.Detail,
 		Remediation: f.Remediation,
 		DocURL:      f.DocURL,
+		Retryable:   f.Retryable,
 	}
 	if f.Dependency != nil {
 		jf.Dependency = f.Dependency.Key()

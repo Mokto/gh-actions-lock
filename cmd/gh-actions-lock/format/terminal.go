@@ -222,6 +222,8 @@ func categoryLabel(c checks.Category) string {
 		return "Repository missing or inaccessible"
 	case checks.Stale:
 		return "Unused lockfile entry"
+	case checks.IncompleteLockfile:
+		return "Lockfile doesn't match locked manifest"
 	}
 	return strings.ReplaceAll(string(c), "-", " ")
 }
@@ -480,7 +482,7 @@ func renderRedirects(out *ui.UI, report *checks.Report, willRemediate bool) {
 // remediator should not re-print it in non-interactive mode).
 func IsAlertedCategory(c checks.Category) bool {
 	switch c {
-	case checks.UnreachablePin, checks.MisleadingSHA, checks.OnboardingRequired, checks.RepoRenamed, checks.RepoReplaced, checks.RepoUnavailable:
+	case checks.UnreachablePin, checks.MisleadingSHA, checks.OnboardingRequired, checks.RepoRenamed, checks.RepoReplaced, checks.RepoUnavailable, checks.IncompleteLockfile:
 		return true
 	}
 	return false

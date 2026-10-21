@@ -469,7 +469,8 @@ jobs:
 
 // TestParity_UnchangedRerunRequestCount guards API kindness: an unchanged
 // rerun re-resolves nothing and costs one GraphQL request for the whole
-// closure, ref lookups included. A mutable ref that moved upstream stays
+// closure, ref lookups included, plus one batch reading the locked
+// manifests at their commits. A mutable ref that moved upstream stays
 // locked (sticky) and adds one compare call.
 func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 	reg := &httpmock.Registry{}
@@ -482,16 +483,18 @@ func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 		p, err := runParity(t, ct, args...)
 		require.NoError(t, err)
 		assert.True(t, p.Valid, "%+v", p.Findings)
-		assert.Equal(t, 1, ct.n, "%v: one parity request for every pin", args)
+		assert.Equal(t, 2, ct.n, "%v: one parity request and one manifest batch for every pin", args)
 	}
 }
 
 // TestParity_UnchangedRerunRequestCountRESTOnly covers the Dependabot proxy
-// path: one repos/{owner}/{repo} call per unique repository plus one commits
-// call per ref that still points at its locked commit.
+// path: one repos/{owner}/{repo} call per unique repository, one ref call per
+// ref that still points at its locked commit, and a commit and a contents
+// call per manifest at a distinct commit.
 func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 	reg := &httpmock.Registry{}
+	registerLockedManifestsREST(reg)
 	defer reg.Verify(t)
 	// Anonymous REST calls use http.DefaultClient.
 	ct := &countingTransport{inner: reg}
@@ -512,7 +515,7 @@ func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 	p, err := runParity(t, ct, path)
 	require.NoError(t, err)
 	assert.True(t, p.Valid, "%+v", p.Findings)
-	assert.Equal(t, 5, ct.n, "2 repos + 3 pins: %v", ct.urls)
+	assert.Equal(t, 9, ct.n, "2 repos + 3 pins + 2 manifests: %v", ct.urls)
 }
 
 // countingTransport counts every request, matched or not.
@@ -821,6 +824,7 @@ jobs:
 func TestParity_DependabotProxyKeepsRenamedName(t *testing.T) {
 	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 	reg := &httpmock.Registry{}
+	registerLockedManifestsREST(reg)
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
 	}))
@@ -897,6 +901,7 @@ func TestParity_VerifyMutableRefHistory(t *testing.T) {
 		for _, proxy := range []bool{false, true} {
 			t.Run(tt.name+"/"+map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
 				reg := &httpmock.Registry{}
+				registerLockedManifestsREST(reg)
 				if proxy {
 					t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 					useDefaultTransport(t, reg)
@@ -962,6 +967,7 @@ jobs:
 	for _, proxy := range []bool{false, true} {
 		t.Run("plain run makes one compare call/"+map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
 			reg := &httpmock.Registry{}
+			registerLockedManifestsREST(reg)
 			if proxy {
 				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 				useDefaultTransport(t, reg)
@@ -1132,6 +1138,7 @@ func TestParity_VerifyRefCaseSensitive(t *testing.T) {
 	for _, proxy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
 			reg := &httpmock.Registry{}
+			registerLockedManifestsREST(reg)
 			var heads []string
 			if proxy {
 				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")

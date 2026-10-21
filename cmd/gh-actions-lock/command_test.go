@@ -11,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pinpool"
+	"github.com/github/gh-actions-lock/internal/profile"
 	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -231,9 +233,90 @@ func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 	}
 }
 
-// registerParity stubs one parity query that reports every pin intact.
+// registerParity stubs one parity query that reports every pin intact, and
+// answers locked-manifest reads with node actions.
 func registerParity(reg *httpmock.Registry) {
 	reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOK)
+	registerLockedManifests(reg, nil)
+}
+
+// lockedManifestRead matches a GraphQL read of locked manifests at their
+// commits.
+func lockedManifestRead(req *http.Request) bool {
+	return req.Method == http.MethodPost && profile.GraphQLLabel(req.Context()) == "manifests"
+}
+
+// registerLockedManifests answers locked-manifest reads from manifests,
+// keyed by owner/repo[/path]; any other action is a node action. It
+// returns the number of requests served.
+func registerLockedManifests(reg *httpmock.Registry, manifests map[string]string) *atomic.Int64 {
+	var reads atomic.Int64
+	respond := actionFiles(manifests, nil)
+	reg.RegisterReusable(lockedManifestRead, func(req *http.Request) (*http.Response, error) {
+		reads.Add(1)
+		return respond(req)
+	})
+	return &reads
+}
+
+// Manifests that stand for an action with only a Dockerfile, and for a
+// commit the repository no longer has.
+const (
+	dockerfileOnly = "FROM alpine"
+	missingCommit  = "missing commit"
+)
+
+// actionFiles answers action-file reads from manifests. A ref that is not a
+// full SHA resolves to commits[owner/repo].
+func actionFiles(manifests, commits map[string]string) httpmock.Responder {
+	return func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		data := map[string]any{}
+		for i := 0; ; i++ {
+			owner, ok := body.Variables[fmt.Sprintf("owner%d", i)].(string)
+			if !ok {
+				break
+			}
+			nwo := owner + "/" + body.Variables[fmt.Sprintf("name%d", i)].(string)
+			name := nwo
+			if yml := body.Variables[fmt.Sprintf("yml%d", i)].(string); yml != "action.yml" {
+				name += "/" + strings.TrimSuffix(yml, "/action.yml")
+			}
+			text, ok := manifests[name]
+			if !ok {
+				text = nodeActionYAML
+			}
+			sha := strings.TrimSuffix(body.Variables[fmt.Sprintf("expr%d", i)].(string), "^{commit}")
+			if !parserlock.IsFullSha(sha) {
+				sha = commits[nwo]
+			}
+			resp := testRepoResponse(nwo, sha, text)
+			switch text {
+			case dockerfileOnly:
+				resp["object"] = map[string]any{"oid": sha, "dockerfile": map[string]any{"oid": sha}}
+			case missingCommit:
+				resp["object"] = nil
+			}
+			data[fmt.Sprintf("a%d", i)] = resp
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	}
+}
+
+// registerLockedManifestsREST answers the REST-only reads of a manifest at
+// a full SHA: the commit lookup, then a node action's action.yml.
+func registerLockedManifestsREST(reg *httpmock.Registry) {
+	reg.RegisterReusable(httpmock.REST("GET", `/commits/[0-9a-f]{40}$`), func(req *http.Request) (*http.Response, error) {
+		return httpmock.JSONResponse(map[string]any{"sha": req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:]})(req)
+	})
+	reg.RegisterReusable(httpmock.RESTWithQuery("GET", `/contents/(.+/)?action\.yml$`, "ref="), func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(nodeActionYAML)), Header: http.Header{}}, nil
+	})
 }
 
 // parityOK answers a parity query as if every locked pin still matches.
@@ -285,12 +368,18 @@ func parityOKWithIDs(ids map[string]int) httpmock.Responder {
 	}
 }
 
-// parityFallback answers parity queries the test did not stub as intact,
-// since fresh pins fail closed on an inconclusive check.
+// parityFallback answers parity queries and locked-manifest reads the test
+// did not stub as intact, since both fail closed when unanswered.
 type parityFallback struct{ rt http.RoundTripper }
 
 func (p parityFallback) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Body == nil || !httpmock.GraphQL(`commit: object\(oid`)(req) {
+	fallback := httpmock.Responder(parityOK)
+	switch {
+	case req.Body == nil:
+		return p.rt.RoundTrip(req)
+	case lockedManifestRead(req):
+		fallback = actionFiles(nil, nil)
+	case !httpmock.GraphQL(`commit: object\(oid`)(req):
 		return p.rt.RoundTrip(req)
 	}
 	body, err := io.ReadAll(req.Body)
@@ -302,7 +391,7 @@ func (p parityFallback) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	return parityOK(req)
+	return fallback(req)
 }
 
 // writeTempWorkflow writes a workflow YAML body to a scratch repo at

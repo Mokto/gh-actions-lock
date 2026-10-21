@@ -80,6 +80,10 @@ type Finding struct {
 	// Reresolve asks planning to drop this finding's recorded dependency
 	// from the inventory and resolve it afresh (see PrunesDependency).
 	Reresolve bool
+	// Retryable marks a check that ended without an answer from GitHub (an
+	// outage or rate limit): nothing is known to be wrong, but the entry is
+	// unverified, so it blocks until a re-run succeeds.
+	Retryable bool
 }
 
 // InventoryEntry describes a single dependency with context.

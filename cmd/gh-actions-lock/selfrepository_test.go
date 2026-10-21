@@ -28,6 +28,9 @@ func (t *requestCountingTransport) RoundTrip(req *http.Request) (*http.Response,
 	if t.parity && httpmock.GraphQL(`commit: object\(oid`)(req) {
 		return parityOK(req)
 	}
+	if t.parity && lockedManifestRead(req) {
+		return actionFiles(nil, nil)(req)
+	}
 	if t.tags != nil && strings.HasSuffix(req.URL.Path, "/releases") {
 		return httpmock.JSONResponse([]any{})(req)
 	}

@@ -1,6 +1,7 @@
 package ghapi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,9 @@ type ActionFileRequest struct {
 	Repo  string
 	Path  string // sub-action path within the repo, may be empty
 	Ref   string // tag, branch, or SHA
+	// Dockerfile also looks for the Dockerfile the runner falls back to
+	// when there is no action.yml or action.yaml.
+	Dockerfile bool
 }
 
 // NWO returns "Owner/Repo".
@@ -38,7 +42,9 @@ type ActionFileResult struct {
 	Ref         string
 	CommitOID   string
 	ActionYML   string
-	Err         error
+	// Dockerfile reports a Dockerfile at Path, when the request asked.
+	Dockerfile bool
+	Err        error
 }
 
 // repoResponse is the raw GraphQL response shape for a single repository alias.
@@ -56,6 +62,8 @@ type repoResponse struct {
 				Text string `json:"text"`
 			} `json:"object"`
 		} `json:"fileYaml"`
+		Dockerfile      *struct{} `json:"dockerfile"`
+		DockerfileLower *struct{} `json:"dockerfileLower"`
 	} `json:"object"`
 }
 
@@ -148,7 +156,7 @@ func (c *Client) resolveActionFilesOnce(ctx context.Context, refs []ActionFileRe
 	query, vars, aliasMap := buildActionFileQuery(refs)
 
 	var data map[string]json.RawMessage
-	err := c.graphql.DoWithContext(profile.WithGraphQLLabel(ctx, "resolve"), query, vars, &data)
+	err := c.graphql.DoWithContext(profile.WithGraphQLLabel(ctx, cmp.Or(profile.GraphQLLabel(ctx), "resolve")), query, vars, &data)
 	var gqlErr *api.GraphQLError
 	if err != nil {
 		if !errors.As(err, &gqlErr) {
@@ -236,6 +244,13 @@ func buildActionFileQuery(refs []ActionFileRequest) (string, map[string]any, map
 		body.WriteString(" ... on Commit { oid")
 		fmt.Fprintf(&body, " file: file(path: $%s) { object { ... on Blob { text } } }", ymlVar)
 		fmt.Fprintf(&body, " fileYaml: file(path: $%s) { object { ... on Blob { text } } }", yamlVar)
+		if ref.Dockerfile {
+			dir := strings.TrimSuffix(ymlPath, "action.yml")
+			vars[fmt.Sprintf("docker%d", i)] = dir + "Dockerfile"
+			vars[fmt.Sprintf("dockerLower%d", i)] = dir + "dockerfile"
+			fmt.Fprintf(&decl, ", $docker%d: String!, $dockerLower%d: String!", i, i)
+			fmt.Fprintf(&body, " dockerfile: file(path: $docker%d) { oid } dockerfileLower: file(path: $dockerLower%d) { oid }", i, i)
+		}
 		body.WriteString(" }")
 		body.WriteString(" }")
 		body.WriteString(" }")
@@ -286,7 +301,7 @@ func parseActionFileResponse(data map[string]json.RawMessage, refs []ActionFileR
 					// Both metadata spellings are queried; either may be absent.
 					// Reusable workflows can have neither.
 					if item.Type == "NOT_FOUND" && len(item.Path) == 3 && item.Path[1] == "object" &&
-						(item.Path[2] == "file" || item.Path[2] == "fileYaml") {
+						(item.Path[2] == "file" || item.Path[2] == "fileYaml" || item.Path[2] == "dockerfile" || item.Path[2] == "dockerfileLower") {
 						continue
 					}
 					results[idx].Err = fmt.Errorf("%s", item.Message)
@@ -333,6 +348,7 @@ func parseActionFileResponse(data map[string]json.RawMessage, refs []ActionFileR
 		} else if repo.Object.FileYAML != nil && repo.Object.FileYAML.Object != nil {
 			results[idx].ActionYML = repo.Object.FileYAML.Object.Text
 		}
+		results[idx].Dockerfile = repo.Object.Dockerfile != nil || repo.Object.DockerfileLower != nil
 	}
 
 	return results

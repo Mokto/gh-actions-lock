@@ -12,6 +12,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/pinpool"
+	"github.com/github/gh-actions-lock/internal/profile"
 	"github.com/github/gh-actions-lock/internal/uses"
 )
 
@@ -71,9 +72,56 @@ func (e *MalformedNestedRefError) Error() string {
 // resolver; the sibling detection here is a plain prefix check.
 const selfRepositoryPrefix = "$/"
 
-type resolutionRequest struct {
-	ref      parserlock.ActionRef
-	fetchRef string
+// NestedUse is an action to read: Ref as written, read at FetchRef when set.
+type NestedUse struct {
+	Ref      parserlock.ActionRef
+	FetchRef string
+}
+
+// CompositeUses returns the actions a composite's manifest uses, and the
+// uses that must block rather than be skipped. parent is the composite at
+// its commit. A manifest that isn't a composite uses nothing.
+func CompositeUses(parent dep.Dependency, yml string) ([]NestedUse, error) {
+	meta, err := parserlock.ParseActionMeta(yml)
+	if err != nil || meta.Execution != parserlock.ExecComposite {
+		return nil, nil
+	}
+	parentKey := parent.Key()
+	var out []NestedUse
+	var errs error
+	for _, rawUse := range meta.NestedUses {
+		use := strings.TrimSpace(rawUse)
+		if strings.HasPrefix(use, "./") {
+			errs = errors.Join(errs, &CompositeLocalPathError{Parent: parentKey, LocalPath: use})
+			continue
+		}
+		if strings.HasPrefix(use, selfRepositoryPrefix) {
+			if strings.Contains(use, "@") {
+				errs = errors.Join(errs, &InvalidSelfRepositoryRefError{Parent: parentKey, Ref: use})
+				continue
+			}
+			// `$/…` inside a composite is a same-tarball self repository reference:
+			// it resolves within THIS composite's own repo at its own
+			// resolved SHA (the parent repo, not the workflow-run repo).
+			// Retain the logical ref for lockfile identity while fetching
+			// the sibling action file from the immutable parent commit.
+			owner, repo := parent.OwnerRepo()
+			out = append(out, NestedUse{
+				Ref:      parserlock.ActionRef{Owner: owner, Repo: repo, Path: strings.TrimPrefix(use, selfRepositoryPrefix), Ref: parent.Ref},
+				FetchRef: parent.SHA,
+			})
+			continue
+		}
+		c := uses.Classify(use, uses.Step)
+		if c.Kind == uses.Invalid {
+			errs = errors.Join(errs, &MalformedNestedRefError{Parent: parentKey, Ref: use})
+		}
+		if c.Kind != uses.Action || c.Action.Owner == "" {
+			continue
+		}
+		out = append(out, NestedUse{Ref: c.Action})
+	}
+	return out, errs
 }
 
 // LatestRef returns the highest stable tag for an action repository.
@@ -123,9 +171,9 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 	var allDeps []dep.Dependency
 	parentMap := make(dep.ParentMap)
 
-	pending := make([]resolutionRequest, len(refs))
+	pending := make([]NestedUse, len(refs))
 	for i, ref := range refs {
-		pending[i] = resolutionRequest{ref: ref}
+		pending[i] = NestedUse{Ref: ref}
 	}
 	depth := 0
 
@@ -167,9 +215,9 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 			return allDeps, parentMap, fmt.Errorf("composite action recursion exceeded max depth %d", r.MaxRecursionDepth)
 		}
 
-		var toResolve []resolutionRequest
+		var toResolve []NestedUse
 		for _, request := range pending {
-			key := cacheKey(request.ref)
+			key := cacheKey(request.Ref)
 			if !seen[key] {
 				seen[key] = true
 				toResolve = append(toResolve, request)
@@ -205,17 +253,15 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 			resolveErr = errors.Join(resolveErr, err)
 		}
 
-		var nextPending []resolutionRequest
+		var nextPending []NestedUse
 		for i := range deps {
 			yml := actionYMLs[i]
 			if yml == "" {
 				continue
 			}
 
-			meta, parseErr := parserlock.ParseActionMeta(yml)
-			if parseErr != nil || meta.Execution != parserlock.ExecComposite {
-				continue
-			}
+			nested, err := CompositeUses(deps[i], yml)
+			resolveErr = errors.Join(resolveErr, err)
 
 			// parentMap is keyed at runner-download granularity (NWO@Ref =
 			// Dependency.Key()). BFS traversal above is path-aware via
@@ -223,53 +269,8 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 			// but the recorded edges flatten subpaths back into one node
 			// per tarball — same model the runner uses.
 			parentKey := deps[i].Key()
-			for _, rawUse := range meta.NestedUses {
-				use := strings.TrimSpace(rawUse)
-				if strings.HasPrefix(use, "./") {
-					resolveErr = errors.Join(resolveErr, &CompositeLocalPathError{
-						Parent:    parentKey,
-						LocalPath: use,
-					})
-					continue
-				}
-				var request resolutionRequest
-				if strings.HasPrefix(use, selfRepositoryPrefix) {
-					if strings.Contains(use, "@") {
-						resolveErr = errors.Join(resolveErr, &InvalidSelfRepositoryRefError{
-							Parent: parentKey,
-							Ref:    use,
-						})
-						continue
-					}
-					// `$/…` inside a composite is a same-tarball self repository reference:
-					// it resolves within THIS composite's own repo at its own
-					// resolved SHA (the parent repo, not the workflow-run repo).
-					// Retain the logical ref for lockfile identity while fetching
-					// the sibling action file from the immutable parent commit.
-					owner, repo := deps[i].OwnerRepo()
-					request = resolutionRequest{
-						ref: parserlock.ActionRef{
-							Owner: owner,
-							Repo:  repo,
-							Path:  strings.TrimPrefix(use, selfRepositoryPrefix),
-							Ref:   deps[i].Ref,
-						},
-						fetchRef: deps[i].SHA,
-					}
-				} else {
-					c := uses.Classify(use, uses.Step)
-					if c.Kind == uses.Invalid {
-						resolveErr = errors.Join(resolveErr, &MalformedNestedRefError{Parent: parentKey, Ref: use})
-					}
-					if c.Kind != uses.Action {
-						continue
-					}
-					request = resolutionRequest{ref: c.Action}
-				}
-				actionRef := request.ref
-				if actionRef.Owner == "" {
-					continue
-				}
+			for _, request := range nested {
+				actionRef := request.Ref
 				childKey := actionRef.NWO() + "@" + actionRef.Ref
 				// Same-tarball edge: a composite whose `uses:` names another
 				// subpath in its own repo+ref. At runner-download granularity
@@ -316,7 +317,7 @@ func (r *Resolver) ResolveAllRecursive(ctx context.Context, refs []parserlock.Ac
 // resolveDone and resolveTotal are rolling counters owned by ResolveAllRecursive
 // that span every BFS depth, so a single non-jumping progress bar can cover
 // direct + transitive resolution as one phase.
-func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []resolutionRequest, depth int, resolveDone, resolveTotal *atomic.Int64) ([]dep.Dependency, []string, error) {
+func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []NestedUse, depth int, resolveDone, resolveTotal *atomic.Int64) ([]dep.Dependency, []string, error) {
 	type resolveResult struct {
 		dep dep.Dependency
 		yml string
@@ -326,7 +327,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 
 	var uncachedIdx []int
 	for i, request := range refs {
-		if entry, ok := r.cache.Get(cacheKey(request.ref)); ok {
+		if entry, ok := r.cache.Get(cacheKey(request.Ref)); ok {
 			results[i] = resolveResult{dep: entry.dep, yml: entry.actionYML, ok: true}
 		} else {
 			uncachedIdx = append(uncachedIdx, i)
@@ -382,14 +383,14 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 		}
 		for j, idx := range span {
 			request := refs[idx]
-			fetchRef := request.fetchRef
+			fetchRef := request.FetchRef
 			if fetchRef == "" {
-				fetchRef = request.ref.Ref
+				fetchRef = request.Ref.Ref
 			}
 			b.idxs[j] = idx
 			b.reqs[j] = ghapi.ActionFileRequest{
-				Owner: request.ref.Owner, Repo: request.ref.Repo,
-				Path: request.ref.Path, Ref: fetchRef,
+				Owner: request.Ref.Owner, Repo: request.Ref.Repo,
+				Path: request.Ref.Path, Ref: fetchRef,
 			}
 		}
 		batches = append(batches, b)
@@ -404,7 +405,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 	poolErr := pinpool.RunTyped(r.Pool, ctx, "",
 		batches,
 		func(b actionBatch) string {
-			head := refs[b.idxs[0]].ref
+			head := refs[b.idxs[0]].Ref
 			label := "resolving " + head.NWO() + "@" + head.Ref
 			if len(b.idxs) > 1 {
 				label = fmt.Sprintf("%s (+%d more)", label, len(b.idxs)-1)
@@ -415,7 +416,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 			res := r.gh.ResolveActionFiles(ctx, b.reqs)
 			var errs []error
 			for j, idx := range b.idxs {
-				ref := refs[idx].ref
+				ref := refs[idx].Ref
 				if j < len(res) && res[j].Err == nil {
 					d := dep.Dependency{
 						Hostname: res[j].Hostname,
@@ -450,6 +451,26 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []reso
 
 	deps, ymls := flatten()
 	return deps, ymls, poolErr
+}
+
+// ReadManifests reads action.yml at each request's Ref, batched as
+// resolution batches them. Results align with reqs and are not cached.
+func (r *Resolver) ReadManifests(ctx context.Context, reqs []ghapi.ActionFileRequest) []ghapi.ActionFileResult {
+	out := make([]ghapi.ActionFileResult, len(reqs))
+	ctx = profile.WithGraphQLLabel(ctx, "manifests")
+	var starts []int
+	for s := 0; s < len(reqs); s += batchActionFileSize {
+		starts = append(starts, s)
+	}
+	_ = pinpool.RunTyped(r.Pool, ctx, "", starts,
+		func(int) string { return "reading locked manifests" },
+		func(ctx context.Context, _ int, s int) error {
+			end := min(s+batchActionFileSize, len(reqs))
+			copy(out[s:end], r.gh.ResolveActionFiles(ctx, reqs[s:end]))
+			return nil
+		},
+	)
+	return out
 }
 
 // selectLatestTag returns the highest semver tag from a list of tag names.
