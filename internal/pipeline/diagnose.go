@@ -71,6 +71,9 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 	if r != nil {
 		var resolveErr error
 		liveDeps, resolvedParents, resolveErr = r.ResolveAllRecursive(ctx, pw.Refs)
+		for _, img := range r.ContainerImages(pw.Refs) {
+			checks.AddContainerImage(&wr, img)
+		}
 		if resolveErr != nil {
 			blockingResolverError := false
 			if resolve.IsCompositeLocalPath(resolveErr) {
@@ -224,7 +227,7 @@ func selfRepositoryFinding(pw checks.ParsedWorkflow) checks.Finding {
 
 // precheckWorkflow handles terminal preconditions (load error, local-path
 // actions, non-hosted runner, no refs, invalid deps). It returns true when
-// one fired; otherwise the report is seeded with ActionRefs/ParseWarnings.
+// one fired; otherwise the report is seeded with ActionRefs and images.
 func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.WorkflowReport, bool) {
 	wr := checks.WorkflowReport{Path: pw.Path}
 
@@ -251,7 +254,9 @@ func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.W
 	wr.SHASpellings = pw.SHASpellings
 	wr.SelfActionFiles = pw.SelfActionFiles
 	wr.SelfActionRefs = pw.SelfActionRefs
-	wr.ParseWarnings = pw.ParseWarnings
+	for _, img := range pw.Images {
+		checks.AddContainerImage(&wr, img)
+	}
 
 	hasTerminalFinding := false
 	if len(pw.SelfRepositoryRefErrs) > 0 {
@@ -382,7 +387,7 @@ func hasIssues(ff []checks.Finding) bool {
 		if f.Category.IsInconclusive() {
 			continue
 		}
-		if f.Category != checks.Valid && f.Category != checks.RunOnly && f.Category != checks.LocalAction && f.Severity == checks.SeverityWarning {
+		if f.Category != checks.Valid && f.Category != checks.RunOnly && f.Category != checks.LocalAction && f.Category != checks.ContainerImage && f.Severity == checks.SeverityWarning {
 			return true
 		}
 	}

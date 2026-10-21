@@ -3,6 +3,7 @@ package format
 import (
 	"cmp"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -13,7 +14,7 @@ import (
 
 // PresentResults renders human-readable output from a check report.
 //
-// Warning surfaces (RepoFindings, ParseWarnings, not-pinned, sha-as-ref,
+// Warning surfaces (RepoFindings, container images, not-pinned, sha-as-ref,
 // ref-moved, inconclusive) use the Term* family so they reach the
 // terminal even when check.go has routed the narration log to
 // io.Discard. The error block and the "All N valid" success line still
@@ -459,9 +460,6 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 				}
 			}
 		}
-		for _, pw := range wr.ParseWarnings {
-			out.TermWarn("%s: %s", wr.Path, pw)
-		}
 	}
 
 	// Triage warnings into buckets.
@@ -538,6 +536,43 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 		}
 	}
 	renderRedirects(out, report, willRemediate)
+	renderContainerImages(out, report)
+}
+
+// renderContainerImages prints one warning per unpinned image, listing
+// each workflow that uses it and where.
+func renderContainerImages(out *ui.UI, report *checks.Report) {
+	var order []string
+	byImage := map[string][]checks.Finding{}
+	for _, wr := range report.Workflows {
+		for _, f := range wr.Findings {
+			if f.Category != checks.ContainerImage {
+				continue
+			}
+			head := checks.ImageHeadline(f.ImageUses[0])
+			if _, ok := byImage[head]; !ok {
+				order = append(order, head)
+			}
+			byImage[head] = append(byImage[head], f)
+		}
+	}
+	for _, head := range order {
+		out.TermWarn("%s", head)
+		var fixes []string
+		for _, f := range byImage[head] {
+			var where []string
+			for _, u := range f.ImageUses {
+				where = append(where, u.Where)
+			}
+			out.TermDetail("↳ used by %s: %s", f.WorkflowPath, strings.Join(where, ", "))
+			if !slices.Contains(fixes, f.Remediation) {
+				fixes = append(fixes, f.Remediation)
+			}
+		}
+		for _, fix := range fixes {
+			out.TermDetail("↳ %s", fix)
+		}
+	}
 }
 
 // renderRedirects lists pins whose repository was renamed or transferred

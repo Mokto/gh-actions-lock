@@ -13,6 +13,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ui"
+	"github.com/github/gh-actions-lock/internal/uses"
 )
 
 // newTestUI returns a UI whose narration log sinks to io.Discard, mirroring
@@ -307,26 +308,21 @@ func TestPresentResults_TransitiveSHAAsRefStillSuppressed(t *testing.T) {
 	}
 }
 
-// TestPresentResults_ParseWarningsSurface guards the per-workflow
-// ParseWarnings rendering: malformed `uses:` lines must reach the
-// terminal, not just JSON.
-func TestPresentResults_ParseWarningsSurface(t *testing.T) {
+func TestPresentResults_ContainerImagesGroupedByImage(t *testing.T) {
 	u, buf := newTestUI()
-	report := &checks.Report{
-		Workflows: []checks.WorkflowReport{{
-			Path:          ".github/workflows/a.yml",
-			ParseWarnings: []string{"malformed uses: at line 12"},
-		}},
-	}
-	PresentResults(u, report, true, false)
+	a := checks.WorkflowReport{Path: ".github/workflows/a.yml"}
+	b := checks.WorkflowReport{Path: ".github/workflows/b.yml"}
+	checks.AddContainerImage(&a, uses.Image{Name: "alpine:3", Where: "job build"})
+	checks.AddContainerImage(&a, uses.Image{Name: "alpine:3", Where: "job build container"})
+	checks.AddContainerImage(&b, uses.Image{Name: "alpine:3", Where: "o/a@v1", Action: "o/a@v1"})
+	PresentResults(u, &checks.Report{Workflows: []checks.WorkflowReport{a, b}}, true, false)
 
 	got := buf.String()
-	if !strings.Contains(got, "malformed uses:") {
-		t.Errorf("ParseWarnings missing from terminal output:\n%s", got)
-	}
-	if !strings.Contains(got, ".github/workflows/a.yml") {
-		t.Errorf("ParseWarnings should be prefixed with workflow path:\n%s", got)
-	}
+	assert.Equal(t, 1, strings.Count(got, "container image alpine:3 is not pinned by digest"))
+	assert.Contains(t, got, "used by .github/workflows/a.yml: job build, job build container")
+	assert.Contains(t, got, "used by .github/workflows/b.yml: o/a@v1")
+	assert.Contains(t, got, "pin it as alpine:3@sha256:")
+	assert.Contains(t, got, "only the maintainer of o/a@v1")
 }
 
 // TestPresentResults_ExcludeCategoriesSkipsImpostor verifies that excluded

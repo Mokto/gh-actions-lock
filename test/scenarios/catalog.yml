@@ -464,7 +464,7 @@ scenarios:
 
   - name: docker_uses_warns
     category: workflow_parsing
-    description: "Real binary warns that docker:// image tags are mutable and outside lockfile coverage"
+    description: "Real binary warns that a docker:// image pulled by tag is outside lockfile coverage"
     needs_stub: true
     tags: [stub]
     fixtures:
@@ -475,7 +475,7 @@ scenarios:
     expect:
       exit: 0
       output_contains:
-        - "docker://alpine:3.18 is not covered by the actions lockfile; container image tags are mutable"
+        - "container image alpine:3.18 is not pinned by digest"
 
   - name: local_action_skipped
     category: workflow_parsing

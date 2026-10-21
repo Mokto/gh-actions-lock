@@ -178,6 +178,8 @@ Finally, locked actions must have a branch that the commit being locked exists w
 There are currently eligibility limitations for workflows that can be onboarded to lockfiles:
 - Workflows in the lockfile cannot use local-path actions, these will be skipped for onboarding. This is also a short-term gap.
 
+The lockfile pins action commits, not the container images that workflows and Docker actions pull or build. Any image not pinned by `@sha256:` digest (a `docker://` step, a job `container:` or `services:` image, or a Docker action's `runs.image`) is reported as a non-blocking `container-image` warning. This includes images chosen by a `${{ }}` expression and Docker actions built from a Dockerfile, whose base image the lockfile doesn't cover.
+
 ## License
 
 This project is licensed under the terms of the MIT open source license. See [LICENSE](./LICENSE) for the full terms.

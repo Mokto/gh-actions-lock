@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -77,21 +78,6 @@ func usesExpressionErr(values []string) error {
 	return fmt.Errorf("`uses:` can't contain an expression: %s", strings.Join(values, ", "))
 }
 
-func appendDockerWarning(warnings *[]string, seen map[string]bool, value string) bool {
-	if !strings.HasPrefix(value, "docker://") {
-		return false
-	}
-	if seen[value] {
-		return true
-	}
-	seen[value] = true
-	if strings.Contains(strings.TrimPrefix(value, "docker://"), "@") {
-		return true
-	}
-	*warnings = append(*warnings, fmt.Sprintf("%s is not covered by the actions lockfile; container image tags are mutable", value))
-	return true
-}
-
 // RefScan is the classified result of walking a workflow's `uses:` values.
 type RefScan struct {
 	// Refs are remote repository action references (owner/repo[/path]@ref).
@@ -111,8 +97,6 @@ type RefScan struct {
 	// MalformedRefs are the errors for `uses:` values the Actions backend
 	// rejects (uses.Invalid). They are never skipped.
 	MalformedRefs []string
-	// Warnings are non-fatal parse notes (e.g. expression-based uses:).
-	Warnings []string
 }
 
 // ExtractActionRefs finds and classifies all uses: references in the workflow.
@@ -122,7 +106,6 @@ func (f *File) ExtractActionRefs() RefScan {
 	seenLocal := make(map[string]bool)
 	seenSelf := make(map[string]bool)
 	seenSelfAction := make(map[string]bool)
-	seenDocker := make(map[string]bool)
 
 	walkUses(&f.root, func(value string, stepLevel bool) {
 		value = strings.TrimSpace(value)
@@ -156,9 +139,6 @@ func (f *File) ExtractActionRefs() RefScan {
 				seenLocal[value] = true
 				scan.LocalPaths = append(scan.LocalPaths, value)
 			}
-			return
-		}
-		if appendDockerWarning(&scan.Warnings, seenDocker, value) {
 			return
 		}
 		pos := uses.Job
@@ -195,7 +175,8 @@ type SelfRepositoryActionScan struct {
 	// order. Refs in these files are rewritable source, unlike `$/…` itself.
 	ActionFiles []string
 	Errors      []string
-	Warnings    []string
+	// Images are the mutable `docker://` steps in the visited actions.
+	Images []uses.Image
 }
 
 // ScanSelfRepositoryActions recursively reads in-repo actions reached through
@@ -232,7 +213,6 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 	seenSelf := make(map[string]bool)
 	seenInvalid := make(map[string]bool)
 	seenLocal := make(map[string]bool)
-	seenDocker := make(map[string]bool)
 
 	for len(pending) > 0 {
 		current := pending[0]
@@ -286,7 +266,12 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 					seenLocal[use] = true
 					scan.LocalPaths = append(scan.LocalPaths, use)
 				}
-			case appendDockerWarning(&scan.Warnings, seenDocker, use):
+			case strings.HasPrefix(use, "docker://"):
+				img, ok := uses.ClassifyImage(use)
+				img.Where = current.ref
+				if ok && !slices.Contains(scan.Images, img) {
+					scan.Images = append(scan.Images, img)
+				}
 			default:
 				switch c := uses.Classify(use, uses.Step); c.Kind {
 				case uses.Invalid:

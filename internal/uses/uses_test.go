@@ -47,3 +47,26 @@ func TestError(t *testing.T) {
 	assert.EqualError(t, Classify("octo/action@rel@1", Step).Err(),
 		"uses: octo/action@rel@1 has more than one @; the Actions backend expects {owner}/{repo}[/path]@ref")
 }
+
+func TestClassifyImage(t *testing.T) {
+	tests := []struct {
+		raw      string
+		name     string
+		kind     ImageKind
+		unpinned bool
+	}{
+		{"docker://alpine:3.18", "alpine:3.18", ImageTag, true},
+		{"docker://alpine", "alpine", ImageTag, true},
+		{"ghcr.io/o/img:1", "ghcr.io/o/img:1", ImageTag, true},
+		{"${{ matrix.image }}", "${{ matrix.image }}", ImageExpression, true},
+		{"docker://alpine@sha256:abc", "alpine@sha256:abc", ImageTag, false},
+		{"redis:7@SHA256:abc", "redis:7@SHA256:abc", ImageTag, false},
+		{"docker://", "", ImageTag, false},
+	}
+	for _, tt := range tests {
+		img, unpinned := ClassifyImage(tt.raw)
+		assert.Equal(t, tt.name, img.Name, "%q", tt.raw)
+		assert.Equal(t, tt.kind, img.Kind, "%q", tt.raw)
+		assert.Equal(t, tt.unpinned, unpinned, "%q", tt.raw)
+	}
+}

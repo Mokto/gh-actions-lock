@@ -616,3 +616,56 @@ func TestRun_DanglingEdgeBlocksUntilRelock(t *testing.T) {
 	_, stderr, err = runCommandWithHTTP(t, reg, "--verify-local", path)
 	require.NoError(t, err, stderr)
 }
+
+// TestRun_ContainerImages: images the workflow or its actions run by tag
+// are one warning each in JSON, whether the action was locked or resolved
+// this run, and leave the run valid.
+func TestRun_ContainerImages(t *testing.T) {
+	manifests := map[string]string{
+		"acme/dock":  "runs:\n  using: docker\n  image: docker://ghcr.io/acme/dock:1\n",
+		"acme/comp":  composite("docker://alpine:3", "docker://alpine@sha256:abc"),
+		"acme/build": "runs:\n  using: docker\n  image: Dockerfile\n",
+	}
+	workflow := "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    container: alpine:3\n    services:\n      db:\n        image: ${{ matrix.image }}\n    steps:\n      - uses: acme/dock@v1\n      - uses: acme/comp@v1\n      - uses: acme/build@v1\n      - uses: docker://alpine:3\n"
+	for name, register := range map[string]func(*httpmock.Registry){
+		"locked": func(reg *httpmock.Registry) { registerLockedManifests(reg, manifests) },
+		"resolved": func(reg *httpmock.Registry) {
+			registerLive(reg, manifests, map[string]string{"acme/dock": entrySHA(1, ""), "acme/comp": entrySHA(2, ""), "acme/build": entrySHA(3, "")})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			entries := map[string][]string{"acme/build@v1": nil, "acme/comp@v1": nil, "acme/dock@v1": nil}
+			if name == "resolved" {
+				entries = map[string][]string{"acme/other@v1": nil}
+			}
+			writeManifestRepo(t, map[string][]string{"ci.yml": slices.Sorted(maps.Keys(entries))}, entries)
+			require.NoError(t, os.WriteFile(".github/workflows/ci.yml", []byte(workflow), 0o600))
+			reg := &httpmock.Registry{}
+			register(reg)
+
+			p, err := runParity(t, reg, "--no-fix")
+			if name == "resolved" {
+				require.ErrorIs(t, err, errSilent, "the new pins aren't locked yet")
+			} else {
+				require.NoError(t, err)
+				assert.True(t, p.Valid, "%+v", p.Findings)
+			}
+			byDetail := map[string]format.Finding{}
+			for _, f := range p.Findings {
+				if f.Category == "container-image" {
+					byDetail[f.Detail] = f
+				}
+			}
+			assert.Len(t, byDetail, 4, "%+v", p.Findings)
+			alpine := byDetail["container image alpine:3 is not pinned by digest; used by job test, job test container, acme/comp@v1"]
+			assert.Equal(t, "warning", alpine.Severity)
+			assert.Empty(t, alpine.RequiredBy)
+			dock := byDetail["container image ghcr.io/acme/dock:1 is not pinned by digest; used by acme/dock@v1"]
+			assert.Equal(t, "acme/dock@v1", dock.RequiredBy)
+			expr := byDetail["container image `${{ matrix.image }}` is chosen at runtime, so the lockfile can't check it; used by job test service db"]
+			assert.Contains(t, expr.Remediation, "pin each value of the matrix or input by digest")
+			build := byDetail["acme/build@v1 builds its container from Dockerfile; the lockfile doesn't cover its base image; used by acme/build@v1"]
+			assert.Equal(t, "acme/build@v1", build.RequiredBy)
+		})
+	}
+}

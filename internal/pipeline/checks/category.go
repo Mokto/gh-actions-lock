@@ -111,6 +111,9 @@ const (
 	// commit doesn't match its lockfile entry: it uses an action the entry
 	// doesn't record, or it is missing. A plain run doesn't repair it.
 	IncompleteLockfile Category = "incomplete-lockfile"
+	// ContainerImage is a non-blocking warning: a workflow runs a container
+	// image by tag, which the lockfile can't pin. It never changes validity.
+	ContainerImage Category = "container-image"
 )
 
 // IsInconclusive reports whether c represents a diagnostic that
