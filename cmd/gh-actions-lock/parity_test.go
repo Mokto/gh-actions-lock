@@ -314,7 +314,6 @@ func TestParity_MovedExactTagFollowsHistory(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := &httpmock.Registry{}
-			registerLockedManifests(reg, nil)
 			defer reg.Verify(t)
 			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
 				"data": map[string]any{"a0": map[string]any{
@@ -495,7 +494,6 @@ func TestParity_UnchangedRerunRequestCount(t *testing.T) {
 func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 	reg := &httpmock.Registry{}
-	registerLockedManifests(reg, nil)
 	registerLockedManifestsREST(reg)
 	defer reg.Verify(t)
 	// Anonymous REST calls use http.DefaultClient.
@@ -826,7 +824,6 @@ jobs:
 func TestParity_DependabotProxyKeepsRenamedName(t *testing.T) {
 	t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 	reg := &httpmock.Registry{}
-	registerLockedManifests(reg, nil)
 	registerLockedManifestsREST(reg)
 	reg.Register(httpmock.REST("GET", `^/repos/krzema12/github-actions-typing$`), httpmock.JSONResponse(map[string]any{
 		"full_name": "typesafegithub/github-actions-typing", "id": 1, "owner": map[string]any{"id": 42},
@@ -904,7 +901,6 @@ func TestParity_VerifyMutableRefHistory(t *testing.T) {
 		for _, proxy := range []bool{false, true} {
 			t.Run(tt.name+"/"+map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
 				reg := &httpmock.Registry{}
-				registerLockedManifests(reg, nil)
 				registerLockedManifestsREST(reg)
 				if proxy {
 					t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
@@ -971,7 +967,6 @@ jobs:
 	for _, proxy := range []bool{false, true} {
 		t.Run("plain run makes one compare call/"+map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
 			reg := &httpmock.Registry{}
-			registerLockedManifests(reg, nil)
 			registerLockedManifestsREST(reg)
 			if proxy {
 				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
@@ -1022,7 +1017,6 @@ func TestParity_VerifyMissingMutableRefBlocks(t *testing.T) {
 	for _, proxy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
 			reg := &httpmock.Registry{}
-			registerLockedManifests(reg, nil)
 			if proxy {
 				t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
 				useDefaultTransport(t, reg)
@@ -1103,7 +1097,6 @@ func TestParity_DefaultAndNoFixCheckMutableHistory(t *testing.T) {
 		for mode, args := range modes {
 			t.Run(tt.name+"/"+mode, func(t *testing.T) {
 				reg := &httpmock.Registry{}
-				registerLockedManifests(reg, nil)
 				reg.Register(httpmock.GraphQL(`head: object\(expression`), httpmock.JSONResponse(map[string]any{
 					"data": map[string]any{"a0": map[string]any{
 						"nameWithOwner": "actions/checkout",
@@ -1145,7 +1138,6 @@ func TestParity_VerifyRefCaseSensitive(t *testing.T) {
 	for _, proxy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "graphql", true: "dependabot proxy"}[proxy], func(t *testing.T) {
 			reg := &httpmock.Registry{}
-			registerLockedManifests(reg, nil)
 			registerLockedManifestsREST(reg)
 			var heads []string
 			if proxy {

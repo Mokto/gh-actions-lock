@@ -1,6 +1,7 @@
 package ghapi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -148,7 +149,7 @@ func (c *Client) resolveActionFilesOnce(ctx context.Context, refs []ActionFileRe
 	query, vars, aliasMap := buildActionFileQuery(refs)
 
 	var data map[string]json.RawMessage
-	err := c.graphql.DoWithContext(profile.WithGraphQLLabel(ctx, "resolve"), query, vars, &data)
+	err := c.graphql.DoWithContext(profile.WithGraphQLLabel(ctx, cmp.Or(profile.GraphQLLabel(ctx), "resolve")), query, vars, &data)
 	var gqlErr *api.GraphQLError
 	if err != nil {
 		if !errors.As(err, &gqlErr) {

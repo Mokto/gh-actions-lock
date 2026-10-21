@@ -189,10 +189,11 @@ func manifestFindings(path string, n manifestNode, entry parserlock.Action, rd *
 	}
 	switch {
 	case rd.err != nil:
-		f.Category, f.Severity, f.Confidence = checks.ReachabilityUnknown, checks.SeverityWarning, checks.ConfidenceLow
+		// Unverified dependencies block until a re-run reads the manifest.
+		f.Category, f.Confidence, f.Retryable = checks.ReachabilityUnknown, checks.ConfidenceLow, true
 		f.Detail = fmt.Sprintf("could not read locked manifest %s at %s: %s", nodeName(n), short, verbose(rd.err))
 		f.TermDetail = fmt.Sprintf("could not read locked manifest %s at %s: %s", nodeName(n), short, briefCause(rd.err))
-		f.Remediation = "retry; its locked dependencies were not checked"
+		f.Remediation = "couldn't verify; re-run this check once the GitHub API is reachable"
 		return []checks.Finding{f}
 	case rd.missing:
 		f.Detail = fmt.Sprintf("%s has no action.yml or action.yaml at locked commit %s", nodeName(n), short)

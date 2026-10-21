@@ -18,6 +18,7 @@ import (
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/github/gh-actions-lock/internal/pinpool"
+	"github.com/github/gh-actions-lock/internal/profile"
 	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,7 +44,6 @@ func TestCheckCommand_HelpExplainsHostAndAuthOverrides(t *testing.T) {
 
 func TestCheckCommand_JSONWithHTTPMocks(t *testing.T) {
 	reg := &httpmock.Registry{}
-	registerLockedManifests(reg, nil)
 	defer reg.Verify(t)
 
 	reg.Register(
@@ -240,28 +240,10 @@ func registerParity(reg *httpmock.Registry) {
 	registerLockedManifests(reg, nil)
 }
 
-// lockedManifestRead matches an action-file query whose every ref is a full
-// SHA: the read of locked manifests at their commits.
+// lockedManifestRead matches a GraphQL read of locked manifests at their
+// commits.
 func lockedManifestRead(req *http.Request) bool {
-	if !httpmock.GraphQL(`file: file\(path`)(req) {
-		return false
-	}
-	var body struct {
-		Variables map[string]any `json:"variables"`
-	}
-	_ = json.NewDecoder(bytes.NewReader(mustReadBody(req))).Decode(&body)
-	n := 0
-	for k, v := range body.Variables {
-		if !strings.HasPrefix(k, "expr") {
-			continue
-		}
-		s, _ := v.(string)
-		if !parserlock.IsFullSha(strings.TrimSuffix(s, "^{commit}")) {
-			return false
-		}
-		n++
-	}
-	return n > 0
+	return req.Method == http.MethodPost && profile.GraphQLLabel(req.Context()) == "manifests"
 }
 
 // registerLockedManifests answers locked-manifest reads from manifests,
@@ -323,12 +305,6 @@ func registerLockedManifestsREST(reg *httpmock.Registry) {
 	})
 }
 
-func mustReadBody(req *http.Request) []byte {
-	b, _ := io.ReadAll(req.Body)
-	req.Body = io.NopCloser(bytes.NewReader(b))
-	return b
-}
-
 // parityOK answers a parity query as if every locked pin still matches.
 func parityOK(req *http.Request) (*http.Response, error) {
 	var body struct {
@@ -378,12 +354,18 @@ func parityOKWithIDs(ids map[string]int) httpmock.Responder {
 	}
 }
 
-// parityFallback answers parity queries the test did not stub as intact,
-// since fresh pins fail closed on an inconclusive check.
+// parityFallback answers parity queries and locked-manifest reads the test
+// did not stub as intact, since both fail closed when unanswered.
 type parityFallback struct{ rt http.RoundTripper }
 
 func (p parityFallback) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Body == nil || !httpmock.GraphQL(`commit: object\(oid`)(req) {
+	fallback := httpmock.Responder(parityOK)
+	switch {
+	case req.Body == nil:
+		return p.rt.RoundTrip(req)
+	case lockedManifestRead(req):
+		fallback = actionFiles(nil, nil)
+	case !httpmock.GraphQL(`commit: object\(oid`)(req):
 		return p.rt.RoundTrip(req)
 	}
 	body, err := io.ReadAll(req.Body)
@@ -395,7 +377,7 @@ func (p parityFallback) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	return parityOK(req)
+	return fallback(req)
 }
 
 // writeTempWorkflow writes a workflow YAML body to a scratch repo at
@@ -545,7 +527,6 @@ func runCommandWithHTTPContext(t *testing.T, ctx context.Context, rt http.RoundT
 // resolution and is reachable — validation passes with no errors or warnings.
 func TestCheck_Reachable(t *testing.T) {
 	reg := &httpmock.Registry{}
-	registerLockedManifests(reg, nil)
 	defer reg.Verify(t)
 
 	sha := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"

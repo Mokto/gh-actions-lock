@@ -68,7 +68,6 @@ updates:
 				}
 
 				reg := &httpmock.Registry{}
-				registerLockedManifests(reg, nil)
 				if mode.name != "verify-local" {
 					reg.Register(httpmock.GraphQLForRepo("example", "action"), httpmock.JSONResponse(map[string]any{
 						"data": map[string]any{"a0": testRepoResponse("example/action", sha, nodeActionYAML)},
@@ -447,9 +446,9 @@ func TestRun_LockedManifestsSeededRoot(t *testing.T) {
 	assert.Equal(t, string(before), string(after))
 }
 
-// TestRun_LockedManifestsInconclusive: a failed read warns, as an
-// inconclusive parity check does, except behind the Dependabot proxy,
-// which aborts so the update is retried.
+// TestRun_LockedManifestsInconclusive: a failed read leaves dependencies
+// unverified, so it blocks as a retryable error; behind the Dependabot
+// proxy it aborts so the update is retried.
 func TestRun_LockedManifestsInconclusive(t *testing.T) {
 	for _, proxy := range []bool{false, true} {
 		t.Run(fmt.Sprint("proxy=", proxy), func(t *testing.T) {
@@ -471,12 +470,14 @@ func TestRun_LockedManifestsInconclusive(t *testing.T) {
 				assert.Contains(t, err.Error()+stderr, "could not read locked manifest acme/comp@v1")
 				return
 			}
-			require.NoError(t, err, stderr)
+			require.ErrorIs(t, err, errSilent, stderr)
 			var p parityPayload
 			require.NoError(t, json.Unmarshal([]byte(stdout), &p), stdout)
+			assert.False(t, p.Valid)
 			require.Len(t, p.Findings, 1)
 			assert.Equal(t, "reachability-unknown", p.Findings[0].Category)
-			assert.Equal(t, "warning", p.Findings[0].Severity)
+			assert.Equal(t, "error", p.Findings[0].Severity)
+			assert.True(t, p.Findings[0].Retryable)
 		})
 	}
 }

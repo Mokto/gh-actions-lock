@@ -12,6 +12,7 @@ import (
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/pinpool"
+	"github.com/github/gh-actions-lock/internal/profile"
 	"github.com/github/gh-actions-lock/internal/uses"
 )
 
@@ -456,6 +457,7 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []Nest
 // resolution batches them. Results align with reqs and are not cached.
 func (r *Resolver) ReadManifests(ctx context.Context, reqs []ghapi.ActionFileRequest) []ghapi.ActionFileResult {
 	out := make([]ghapi.ActionFileResult, len(reqs))
+	ctx = profile.WithGraphQLLabel(ctx, "manifests")
 	var starts []int
 	for s := 0; s < len(reqs); s += batchActionFileSize {
 		starts = append(starts, s)
