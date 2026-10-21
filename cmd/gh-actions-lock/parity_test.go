@@ -334,10 +334,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.1
 `, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+			beforeWorkflow, err := os.ReadFile(path)
+			require.NoError(t, err)
+			lockPath := filepath.Join(".github", "workflows", "actions.lock")
+			beforeLock, err := os.ReadFile(lockPath)
+			require.NoError(t, err)
 			p, err := runParity(t, reg, append(tt.args, path)...)
+			afterWorkflow, readErr := os.ReadFile(path)
+			require.NoError(t, readErr)
+			assert.Equal(t, beforeWorkflow, afterWorkflow, "the workflow must stay unchanged")
 			lock := readTempLockfilePins(t)
 			assert.Contains(t, lock, "sha1-"+parityTestSHA)
 			assert.NotContains(t, lock, parityTestMoved, "the lock keeps its commit")
+			if tt.args[0] == "--verify" || tt.block {
+				afterLock, readErr := os.ReadFile(lockPath)
+				require.NoError(t, readErr)
+				assert.Equal(t, beforeLock, afterLock, "verification and blocked runs must not write the lockfile")
+			}
 			if tt.want == "" {
 				require.NoError(t, err)
 				assert.True(t, p.Valid)
@@ -382,26 +395,46 @@ jobs:
 		assert.Contains(t, stderr, "could not verify locked actions/checkout@9ddf35b71a48: GitHub returned 502 Bad Gateway")
 		assert.NotContains(t, stderr, "api.github.com", "the request URL stays out of the terminal")
 	})
-	t.Run("moved exact tag warns", func(t *testing.T) {
-		reg := &httpmock.Registry{}
-		defer reg.Verify(t)
-		reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
-			"data": map[string]any{"a0": map[string]any{
-				"nameWithOwner": "actions/checkout",
-				"commit":        map[string]any{"oid": parityTestSHA},
-				"tag":           map[string]any{"oid": parityTestMoved},
-				"tagRef":        map[string]any{"oid": parityTestMoved},
-			}},
-		}))
-		reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
-			httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": parityTestSHA}}))
-		path := writeTempWorkflow(t, workflow, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
-		_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
-		require.NoError(t, err, stderr)
-		assert.Contains(t, stderr, "actions/checkout@v4.2.1: tag v4.2.1 now points at bbbbbbbbbbbb; locked commit 9ddf35b71a48 is still in its history")
-		assert.Contains(t, stderr, "All 1 workflow valid")
-		assert.NotContains(t, stderr, "✗")
-	})
+	for _, tt := range []struct {
+		name   string
+		status string
+		base   string
+		block  bool
+	}{
+		{"moved exact tag warns", "ahead", parityTestSHA, false},
+		{"unreachable pin blocks", "diverged", "cccccccccccccccccccccccccccccccccccccccc", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+			reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+				"data": map[string]any{"a0": map[string]any{
+					"nameWithOwner": "actions/checkout",
+					"commit":        map[string]any{"oid": parityTestSHA},
+					"tag":           map[string]any{"oid": parityTestMoved},
+					"tagRef":        map[string]any{"oid": parityTestMoved},
+				}},
+			}))
+			reg.Register(httpmock.REST("GET", `repos/actions/checkout/compare/`),
+				httpmock.JSONResponse(map[string]any{"status": tt.status, "merge_base_commit": map[string]any{"sha": tt.base}}))
+			path := writeTempWorkflow(t, workflow, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
+			_, stderr, err := runCommandWithHTTP(t, reg, "--verify", path)
+			if tt.block {
+				require.ErrorIs(t, err, errSilent, stderr)
+				assert.Contains(t, stderr, "✗ Pinned commit not in upstream history actions/checkout@v4.2.1")
+				assert.NotContains(t, stderr, "Tag now points past locked commit")
+				assert.NotContains(t, stderr, "All 1 workflow valid")
+				return
+			}
+			require.NoError(t, err, stderr)
+			assert.Contains(t, stderr, "Tag now points past locked commit actions/checkout@v4.2.1")
+			assert.Contains(t, stderr, "tag v4.2.1 now points at bbbbbbbbbbbb; locked commit 9ddf35b71a48 is still in its history")
+			assert.Contains(t, stderr, "All 1 workflow valid")
+			assert.NotContains(t, stderr, "not in upstream history")
+			assert.NotContains(t, stderr, "--accept-moved")
+			assert.NotContains(t, stderr, "✗")
+		})
+	}
 }
 
 // TestParity_DefaultRunPrintsParityFinding: parity findings have no pin
