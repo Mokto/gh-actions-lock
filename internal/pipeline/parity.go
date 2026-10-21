@@ -159,6 +159,29 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			if k := byKey[pinKey(o.lp.Pin.NWO, o.lp.Pin.Ref)]; k != "" && r.Seeded(o.ref) {
 				roots[ri] = append(roots[ri], manifestNode{key: k, path: o.ref.Path})
 			}
+			// A fresh pin the lockfile already records at the same commit,
+			// such as a composite only an unselected workflow locks, keeps
+			// its recorded descendants when the write reuses its recorded
+			// `uses:`, so they are checked as recorded pins. A pin read live
+			// is checked by what it read; any recorded child kept only for
+			// an unwritten workflow isn't this write's (see
+			// lockfile.State.admitUses). Entry repair proves an own-SHA one.
+			if !o.reuses {
+				continue
+			}
+			key := lockfile.EntryKey(o.lp.Pin)
+			if recorded, ok := store.Entry(key); !ok || lockedSHA(recorded.Commit) != strings.ToLower(lockedSHA(o.lp.Action.Commit)) {
+				continue
+			}
+			for _, lp := range store.Descendants(key) {
+				if lockfile.RecordsOwnSHA(lp.Pin, lp.Action.Ref) {
+					continue
+				}
+				add(parityOwner{report: ri, pw: pw, lp: lp,
+					ref:    parserlock.ActionRef{Owner: lp.Pin.Owner, Repo: lp.Pin.Repo, Ref: lp.Pin.Ref},
+					heldBy: lockParent(lp),
+				})
+			}
 		}
 	}
 	if len(pins) == 0 {
@@ -296,6 +319,9 @@ type parityOwner struct {
 	lp     lockfile.LockedPin
 	ref    parserlock.ActionRef
 	fresh  bool
+	// reuses marks a fresh pin whose write keeps the lockfile's recorded
+	// `uses:`: one taken from the lockfile, or a composite not read whole.
+	reuses bool
 	// away marks a recorded entry planning replaces or removes: see
 	// plannedAway.
 	away bool
@@ -358,6 +384,20 @@ func heldBy(lp lockfile.LockedPin, composites []lockfile.LockedPin) string {
 func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(checks.ParsedWorkflow, map[string]bool) []parityOwner {
 	children := map[string][]dep.Dependency{}
 	byKey := map[string][]dep.Dependency{}
+	// As planning marks it: a parent with an edge to no resolved dep wasn't
+	// read whole and keeps its recorded edges.
+	depKeys := map[string]bool{}
+	for _, d := range resolved {
+		depKeys[d.Key()] = true
+	}
+	partial := map[string]bool{}
+	for child, ps := range parents {
+		if !depKeys[child] {
+			for _, p := range ps {
+				partial[p] = true
+			}
+		}
+	}
 	for _, d := range resolved {
 		if d.SHA == "" {
 			continue
@@ -384,7 +424,7 @@ func freshClosure(resolved []dep.Dependency, parents map[string][]string) func(c
 			}
 			seen[id] = true
 			owner, repo := d.OwnerRepo()
-			o := parityOwner{pw: pw, fresh: true, ref: ref, lp: lockfile.LockedPin{
+			o := parityOwner{pw: pw, fresh: true, reuses: d.FromLock || partial[d.Key()], ref: ref, lp: lockfile.LockedPin{
 				Pin:    parserlock.Pin{NWO: d.NWO, Owner: owner, Repo: repo, Ref: d.Ref},
 				Action: parserlock.Action{Ref: freshEntryRef(d), Commit: d.SHA},
 				Parent: parent,

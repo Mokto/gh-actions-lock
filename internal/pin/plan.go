@@ -421,8 +421,17 @@ func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, preservedDeps m
 		return out
 	}
 	for i, d := range deps {
+		if !parserlock.IsFullSha(d.Ref) {
+			continue
+		}
+		// A redirect names the repository by its new name; the entry may
+		// still be recorded under the name the workflow uses.
 		owner, repo := d.OwnerRepo()
-		if parserlock.IsFullSha(d.Ref) && opts.Store.RecordsOwnSHA(owner, repo, d.Ref) {
+		recorded := opts.Store.RecordsOwnSHA(owner, repo, d.Ref)
+		for _, orig := range d.OriginalRefs {
+			recorded = recorded || opts.Store.RecordsOwnSHA(orig.Owner, orig.Repo, d.Ref)
+		}
+		if recorded {
 			preservedDeps[i] = true
 			out[d.Key()] = true
 		}

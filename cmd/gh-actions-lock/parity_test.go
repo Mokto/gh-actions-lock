@@ -1557,10 +1557,14 @@ func TestSHARecordedRef_FixReRecords(t *testing.T) {
 		tags    []string
 		compare string
 		want    string
+		// unconfirmed leaves out the repo ID the identity proof needs.
+		unconfirmed bool
+		refused     string
 	}{
 		{name: "tag at the commit", tags: []string{"v6.1.0", parityTestSHA}, compare: "behind", want: "v6.1.0"},
 		{name: "branch containing the commit", compare: "behind", want: "main"},
-		{name: "on no tag or branch", compare: "diverged"},
+		{name: "on no tag or branch", compare: "diverged", refused: "is not on any tag or branch"},
+		{name: "in an unconfirmed repository", tags: []string{"v6.1.0", parityTestSHA}, compare: "behind", unconfirmed: true, refused: "could not confirm actions/checkout is the repository locked"},
 	}
 	for _, tt := range tests {
 		for mode, args := range map[string][]string{"default": nil, "relock": {"--relock"}, "no-onboard": {"--no-onboard"}} {
@@ -1570,9 +1574,13 @@ func TestSHARecordedRef_FixReRecords(t *testing.T) {
 					base = "cccccccccccccccccccccccccccccccccccccccc"
 				}
 				reg := &httpmock.Registry{}
+				repo := testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)
+				if !tt.unconfirmed {
+					repo = withRepoID(repo, 1)
+				}
 				for range 4 {
 					reg.Register(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-						"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+						"data": map[string]any{"a0": repo},
 					}))
 					reg.Register(httpmock.REST("GET", `repos/actions/checkout$`),
 						httpmock.JSONResponse(map[string]any{"full_name": "actions/checkout", "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
@@ -1596,9 +1604,13 @@ func TestSHARecordedRef_FixReRecords(t *testing.T) {
 				require.NoError(t, rerr)
 				assert.Equal(t, string(wfBefore), string(wfAfter), "`uses:` keeps the full SHA")
 				lock := readTempLockfilePins(t)
-				if tt.want == "" {
+				if tt.refused != "" {
 					require.ErrorIs(t, err, errSilent, stderr)
-					assert.Contains(t, stderr, "is not on any tag or branch")
+					assert.Contains(t, stderr, tt.refused)
+					if tt.unconfirmed {
+						assert.Contains(t, stderr, "Retry if the check was inconclusive, or change to a verified repository and ref")
+						assert.NotContains(t, stderr, "--relock` to re-resolve", "--relock re-records the same entry")
+					}
 					assert.Equal(t, lockBefore, lock)
 					return
 				}
@@ -2111,7 +2123,8 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 			if tt.identity != "" {
 				require.ErrorIs(t, err, errSilent, stderr)
 				assert.Contains(t, stderr, "actions/cache@"+parityTestSHA)
-				assert.Contains(t, stderr, "--relock")
+				assert.Contains(t, stderr, "Retry if the check was inconclusive, or change to a verified repository and ref; for a pin a composite uses, upgrade or replace actions/checkout@v6.1.0")
+				assert.NotContains(t, stderr, "--relock", "--relock re-records the same entry")
 				assert.Equal(t, lock, after)
 				return
 			}
@@ -2136,14 +2149,16 @@ func TestSHARecordedRef_RepairFollowsTheWrite(t *testing.T) {
 func TestSHARecordedRef_SameCommitTagAndSHA(t *testing.T) {
 	const head = "dddddddddddddddddddddddddddddddddddddddd"
 	reg := &httpmock.Registry{}
-	// The parity stub goes first: a repo stub matches any query for the repo.
+	// The parity and manifest stubs go first: a repo stub matches any query
+	// for the repo.
+	registerLockedManifests(reg, nil)
 	for range 3 {
-		registerParity(reg)
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), parityOKWithIDs(map[string]int{"checkout": 1, "cache": 1}))
 	}
 	for _, repo := range []string{"checkout", "cache"} {
 		for range 4 {
 			reg.Register(httpmock.GraphQLForRepo("actions", repo), httpmock.JSONResponse(map[string]any{
-				"data": map[string]any{"a0": testRepoResponse("actions/"+repo, parityTestSHA, nodeActionYAML)},
+				"data": map[string]any{"a0": withRepoID(testRepoResponse("actions/"+repo, parityTestSHA, nodeActionYAML), 1)},
 			}))
 			reg.Register(httpmock.REST("GET", `repos/actions/`+repo+`$`),
 				httpmock.JSONResponse(map[string]any{"full_name": "actions/" + repo, "default_branch": "main", "id": 1, "owner": map[string]any{"id": 1}}))
@@ -3180,11 +3195,14 @@ func TestParity_UnreachableChildNamesComposite(t *testing.T) {
 		"relock":       {"--relock"},
 		"accept-moved": {"--accept-moved"},
 	} {
-		t.Run(name, func(t *testing.T) { testUnreachableChild(t, args) })
+		t.Run(name, func(t *testing.T) { testUnreachableChild(t, args, false) })
 	}
+	// Onboarding another workflow onto the locked composite reuses its
+	// recorded children, so they are checked too.
+	t.Run("scoped onboarding", func(t *testing.T) { testUnreachableChild(t, nil, true) })
 }
 
-func testUnreachableChild(t *testing.T, args []string) {
+func testUnreachableChild(t *testing.T, args []string, onboard bool) {
 	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	root := "name: r\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n"
 	reg := &httpmock.Registry{}
@@ -3250,6 +3268,12 @@ jobs:
 		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
 	lockPath := filepath.Join(".github", "workflows", "actions.lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+	if onboard {
+		wf, err := os.ReadFile(path)
+		require.NoError(t, err)
+		path = filepath.Join(".github", "workflows", "other.yml")
+		require.NoError(t, os.WriteFile(path, wf, 0o600))
+	}
 
 	p, err := runParity(t, reg, append(args, "--no-narrow", "--no-interactive", path)...)
 	if slices.Contains(args, "--accept-moved") {
@@ -3273,6 +3297,73 @@ jobs:
 	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
 	assert.Equal(t, lock, string(after), "nothing is written")
+}
+
+// TestParity_OnboardingSiblingSubActionSkipsReplacedChildren: onboarding
+// org/actions/b@v1 while an unselected workflow locks org/actions/a@v1 at
+// the same commit reads b's manifest, so the onboarded workflow doesn't
+// keep a's recorded children. a's unavailable child doesn't block it.
+func TestParity_OnboardingSiblingSubActionSkipsUnusedChildren(t *testing.T) {
+	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		data := map[string]any{}
+		for k, v := range body.Variables {
+			i, ok := strings.CutPrefix(k, "oid")
+			if !ok {
+				continue
+			}
+			nwo := body.Variables["owner"+i].(string) + "/" + body.Variables["name"+i].(string)
+			if nwo == "octo/gone" {
+				data["a"+i] = nil
+				continue
+			}
+			data["a"+i] = map[string]any{
+				"nameWithOwner": nwo,
+				"databaseId":    1,
+				"commit":        map[string]any{"oid": v},
+				"tag":           map[string]any{"oid": v},
+				"tagRef":        map[string]any{"oid": v},
+			}
+		}
+		return httpmock.JSONResponse(map[string]any{"data": data})(req)
+	})
+	reg.RegisterReusable(httpmock.GraphQLForRepo("org", "actions"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("org/actions", rootSHA, nodeActionYAML)},
+	}))
+	useDefaultTransport(t, reg)
+	writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: org/actions/a@v1
+`)
+	lock := "version: '" + parserlock.Version + "'\ndependencies:\n" +
+		"  'org/actions@v1':\n    ref: 'v1'\n    commit: 'sha1-" + rootSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"    uses:\n      - 'octo/gone@v1'\n" +
+		"  'octo/gone@v1':\n    ref: 'v1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
+		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'org/actions@v1'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+	path := filepath.Join(".github", "workflows", "other.yml")
+	require.NoError(t, os.WriteFile(path, []byte("name: other\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: org/actions/b@v1\n"), 0o600))
+
+	p, err := runParity(t, reg, "--no-narrow", "--no-interactive", path)
+	require.NoError(t, err, "%+v", p.Findings)
+	for _, f := range p.Findings {
+		assert.NotContains(t, f.Detail, "octo/gone", "a's replaced child is not checked")
+	}
+	after, rerr := os.ReadFile(lockPath)
+	require.NoError(t, rerr)
+	assert.Contains(t, string(after), "'.github/workflows/other.yml'")
+	assert.Contains(t, string(after), "'.github/workflows/workflow.yml':\n        - 'org/actions@v1'", "the unselected workflow keeps its pins")
 }
 
 // TestParity_SharedMutablePinAcceptsMoved: actions/checkout@v4 is used
@@ -4899,6 +4990,13 @@ func TestParity_AcceptMovedReadOnlyStillBlocks(t *testing.T) {
 
 // writeFullSHAWorkflow writes a workflow using actions/checkout at
 // parityTestSHA, locked to that commit with the given recorded ref.
+// withRepoID answers a repository fixture with the repo ID the identity
+// proof compares against the lockfile's.
+func withRepoID(repo map[string]any, id int) map[string]any {
+	repo["databaseId"] = id
+	return repo
+}
+
 func writeFullSHAWorkflow(t *testing.T, ref string) string {
 	t.Helper()
 	path := writeTempWorkflow(t, `
@@ -4949,4 +5047,45 @@ func assertFullSHARun(t *testing.T, reg *httpmock.Registry, args []string, path,
 	assert.Equal(t, string(wfBefore), string(wfAfter), "a blocked pin must not be rewritten")
 	assert.Contains(t, string(wfAfter), "actions/checkout@"+parityTestSHA)
 	assert.Equal(t, lockBefore, readTempLockfilePins(t), "a blocked pin must not reach the lockfile")
+}
+
+// TestSHARecordedRef_RenameKeepsFullSHAUse: a workflow's own full-SHA pin
+// whose entry records the SHA as its ref, in a repository since renamed
+// with the same repo ID, moves to the new name and keeps its full SHA; only
+// the entry's ref is re-recorded.
+func TestSHARecordedRef_RenameKeepsFullSHAUse(t *testing.T) {
+	const (
+		oldName = "krzema12/github-actions-typing"
+		newName = "typesafegithub/github-actions-typing"
+	)
+	reg := &httpmock.Registry{}
+	for range 3 {
+		reg.Register(httpmock.GraphQL(`commit: object\(oid`), renamedParity)
+		reg.Register(httpmock.GraphQLForRepo("krzema12", "github-actions-typing"), httpmock.JSONResponse(map[string]any{
+			"data": map[string]any{"a0": withRepoID(testRepoResponse(newName, parityTestSHA, nodeActionYAML), 1)},
+		}))
+		for _, nwo := range []string{oldName, newName} {
+			reg.Register(httpmock.REST("GET", `^/repos/`+nwo+`$`), httpmock.JSONResponse(map[string]any{
+				"full_name": newName, "id": 1, "default_branch": "main", "owner": map[string]any{"id": 42},
+			}))
+			reg.Register(httpmock.REST("GET", `repos/`+nwo+`/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v2.2.2", parityTestSHA)))
+			reg.Register(httpmock.REST("GET", `repos/`+nwo+`/releases`), httpmock.JSONResponse([]map[string]any{}))
+			reg.Register(httpmock.REST("GET", `repos/`+nwo+`/git/ref/heads/main`),
+				httpmock.JSONResponse(map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": parityTestSHA, "type": "commit"}}))
+			reg.Register(httpmock.REST("GET", `repos/`+nwo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", parityTestSHA)))
+		}
+	}
+	httpmock.NoTagsNamed(reg, "typesafegithub", "github-actions-typing")
+	isolateRunLogs(t)
+	path := writeTempWorkflow(t, strings.Replace(transferWorkflow, "@v2.2.2", "@"+parityTestSHA, 1),
+		oldName+"@"+parityTestSHA+"=sha1-"+parityTestSHA)
+
+	_, stderr, err := runCommandWithHTTP(t, parityFallback{reg}, "--no-interactive", path)
+	require.NoError(t, err, stderr)
+	wf, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(wf), "uses: "+newName+"@"+parityTestSHA)
+	lock := readTempLockfilePins(t)
+	assert.Contains(t, lock, "'"+newName+"@"+parityTestSHA+"':\n        ref: 'v2.2.2'")
+	assert.NotContains(t, lock, "krzema12")
 }
