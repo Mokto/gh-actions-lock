@@ -457,13 +457,12 @@ func (s *State) Closure(workflowKey string, live func(parserlock.Pin, parserlock
 	return out
 }
 
-// GraphFault is a recorded edge a workflow's closure can't follow: Child has
-// no dependencies entry, or the edge closes a cycle. Parent is empty for an
-// edge from the workflow itself.
+// GraphFault is a recorded edge whose Child has no dependencies entry.
+// Parent is empty for an edge from the workflow itself. The lockfile
+// parser rejects cycles, so a loaded graph has none to report.
 type GraphFault struct {
 	Parent string
 	Child  string
-	Cycle  bool
 }
 
 func (g GraphFault) String() string {
@@ -471,14 +470,11 @@ func (g GraphFault) String() string {
 	if g.Parent != "" {
 		from = g.Parent
 	}
-	if g.Cycle {
-		return fmt.Sprintf("%s uses %s, which leads back to it", from, g.Child)
-	}
 	return fmt.Sprintf("%s uses %s, which has no dependencies entry", from, g.Child)
 }
 
 // GraphFaults reports the edges of workflowKey's recorded closure, rooted at
-// the pins live accepts, that a reader can't follow.
+// the pins live accepts, whose child has no entry.
 func GraphFaults(f parserlock.File, workflowKey string, live func(parserlock.Pin, parserlock.Action) bool) []GraphFault {
 	_, faults := walkClosure(f, workflowKey, live)
 	return faults
@@ -499,15 +495,9 @@ func walkClosure(f parserlock.File, workflowKey string, live func(parserlock.Pin
 		pin, _ := parserlock.ParsePin(key)
 		out = append(out, LockedPin{Pin: pin, Action: f.Dependencies[key], Parent: parent})
 	}
-	// done and onPath colour the depth-first walk, so a cycle is found
-	// whichever of its entries the walk reaches first.
-	done, onPath := map[string]bool{}, map[string]bool{}
+	done := map[string]bool{}
 	var walk func(key, parent string)
 	walk = func(key, parent string) {
-		if onPath[key] {
-			faults = append(faults, GraphFault{Parent: parent, Child: key, Cycle: true})
-			return
-		}
 		if done[key] {
 			return
 		}
@@ -518,11 +508,9 @@ func walkClosure(f parserlock.File, workflowKey string, live func(parserlock.Pin
 			return
 		}
 		report(key, parent)
-		onPath[key] = true
 		for _, child := range action.Uses {
 			walk(child, key)
 		}
-		onPath[key] = false
 	}
 	var roots []string
 	for _, key := range f.Workflows[workflowKey] {
@@ -794,12 +782,6 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 		if ok && ref == "" {
 			ref = existing.Ref
 		}
-		if _, seen := s.recorded[pinKey]; !seen {
-			if s.recorded == nil {
-				s.recorded = map[string][]string{}
-			}
-			s.recorded[pinKey] = existing.Uses
-		}
 		var shaExisting parserlock.Action
 		shaOK := false
 		if !isSHARef(d.Ref) && isSHARef(d.OriginalRef) {
@@ -848,6 +830,22 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 	return nil
 }
 
+// KeepEdges makes Set keep the recorded edges of every entry the recorded
+// closures of workflowKeys reach. Call it with the workflows a run doesn't
+// write: a manifest read covers only the sub-actions this run uses, and
+// those workflows may use others of the same entry.
+func (s *State) KeepEdges(workflowKeys []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all := func(parserlock.Pin, parserlock.Action) bool { return true }
+	for _, wf := range workflowKeys {
+		closure, _ := walkClosure(s.file, wf, all)
+		for _, lp := range closure {
+			s.admitUses(lp.Pin.String(), true, nil)
+		}
+	}
+}
+
 // admitUses returns the `uses:` Set records for key, given the children
 // this call found for it. A manifest read replaces the edges recorded before
 // this run, so a child the manifest dropped goes; reads in several workflows
@@ -857,6 +855,12 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 func (s *State) admitUses(key string, fromLock bool, children map[string]bool) map[string]bool {
 	if s.read == nil {
 		s.read, s.reused = map[string]map[string]bool{}, map[string]bool{}
+	}
+	if _, seen := s.recorded[key]; !seen {
+		if s.recorded == nil {
+			s.recorded = map[string][]string{}
+		}
+		s.recorded[key] = s.file.Dependencies[key].Uses
 	}
 	if fromLock {
 		s.reused[key] = true

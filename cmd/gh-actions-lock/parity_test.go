@@ -3486,12 +3486,12 @@ func testChildWithNewDirectUse(t *testing.T, cross, blocked, narrow bool) {
 	require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 }
 
-// TestParity_AcceptMovedRepairsChildBesideNarrowedDirectUse: a composite's
+// TestParity_AcceptMovedKeepsDeclaredChildBesideDirectUse: a composite's
 // child actions/checkout@v4 left v4's history, and the workflow now uses
-// checkout@v4 directly too. Narrowing locks that direct use as v4.2.1, but
-// the rebuild re-resolves the composite's v4 too, so either way the repair
-// holds.
-func TestParity_AcceptMovedRepairsChildBesideNarrowedDirectUse(t *testing.T) {
+// checkout@v4 directly too. Narrowing leaves the shared use as the
+// composite declares it, so with or without narrowing --accept-moved
+// re-locks v4 under the composite's edge, and the lock verifies.
+func TestParity_AcceptMovedKeepsDeclaredChildBesideDirectUse(t *testing.T) {
 	for _, narrow := range []bool{true, false} {
 		t.Run(fmt.Sprintf("narrow=%v", narrow), func(t *testing.T) {
 			const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
@@ -3533,8 +3533,13 @@ jobs:
 			after, rerr := os.ReadFile(lockPath)
 			require.NoError(t, rerr)
 			require.NoError(t, err, "%s\n%s", stderr, after)
-			assert.Contains(t, string(after), "commit: 'sha1-"+parityTestMoved+"'")
+			assert.Contains(t, string(after), "'actions/checkout@v4':\n        ref: 'v4'\n        commit: 'sha1-"+parityTestMoved+"'")
+			assert.Contains(t, string(after), "'octo/root@v1':\n        ref: 'v1'\n        commit: 'sha1-"+rootSHA+"'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - 'actions/checkout@v4'\n")
+			assert.NotContains(t, string(after), "v4.2.1")
 			assert.NotContains(t, string(after), parityTestSHA)
+			wf, werr := os.ReadFile(path)
+			require.NoError(t, werr)
+			assert.Contains(t, string(wf), "uses: actions/checkout@v4\n")
 			_, stderr, err = runCommandWithHTTP(t, reg, "--verify", path)
 			require.NoError(t, err, "the repaired lock verifies: %s", stderr)
 		})

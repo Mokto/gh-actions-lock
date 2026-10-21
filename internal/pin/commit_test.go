@@ -429,3 +429,42 @@ func TestCommitRefusesIncompleteLockGraph(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, lock, string(after), "nothing is written")
 }
+
+// TestCommitKeepsEdgesUnwrittenWorkflowsNeed: a.yml uses o/actions/one and
+// unselected b.yml uses o/actions/two, which share the o/actions@v1 entry.
+// Writing a.yml from a read of /one alone must keep /two's child.
+func TestCommitKeepsEdgesUnwrittenWorkflowsNeed(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	entry := func(key, uses string) string {
+		e := "    '" + key + "':\n        ref: 'v1'\n        commit: 'sha1-" + sha + "'\n        owner_id: 1\n        repo_id: 1\n"
+		if uses != "" {
+			e += "        uses:\n" + uses
+		}
+		return e
+	}
+	lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/a.yml':\n        - 'o/actions@v1'\n    '.github/workflows/b.yml':\n        - 'o/actions@v1'\n" +
+		"dependencies:\n" + entry("o/actions@v1", "            - 'o/one-child@v1'\n            - 'o/two-child@v1'\n") +
+		entry("o/one-child@v1", "") + entry("o/two-child@v1", "")
+	lockPath := filepath.Join(dir, ".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+	wf := filepath.Join(".github", "workflows", "a.yml")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, wf), []byte("on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: o/actions/one@v1\n"), 0o644))
+	t.Chdir(dir)
+	store, err := lockfile.LoadState(dir, fakeMeta{})
+	require.NoError(t, err)
+
+	rec := &Record{
+		Entries: []Entry{
+			{NWO: "o/actions", Ref: "v1", SHA: sha, Tag: "v1", Resolution: Verified, Workflows: []string{wf}, Direct: true},
+			{NWO: "o/one-child", Ref: "v1", SHA: sha, Tag: "v1", Resolution: Verified, Workflows: []string{wf}, RequiredBy: []string{"o/actions@v1"}},
+		},
+		Workflows: []WorkflowPlan{{Path: wf}},
+	}
+	require.NoError(t, Commit(context.Background(), rec, store, nil))
+	a, ok := store.File().Dependencies["o/actions@v1"]
+	require.True(t, ok)
+	assert.Equal(t, []string{"o/one-child@v1", "o/two-child@v1"}, a.Uses)
+	assert.Contains(t, store.File().Dependencies, "o/two-child@v1", "b.yml's child survives GC")
+}

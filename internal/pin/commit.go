@@ -112,6 +112,17 @@ func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, 
 			return fmt.Errorf("updating lockfile: %w", err)
 		}
 	}
+	writtenKeys := make(map[string]bool, len(workflows))
+	for _, wp := range workflows {
+		writtenKeys[workflowfile.KeyFromPath(wp.Path)] = true
+	}
+	var unwritten []string
+	for _, wf := range store.WorkflowKeys() {
+		if !writtenKeys[wf] {
+			unwritten = append(unwritten, wf)
+		}
+	}
+	store.KeepEdges(unwritten)
 	pinnedByWorkflow := groupPinnedByWorkflow(rec)
 	for _, wp := range workflows {
 		wfPath := wp.Path

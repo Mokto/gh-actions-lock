@@ -232,6 +232,13 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	status("pinning " + wr.Path)
 	rewrites := make(map[string]string)
 	preservedDeps := make(map[int]bool)
+	// A use a composite also declares keeps its ref: the composite's edge
+	// and entry must name what its manifest names.
+	for i, d := range deps {
+		if _, declared := parentMap[d.Key()]; declared {
+			preservedDeps[i] = true
+		}
+	}
 
 	narrowDirectDeps(ctx, opts, deps, rewriteTracker, rewrites, preservedDeps)
 	reRecorded := preserveReRecorded(opts, deps, preservedDeps)
@@ -435,7 +442,7 @@ func narrowDirectDeps(ctx context.Context, opts PlanOptions, deps []dep.Dependen
 		// is the composite author's choice and never appears in our
 		// workflow YAML. Narrowing it is pure churn and can invent refs
 		// the composite never declared, so leave it verbatim.
-		if !directTracker.IsDirect(i) {
+		if !directTracker.IsDirect(i) || preservedDeps[i] {
 			continue
 		}
 		owner, repo := dep.OwnerRepo()

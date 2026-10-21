@@ -290,7 +290,7 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 		checks.RepoReplaced, checks.RepoUnavailable, checks.RepoRenamed, checks.UnreachablePin,
 		checks.RefChanged, checks.NotPinned, checks.OnboardingRequired,
 		checks.LocalAction, checks.InvalidSelfRepositoryRef,
-		checks.Stale, checks.MisleadingSHA,
+		checks.Stale, checks.MisleadingSHA, checks.IncompleteLockfile,
 	} {
 		if n, ok := catCounts[cat]; ok {
 			parts = append(parts, fmt.Sprintf("%d %s", n, string(cat)))

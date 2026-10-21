@@ -328,7 +328,7 @@ workflows:
 	assert.False(t, report.IsValid())
 	require.Len(t, report.Workflows[0].Findings, 1)
 	f := report.Workflows[0].Findings[0]
-	assert.Equal(t, checks.NotPinned, f.Category)
+	assert.Equal(t, checks.IncompleteLockfile, f.Category)
 	assert.Equal(t, checks.SeverityError, f.Severity)
 	assert.Contains(t, f.Detail, "octo/comp@v1 uses octo/child@v2, which has no dependencies entry")
 	assert.Contains(t, f.Remediation, "gh actions-lock --relock")

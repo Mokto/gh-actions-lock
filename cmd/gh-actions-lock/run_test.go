@@ -546,8 +546,8 @@ func TestRun_LockedManifestsInconclusive(t *testing.T) {
 
 // TestRun_RelockRebuildsUnchangedComposite: octo/comp@v1 is locked at its
 // current commit with no recorded children, but its manifest uses
-// octo/child@v2. A plain run trusts the lock; --relock rebuilds the
-// closure from the manifest even though no ref moved.
+// octo/child@v2. A plain run reports the missing edge and writes nothing;
+// --relock rebuilds the closure from the manifest even though no ref moved.
 func TestRun_RelockRebuildsUnchangedComposite(t *testing.T) {
 	const compSHA, childSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "cccccccccccccccccccccccccccccccccccccccc"
 	reg := &httpmock.Registry{}
@@ -563,8 +563,9 @@ func TestRun_RelockRebuildsUnchangedComposite(t *testing.T) {
 	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
-	require.NoError(t, err, stderr)
-	assert.NotContains(t, readTempLockfilePins(t), "octo/child", "a plain run trusts the lock")
+	require.ErrorIs(t, err, errSilent, stderr)
+	assert.Contains(t, stderr, "gh actions-lock --relock")
+	assert.Equal(t, lock, readTempLockfilePins(t), "nothing is written")
 
 	_, stderr, err = runCommandWithHTTP(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
 	require.NoError(t, err, stderr)
@@ -597,6 +598,11 @@ func TestRun_DanglingEdgeBlocksUntilRelock(t *testing.T) {
 		assert.Equal(t, "error", p.Findings[0].Severity)
 		assert.Contains(t, p.Findings[0].Detail, "octo/comp@v1 uses octo/child@v2, which has no dependencies entry")
 		assert.Contains(t, p.Findings[0].Remediation, "gh actions-lock --relock")
+		_, stderr, err := runCommandWithHTTP(t, reg, mode, path)
+		require.ErrorIs(t, err, errSilent, mode)
+		assert.Contains(t, stderr, "! run `gh actions-lock --relock`", mode)
+		assert.NotContains(t, stderr, "Run without", mode)
+		assert.NotContains(t, stderr, "Re-run without", mode)
 	}
 
 	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)

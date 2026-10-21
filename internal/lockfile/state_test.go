@@ -1133,12 +1133,6 @@ func TestGraphFaults(t *testing.T) {
 			want: []GraphFault{{Child: "o/a@v1"}},
 		},
 		{
-			name: "a cycle through a root",
-			deps: map[string]parserlock.Action{"o/a@v1": {Commit: sha, Uses: []string{"o/b@v1"}}, "o/b@v1": {Commit: sha, Uses: []string{"o/a@v1"}}},
-			root: []string{"o/a@v1"},
-			want: []GraphFault{{Parent: "o/b@v1", Child: "o/a@v1", Cycle: true}},
-		},
-		{
 			name: "a root the workflow no longer uses is skipped",
 			deps: map[string]parserlock.Action{"o/a@v1": {Commit: sha, Uses: []string{"o/b@v1"}}},
 			root: []string{"o/a@v1"},
