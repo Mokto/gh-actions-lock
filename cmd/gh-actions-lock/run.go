@@ -295,11 +295,12 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		console.StartProgress(fmt.Sprintf("Scanning %d %s", total, ui.Pluralize(total, "workflow", "workflows")))
 	}
 
-	// Build a Lister for pin narrowing, reusing the resolver's API client; cooldown is resolved dependabot > config file > none.
+	// Cooldown governs pin selection, not read-only checks. Only fix runs
+	// need its policy, diagnostics, and tag lister for narrowing.
 	var tagger *tag.Lister
 	var cooldownCfg tag.CooldownConfig
 	var cooldownWarnings []string
-	if gc := r.GHClient(); gc != nil {
+	if gc := r.GHClient(); gc != nil && !opts.noFix {
 		cooldownCfg, _, cooldownWarnings = ResolveCooldown(".")
 		tagger = tag.NewLister(gc, cooldownCfg)
 	}
@@ -373,8 +374,7 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		}
 	}
 
-	// Surface Dependabot cooldown keys we don't honor before the diagnosis so
-	// they reach both read-only (--no-fix/--verify) and fix runs. Non-blocking.
+	// Surface ignored cooldown keys only when the policy applies to this run.
 	appendCooldownConfigFindings(report, cooldownWarnings)
 
 	rl.report, rl.valid = report, valid
