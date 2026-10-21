@@ -101,6 +101,10 @@ const (
 	// honor (e.g. semver-*-days or include/exclude). Surfaced so the ignored
 	// configuration is never silent.
 	CooldownConfigIgnored Category = "cooldown-config-ignored"
+	// ContainerImage is a non-blocking warning: a workflow, or an action it
+	// uses, runs a container image by tag or builds one from a Dockerfile.
+	// The lockfile pins action commits, not images.
+	ContainerImage Category = "container-image"
 )
 
 // IsInconclusive reports whether c represents a diagnostic that

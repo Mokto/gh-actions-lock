@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/dockerimage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,10 +16,10 @@ func TestLoadAndExtractActionRefs(t *testing.T) {
 	require.NoError(t, err)
 
 	scan := f.ExtractActionRefs()
-	refs, localPaths, warnings := scan.Refs, scan.LocalPaths, scan.Warnings
+	refs, localPaths, images := scan.Refs, scan.LocalPaths, scan.ContainerImages
 	assert.Len(t, refs, 2)
 	assert.Empty(t, localPaths)
-	assert.Empty(t, warnings)
+	assert.Empty(t, images)
 
 	assert.Equal(t, "actions/checkout", refs[0].NWO())
 	assert.Equal(t, "v4", refs[0].Ref)
@@ -31,7 +32,7 @@ func TestExtractActionRefsMixed(t *testing.T) {
 	require.NoError(t, err)
 
 	scan := f.ExtractActionRefs()
-	refs, localPaths, warnings := scan.Refs, scan.LocalPaths, scan.Warnings
+	refs, localPaths, images := scan.Refs, scan.LocalPaths, scan.ContainerImages
 	assert.Len(t, refs, 3)
 	assert.Equal(t, "actions/checkout", refs[0].NWO())
 	assert.Equal(t, "actions/cache", refs[1].NWO())
@@ -40,12 +41,10 @@ func TestExtractActionRefsMixed(t *testing.T) {
 
 	assert.Len(t, localPaths, 1)
 	assert.Equal(t, "./local-action", localPaths[0])
-	assert.Equal(t, []string{
-		"docker://alpine:3.18 is not covered by the actions lockfile; container image tags are mutable",
-	}, warnings)
+	assert.Equal(t, []dockerimage.Image{{Ref: "docker://alpine:3.18", Location: "jobs.test.steps[2]"}}, images)
 }
 
-func TestExtractActionRefs_DockerWarnings(t *testing.T) {
+func TestExtractActionRefs_ContainerImages(t *testing.T) {
 	f, err := Parse("ci.yml", []byte(`
 on: push
 jobs:
@@ -58,9 +57,94 @@ jobs:
 `))
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{
-		"docker://alpine:3.18 is not covered by the actions lockfile; container image tags are mutable",
-	}, f.ExtractActionRefs().Warnings)
+	assert.Equal(t, []dockerimage.Image{
+		{Ref: "docker://alpine:3.18", Location: "jobs.build.steps[0]"},
+		{Ref: "docker://alpine:3.18", Location: "jobs.build.steps[1]"},
+		{Ref: "docker://alpine@sha256:0123456789abcdef", Location: "jobs.build.steps[2]"},
+	}, f.ExtractActionRefs().ContainerImages, "every step is a location; the pipeline classifies and merges them")
+}
+
+func TestExtractActionRefs_JobImages(t *testing.T) {
+	tests := []struct {
+		name string
+		job  string
+		want []dockerimage.Image
+	}{
+		{
+			name: "container string",
+			job:  "container: node:20",
+			want: []dockerimage.Image{{Ref: "node:20", Location: "jobs.j.container"}},
+		},
+		{
+			name: "container map",
+			job:  "container:\n      image: node:20\n      options: --cpus 1",
+			want: []dockerimage.Image{{Ref: "node:20", Location: "jobs.j.container"}},
+		},
+		{
+			name: "container with credentials",
+			job:  "container:\n      image: ghcr.io/o/img:1\n      credentials:\n        username: u\n        password: ${{ secrets.P }}",
+			want: []dockerimage.Image{{Ref: "ghcr.io/o/img:1", Location: "jobs.j.container"}},
+		},
+		{
+			name: "container without image",
+			job:  "container:\n      options: --cpus 1",
+		},
+		{
+			name: "matrix container is recorded for the classifier to skip",
+			job:  "container: ${{ matrix.image }}",
+			want: []dockerimage.Image{{Ref: "${{ matrix.image }}", Location: "jobs.j.container"}},
+		},
+		{
+			name: "service map and string",
+			job:  "services:\n      cache:\n        image: redis\n      db: postgres:16",
+			want: []dockerimage.Image{
+				{Ref: "redis", Location: "jobs.j.services.cache"},
+				{Ref: "postgres:16", Location: "jobs.j.services.db"},
+			},
+		},
+		{
+			name: "service without image",
+			job:  "services:\n      cache:\n        ports: [6379]",
+		},
+		{
+			name: "whitespace is trimmed",
+			job:  "container: \"  node:20  \"",
+			want: []dockerimage.Image{{Ref: "node:20", Location: "jobs.j.container"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, err := Parse("ci.yml", []byte("on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    "+tt.job+"\n    steps:\n      - run: true\n"))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, f.ExtractActionRefs().ContainerImages)
+		})
+	}
+}
+
+func TestExtractActionRefs_JobImagesAcrossJobs(t *testing.T) {
+	f, err := Parse("ci.yml", []byte(`
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: node:20
+    steps:
+      - uses: docker://node:20
+  test:
+    runs-on: ubuntu-latest
+    container: node:20
+    steps:
+      - run: true
+  call:
+    uses: o/r/.github/workflows/w.yml@v1
+`))
+	require.NoError(t, err)
+
+	assert.Equal(t, []dockerimage.Image{
+		{Ref: "node:20", Location: "jobs.build.container"},
+		{Ref: "docker://node:20", Location: "jobs.build.steps[0]"},
+		{Ref: "node:20", Location: "jobs.test.container"},
+	}, f.ExtractActionRefs().ContainerImages, "each location is kept; findings merge them")
 }
 
 func TestParseRejectsUsesExpression(t *testing.T) {
@@ -137,7 +221,7 @@ jobs:
 		},
 		scan.SelfRepositoryRefErrs,
 	)
-	assert.Empty(t, scan.Warnings)
+	assert.Empty(t, scan.ContainerImages)
 }
 
 func TestExtractActionRefs_SelfRepositoryOnly(t *testing.T) {
@@ -222,9 +306,35 @@ func TestScanSelfRepositoryActions_RecursiveClosure(t *testing.T) {
 	)
 	assert.Equal(t, []string{"./workspace-relative"}, scan.LocalPaths)
 	assert.Empty(t, scan.Errors)
-	assert.Equal(t, []string{
-		"docker://alpine:3.18 is not covered by the actions lockfile; container image tags are mutable",
-	}, scan.Warnings)
+	assert.Equal(t, []dockerimage.Image{
+		{Ref: "docker://alpine:3.18", Local: "$/actions/child"},
+		{Ref: "docker://alpine@sha256:0123456789abcdef", Local: "$/actions/child"},
+	}, scan.ContainerImages)
+}
+
+func TestScanSelfRepositoryActions_DockerActionImage(t *testing.T) {
+	for _, tt := range []struct{ using, image string }{
+		{"docker", "Dockerfile"},
+		{"docker", "docker://ghcr.io/o/img:1"},
+		{"Docker", "Dockerfile"},
+	} {
+		using, image := tt.using, tt.image
+		t.Run(using+"/"+image, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			require.NoError(t, os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755))
+			workflowPath := filepath.Join(repoRoot, ".github", "workflows", "ci.yml")
+			require.NoError(t, os.MkdirAll(filepath.Dir(workflowPath), 0o755))
+			require.NoError(t, os.WriteFile(workflowPath, []byte("name: ci\n"), 0o644))
+			actionPath := filepath.Join(repoRoot, "actions", "build", "action.yml")
+			require.NoError(t, os.MkdirAll(filepath.Dir(actionPath), 0o755))
+			require.NoError(t, os.WriteFile(actionPath, []byte("runs:\n  using: "+using+"\n  image: "+image+"\n"), 0o644))
+
+			scan := ScanSelfRepositoryActions(workflowPath, []string{"$/actions/build"})
+
+			assert.Empty(t, scan.Errors)
+			assert.Equal(t, []dockerimage.Image{{Ref: image, Local: "$/actions/build"}}, scan.ContainerImages)
+		})
+	}
 }
 
 func TestScanSelfRepositoryActions_NoRepoRoot(t *testing.T) {
@@ -405,7 +515,7 @@ jobs:
 	assert.Equal(t, []string{"./local/action"}, scan.LocalPaths)
 	assert.Equal(t, []string{"$/self/action"}, scan.SelfRepositoryActionRefs, "parallel steps are step-level")
 	assert.Equal(t, []string{"$/self/versioned@main"}, scan.SelfRepositoryRefErrs)
-	assert.Len(t, scan.Warnings, 1, "docker:// inside parallel is disclosed")
+	assert.Len(t, scan.ContainerImages, 1, "docker:// inside parallel is disclosed")
 }
 
 func TestExtractActionRefs_MalformedParallelValues(t *testing.T) {
@@ -580,4 +690,41 @@ func TestExtractActionRefs_ReusableWorkflowOnlyAtJobLevel(t *testing.T) {
 	require.Len(t, scan.MalformedRefs, 1)
 	assert.Equal(t, "uses: actions/checkout/.github/workflows/ci.yml@v4 is a reusable workflow; reusable workflows should be referenced at the top-level `jobs.<job_id>.uses` key, not within steps", scan.MalformedRefs[0])
 	assert.Empty(t, scan.Refs)
+}
+
+func TestScanSelfRepositoryActions_CompositeUsingIsCaseInsensitive(t *testing.T) {
+	repoRoot := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755))
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "ci.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(workflowPath), 0o755))
+	require.NoError(t, os.WriteFile(workflowPath, []byte("name: ci\n"), 0o644))
+	actionPath := filepath.Join(repoRoot, "actions", "root", "action.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(actionPath), 0o755))
+	require.NoError(t, os.WriteFile(actionPath, []byte("runs:\n  using: Composite\n  steps:\n    - uses: docker://alpine:3\n    - uses: actions/checkout@v4\n"), 0o644))
+
+	scan := ScanSelfRepositoryActions(workflowPath, []string{"$/actions/root"})
+
+	assert.Equal(t, []string{"actions/checkout@v4"}, actionRefStrings(scan.Refs))
+	assert.Equal(t, []dockerimage.Image{{Ref: "docker://alpine:3", Local: "$/actions/root"}}, scan.ContainerImages)
+}
+
+func TestExtractActionRefs_DockerStepLocations(t *testing.T) {
+	f, err := Parse("ci.yml", []byte(`
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+      - parallel:
+          - uses: docker://alpine:3
+          - run: true
+          - uses: docker://redis
+`))
+	require.NoError(t, err)
+
+	assert.Equal(t, []dockerimage.Image{
+		{Ref: "docker://alpine:3", Location: "jobs.build.steps[1].parallel[0]"},
+		{Ref: "docker://redis", Location: "jobs.build.steps[1].parallel[2]"},
+	}, f.ExtractActionRefs().ContainerImages)
 }

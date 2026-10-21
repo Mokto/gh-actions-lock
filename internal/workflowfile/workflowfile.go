@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/dockerimage"
 	"github.com/github/gh-actions-lock/internal/uses"
 	"gopkg.in/yaml.v3"
 )
@@ -76,19 +77,12 @@ func usesExpressionErr(values []string) error {
 	return fmt.Errorf("`uses:` can't contain an expression: %s", strings.Join(values, ", "))
 }
 
-func appendDockerWarning(warnings *[]string, seen map[string]bool, value string) bool {
-	if !strings.HasPrefix(value, "docker://") {
-		return false
+// appendImage records an image once per location.
+func appendImage(images *[]dockerimage.Image, seen map[dockerimage.Image]bool, image dockerimage.Image) {
+	if !seen[image] {
+		seen[image] = true
+		*images = append(*images, image)
 	}
-	if seen[value] {
-		return true
-	}
-	seen[value] = true
-	if strings.Contains(strings.TrimPrefix(value, "docker://"), "@") {
-		return true
-	}
-	*warnings = append(*warnings, fmt.Sprintf("%s is not covered by the actions lockfile; container image tags are mutable", value))
-	return true
 }
 
 // RefScan is the classified result of walking a workflow's `uses:` values.
@@ -110,8 +104,10 @@ type RefScan struct {
 	// MalformedRefs are the errors for `uses:` values the Actions backend
 	// rejects (uses.Invalid). They are never skipped.
 	MalformedRefs []string
-	// Warnings are non-fatal parse notes (e.g. expression-based uses:).
-	Warnings []string
+	// ContainerImages are the images the workflow names, which the lockfile
+	// can't pin: `docker://` steps and job containers and services, each at
+	// its location. Callers classify them.
+	ContainerImages []dockerimage.Image
 }
 
 // ExtractActionRefs finds and classifies all uses: references in the workflow.
@@ -121,8 +117,6 @@ func (f *File) ExtractActionRefs() RefScan {
 	seenLocal := make(map[string]bool)
 	seenSelf := make(map[string]bool)
 	seenSelfAction := make(map[string]bool)
-	seenDocker := make(map[string]bool)
-
 	walkUses(&f.root, func(value string, stepLevel bool) {
 		value = strings.TrimSpace(value)
 		if SelfRepositoryRefHasVersion(value) {
@@ -157,7 +151,8 @@ func (f *File) ExtractActionRefs() RefScan {
 			}
 			return
 		}
-		if appendDockerWarning(&scan.Warnings, seenDocker, value) {
+		if dockerimage.IsDockerUses(value) {
+			// Collected with their locations by containerImages.
 			return
 		}
 		pos := uses.Job
@@ -179,6 +174,10 @@ func (f *File) ExtractActionRefs() RefScan {
 		}
 	})
 
+	seenImage := make(map[dockerimage.Image]bool)
+	for _, image := range containerImages(&f.root) {
+		appendImage(&scan.ContainerImages, seenImage, image)
+	}
 	return scan
 }
 
@@ -194,7 +193,9 @@ type SelfRepositoryActionScan struct {
 	// order. Refs in these files are rewritable source, unlike `$/…` itself.
 	ActionFiles []string
 	Errors      []string
-	Warnings    []string
+	// ContainerImages are `docker://` steps and Docker `runs.image` values in
+	// the visited action files, attributed to their `$/…` action.
+	ContainerImages []dockerimage.Image
 }
 
 // ScanSelfRepositoryActions recursively reads in-repo actions reached through
@@ -231,7 +232,7 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 	seenSelf := make(map[string]bool)
 	seenInvalid := make(map[string]bool)
 	seenLocal := make(map[string]bool)
-	seenDocker := make(map[string]bool)
+	seenImage := make(map[dockerimage.Image]bool)
 
 	for len(pending) > 0 {
 		current := pending[0]
@@ -260,13 +261,16 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 			continue
 		}
 
-		actionUses, actionPath, err := readActionUses(repoRoot, actionDir)
+		action, actionPath, err := readActionUses(repoRoot, actionDir)
 		if err != nil {
 			scan.Errors = append(scan.Errors, fmt.Sprintf("can't inspect self repository action %s: %v", current.ref, err))
 			continue
 		}
 		scan.ActionFiles = append(scan.ActionFiles, actionPath)
-		for _, rawUse := range actionUses {
+		if action.image != "" {
+			appendImage(&scan.ContainerImages, seenImage, dockerimage.Image{Ref: action.image, Local: current.ref})
+		}
+		for _, rawUse := range action.uses {
 			use := strings.TrimSpace(rawUse)
 			switch {
 			case SelfRepositoryRefHasVersion(use):
@@ -285,7 +289,8 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 					seenLocal[use] = true
 					scan.LocalPaths = append(scan.LocalPaths, use)
 				}
-			case appendDockerWarning(&scan.Warnings, seenDocker, use):
+			case dockerimage.IsDockerUses(use):
+				appendImage(&scan.ContainerImages, seenImage, dockerimage.Image{Ref: use, Local: current.ref})
 			default:
 				switch c := uses.Classify(use, uses.Step); c.Kind {
 				case uses.Invalid:
@@ -368,6 +373,65 @@ func walkUses(node *yaml.Node, fn func(value string, stepLevel bool)) {
 		}
 		walkStepUses(job, jobSteps, fn)
 	}
+}
+
+// containerImages lists the images a workflow or composite action names, in
+// file order: `docker://` steps, and each job's container and services.
+// Workflow images carry their location so findings can point at every use.
+func containerImages(node *yaml.Node) []dockerimage.Image {
+	root := resolveAlias(documentRoot(node))
+	var images []dockerimage.Image
+	addStep := func(location string, step *yaml.Node) {
+		if use := strings.TrimSpace(scalarValue(mapValue(step, "uses"))); dockerimage.IsDockerUses(use) {
+			images = append(images, dockerimage.Image{Ref: use, Location: location})
+		}
+	}
+	for _, step := range stepMappings(mapValue(mapValue(root, "runs"), "steps")) {
+		addStep("", step)
+	}
+
+	jobs := mapValue(root, "jobs")
+	if jobs == nil || jobs.Kind != yaml.MappingNode {
+		return images
+	}
+	addImage := func(location string, value *yaml.Node) {
+		value = resolveAlias(value)
+		if value != nil && value.Kind == yaml.MappingNode {
+			value = mapValue(value, "image")
+		}
+		if ref := strings.TrimSpace(scalarValue(value)); ref != "" {
+			images = append(images, dockerimage.Image{Ref: ref, Location: location})
+		}
+	}
+	for i := 0; i+1 < len(jobs.Content); i += 2 {
+		prefix := "jobs." + jobs.Content[i].Value
+		job := resolveAlias(jobs.Content[i+1])
+		if job == nil || job.Kind != yaml.MappingNode {
+			continue
+		}
+		addImage(prefix+".container", mapValue(job, "container"))
+		if services := resolveAlias(mapValue(job, "services")); services != nil && services.Kind == yaml.MappingNode {
+			for k := 0; k+1 < len(services.Content); k += 2 {
+				addImage(prefix+".services."+services.Content[k].Value, services.Content[k+1])
+			}
+		}
+		steps := resolveAlias(mapValue(job, "steps"))
+		if steps == nil || steps.Kind != yaml.SequenceNode {
+			continue
+		}
+		for n, node := range steps.Content {
+			step := resolveAlias(node)
+			if step == nil || step.Kind != yaml.MappingNode {
+				continue
+			}
+			location := fmt.Sprintf("%s.steps[%d]", prefix, n)
+			addStep(location, step)
+			for k, inner := range stepMappings(mapValue(step, "parallel")) {
+				addStep(fmt.Sprintf("%s.parallel[%d]", location, k), inner)
+			}
+		}
+	}
+	return images
 }
 
 // stepsContext is where a `steps:` sequence appears.
@@ -566,20 +630,34 @@ func ValidatePathWithinRoot(root, candidate string) error {
 	return nil
 }
 
-func parseActionYAMLForUses(content []byte) ([]string, error) {
+// actionFile is what the self repository scan reads from an action file.
+type actionFile struct {
+	// uses are a composite action's step `uses:` values.
+	uses []string
+	// image is a Docker action's `runs.image`.
+	image string
+}
+
+func parseActionYAMLForUses(content []byte) (actionFile, error) {
 	var action struct {
 		Runs struct {
 			Using string `yaml:"using"`
+			Image string `yaml:"image"`
 			Steps []struct {
 				Uses string `yaml:"uses"`
 			} `yaml:"steps"`
 		} `yaml:"runs"`
 	}
 	if err := yaml.Unmarshal(content, &action); err != nil {
-		return nil, err
+		return actionFile{}, err
 	}
-	if action.Runs.Using != "composite" {
-		return nil, nil
+	// The runner matches runs.using case-insensitively.
+	switch strings.ToLower(strings.TrimSpace(action.Runs.Using)) {
+	case "docker":
+		return actionFile{image: strings.TrimSpace(action.Runs.Image)}, nil
+	case "composite":
+	default:
+		return actionFile{}, nil
 	}
 
 	var uses []string
@@ -594,20 +672,20 @@ func parseActionYAMLForUses(content []byte) ([]string, error) {
 		}
 	}
 	if len(invalid) > 0 {
-		return nil, usesExpressionErr(invalid)
+		return actionFile{}, usesExpressionErr(invalid)
 	}
-	return uses, nil
+	return actionFile{uses: uses}, nil
 }
 
 // readActionUses returns the `uses:` values of an in-repo action definition
 // along with the file they were read from, so callers can rewrite that file.
-func readActionUses(repoRoot, actionDir string) ([]string, string, error) {
+func readActionUses(repoRoot, actionDir string) (actionFile, string, error) {
 	var lastErr error
 	for _, name := range []string{"action.yml", "action.yaml"} {
 		actionPath := filepath.Join(actionDir, name)
 		if err := ValidatePathWithinRoot(repoRoot, actionPath); err != nil {
 			if errors.Is(err, errPathOutsideRoot) {
-				return nil, "", err
+				return actionFile{}, "", err
 			}
 			lastErr = err
 			continue
@@ -617,13 +695,13 @@ func readActionUses(repoRoot, actionDir string) ([]string, string, error) {
 			lastErr = err
 			continue
 		}
-		uses, err := parseActionYAMLForUses(content)
+		action, err := parseActionYAMLForUses(content)
 		if err != nil {
-			return nil, "", fmt.Errorf("parsing %s: %w", name, err)
+			return actionFile{}, "", fmt.Errorf("parsing %s: %w", name, err)
 		}
-		return uses, actionPath, nil
+		return action, actionPath, nil
 	}
-	return nil, "", fmt.Errorf("reading action.yml or action.yaml: %w", lastErr)
+	return actionFile{}, "", fmt.Errorf("reading action.yml or action.yaml: %w", lastErr)
 }
 
 // KeyFromPath converts a workflow path discovered on disk (relative to the

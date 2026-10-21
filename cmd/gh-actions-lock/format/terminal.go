@@ -12,7 +12,7 @@ import (
 
 // PresentResults renders human-readable output from a check report.
 //
-// Warning surfaces (RepoFindings, ParseWarnings, not-pinned, sha-as-ref,
+// Warning surfaces (RepoFindings, container images, not-pinned, sha-as-ref,
 // ref-moved, inconclusive) use the Term* family so they reach the
 // terminal even when check.go has routed the narration log to
 // io.Discard. The error block and the "All N valid" success line still
@@ -353,12 +353,28 @@ type warningGroup struct {
 
 // renderWarnings collects, deduplicates, and prints all warning-level findings.
 func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
-	var warnOrder []string
+	var warnOrder, imageOrder []string
 	warnMap := map[string]*warningGroup{}
+	imageMap := map[string]*warningGroup{}
 	for _, wr := range report.Workflows {
 		for _, f := range wr.Findings {
 			if f.Category == checks.LocalAction && f.Severity == checks.SeverityInfo {
 				out.TermDetail("%s: %s", wr.Path, f.Detail)
+				continue
+			}
+			if f.Category == checks.ContainerImage {
+				// Several workflows can share one image; key by detail, which
+				// names both the image and what runs it.
+				where := f.WorkflowPath
+				if len(f.Locations) > 0 {
+					where += " (" + strings.Join(f.Locations, ", ") + ")"
+				}
+				if g, ok := imageMap[f.Detail]; ok {
+					g.workflows = append(g.workflows, where)
+				} else {
+					imageOrder = append(imageOrder, f.Detail)
+					imageMap[f.Detail] = &warningGroup{finding: f, count: 1, workflows: []string{where}}
+				}
 				continue
 			}
 			if f.IsWarning() {
@@ -381,9 +397,6 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 					warnMap[key] = &warningGroup{finding: f, count: 1, workflows: []string{f.WorkflowPath}}
 				}
 			}
-		}
-		for _, pw := range wr.ParseWarnings {
-			out.TermWarn("%s: %s", wr.Path, pw)
 		}
 	}
 
@@ -413,6 +426,14 @@ func renderWarnings(out *ui.UI, report *checks.Report, willRemediate bool) {
 		}
 	}
 
+	for _, detail := range imageOrder {
+		g := imageMap[detail]
+		out.TermWarn("%s", detail)
+		for _, where := range g.workflows {
+			out.TermDetail("↳ in %s", where)
+		}
+		out.TermDetail("↳ %s", g.finding.Remediation)
+	}
 	if len(localActionWorkflows) > 0 {
 		out.TermCaution("%d %s skipped — local path actions are not yet supported",
 			len(localActionWorkflows),

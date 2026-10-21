@@ -2316,3 +2316,110 @@ func TestRun_ParitySSORateLimitedGuidance(t *testing.T) {
 		})
 	}
 }
+
+// TestContainerImagesNamedInRepository checks images named in the
+// repository's own files in every mode, offline included, since they need no
+// API request.
+func TestContainerImagesNamedInRepository(t *testing.T) {
+	files := map[string]string{
+		".github/workflows/a.yml": `
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: node:20
+    services:
+      db:
+        image: postgres@sha256:0123456789abcdef
+      cache: redis
+      dynamic:
+        image: ${{ matrix.image }}
+    steps:
+      - uses: $/actions/build
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: node:20
+      credentials:
+        username: u
+        password: ${{ secrets.TOKEN }}
+    steps:
+      - run: true
+`,
+		".github/workflows/b.yml": `
+on: push
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    container: node:20
+    steps:
+      - uses: docker://node:20
+`,
+		"actions/build/action.yml": "runs:\n  using: docker\n  image: Dockerfile\n",
+		".github/workflows/actions.lock": "version: '" + parserlock.Version + "'\nworkflows:\n" +
+			"  '.github/workflows/a.yml': []\n  '.github/workflows/b.yml': []\n",
+	}
+	node := "node:20 is not covered by the actions lockfile; container image tags are mutable"
+	redis := "redis is not covered by the actions lockfile; an untagged image pulls the mutable latest tag"
+	build := "Dockerfile (built by $/actions/build) is not covered by the actions lockfile; the image and its base images are built on the runner at run time"
+
+	for _, mode := range []string{"", "--verify-local"} {
+		for _, jsonOutput := range []bool{false, true} {
+			t.Run(fmt.Sprintf("mode=%q/json=%t", mode, jsonOutput), func(t *testing.T) {
+				dir := t.TempDir()
+				require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+				for name, content := range files {
+					path := filepath.Join(dir, filepath.FromSlash(name))
+					require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+					require.NoError(t, os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o600))
+				}
+				t.Chdir(dir)
+				args := []string{"--no-interactive"}
+				if mode != "" {
+					args = append(args, mode)
+				}
+				if jsonOutput {
+					args = append(args, "--json=valid,findings")
+				}
+				stdout, stderr, err := runCommandWithHTTP(t, &httpmock.Registry{}, args...)
+				require.NoError(t, err, "container image warnings never fail the run: %s", stderr)
+				for _, skipped := range []string{"postgres@sha256", "matrix.image"} {
+					assert.NotContains(t, stdout+stderr, skipped, "digest pins and expressions produce nothing")
+				}
+				if !jsonOutput {
+					assert.Equal(t, 1, strings.Count(stderr, node), "one image renders once:\n%s", stderr)
+					assert.Contains(t, stderr, "in .github/workflows/a.yml (jobs.build.container, jobs.test.container)")
+					assert.Contains(t, stderr, "in .github/workflows/b.yml (jobs.lint.container, jobs.lint.steps[0])")
+					assert.Contains(t, stderr, redis)
+					assert.Contains(t, stderr, build)
+					assert.NotContains(t, stderr, "maintainer", "the repository owns every image here")
+					return
+				}
+				var out struct {
+					Valid    bool `json:"valid"`
+					Findings []struct {
+						Workflow string `json:"workflow"`
+						Category string `json:"category"`
+						Severity string `json:"severity"`
+						Detail   string `json:"detail"`
+					} `json:"findings"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(stdout), &out))
+				assert.True(t, out.Valid)
+				var got []string
+				for _, f := range out.Findings {
+					if f.Category == "container-image" {
+						assert.Equal(t, "warning", f.Severity)
+						got = append(got, f.Workflow+": "+f.Detail)
+					}
+				}
+				assert.ElementsMatch(t, []string{
+					".github/workflows/a.yml: " + node,
+					".github/workflows/a.yml: " + redis,
+					".github/workflows/a.yml: " + build,
+					".github/workflows/b.yml: " + node,
+				}, got, "JSON findings are per workflow, once per image")
+			})
+		}
+	}
+}

@@ -3,6 +3,7 @@ package checks
 import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/dockerimage"
 )
 
 // ParsedWorkflow holds the per-workflow parse result that both phases need.
@@ -27,9 +28,12 @@ type ParsedWorkflow struct {
 	SelfRepositoryRefErrs        []string
 	SelfRepositoryResolutionErrs []string
 	ExistingDeps                 []dep.Dependency
-	ParseWarnings                []string
-	LoadErr                      error
-	DepsErr                      error
+	// ContainerImages are the images named in the workflow and the in-repo
+	// `$/…` actions it reaches: `docker://` steps, job containers and
+	// services, and Docker actions' `runs.image`.
+	ContainerImages []dockerimage.Image
+	LoadErr         error
+	DepsErr         error
 	// Resolved, when true, instructs DiagnoseParsed to run this
 	// workflow's diagnostics with a nil resolver. Network-bound checks
 	// (ref-moved) are skipped and the engine relies on

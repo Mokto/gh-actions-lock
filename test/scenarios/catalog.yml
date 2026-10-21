@@ -450,7 +450,7 @@ scenarios:
     expect:
       exit: 0
       output_contains:
-        - "docker://alpine:3.18 is not covered by the actions lockfile; container image tags are mutable"
+        - "alpine:3.18 is not covered by the actions lockfile; container image tags are mutable"
 
   - name: local_actions_allowed
     category: workflow_parsing

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/dockerimage"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pinpool"
@@ -206,7 +207,7 @@ func selfRepositoryFinding(pw checks.ParsedWorkflow) checks.Finding {
 
 // precheckWorkflow handles terminal preconditions (load error,
 // no refs, unreadable deps). It returns true when
-// one fired; otherwise the report is seeded with ActionRefs/ParseWarnings.
+// one fired; otherwise the report is seeded with ActionRefs and container image warnings.
 func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.WorkflowReport, bool) {
 	wr := checks.WorkflowReport{Path: pw.Path}
 
@@ -232,7 +233,7 @@ func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.W
 	}
 	wr.SelfActionFiles = pw.SelfActionFiles
 	wr.SelfActionRefs = pw.SelfActionRefs
-	wr.ParseWarnings = pw.ParseWarnings
+	appendWorkflowContainerImages(&wr, pw)
 
 	hasTerminalFinding := false
 	if len(pw.SelfRepositoryRefErrs) > 0 {
@@ -335,6 +336,46 @@ func appendLocalActionNotices(wr *checks.WorkflowReport, warnings []string) {
 	}
 }
 
+// appendWorkflowContainerImages warns about images named in the workflow and
+// its in-repo actions. They need no network, so offline verification checks
+// them too.
+func appendWorkflowContainerImages(wr *checks.WorkflowReport, pw checks.ParsedWorkflow) {
+	for _, image := range pw.ContainerImages {
+		appendContainerImageFinding(wr, image)
+	}
+}
+
+// appendContainerImageFinding warns once per workflow about an image the
+// lockfile can't pin; further uses of it are added as locations.
+func appendContainerImageFinding(wr *checks.WorkflowReport, image dockerimage.Image) {
+	if !image.Mutable() {
+		return
+	}
+	detail := image.Detail()
+	if i := slices.IndexFunc(wr.Findings, func(f checks.Finding) bool {
+		return f.Category == checks.ContainerImage && f.Detail == detail
+	}); i >= 0 {
+		if image.Location != "" && !slices.Contains(wr.Findings[i].Locations, image.Location) {
+			wr.Findings[i].Locations = append(wr.Findings[i].Locations, image.Location)
+		}
+		return
+	}
+	var locations []string
+	if image.Location != "" {
+		locations = []string{image.Location}
+	}
+	wr.Findings = append(wr.Findings, checks.Finding{
+		WorkflowPath: wr.Path,
+		Category:     checks.ContainerImage,
+		Severity:     checks.SeverityWarning,
+		Confidence:   checks.ConfidenceHigh,
+		ParentNWO:    image.RequiredBy(),
+		Detail:       detail,
+		Remediation:  image.Remediation(),
+		Locations:    locations,
+	})
+}
+
 func preserveExistingInventory(wr *checks.WorkflowReport, pw checks.ParsedWorkflow) {
 	wr.Deps = pw.ExistingDeps
 	for _, d := range pw.ExistingDeps {
@@ -362,7 +403,7 @@ func hasIssues(ff []checks.Finding) bool {
 		if f.Category.IsInconclusive() {
 			continue
 		}
-		if f.Category != checks.Valid && f.Category != checks.RunOnly && f.Category != checks.LocalAction && f.Severity == checks.SeverityWarning {
+		if f.Category != checks.Valid && f.Category != checks.RunOnly && f.Category != checks.LocalAction && f.Category != checks.ContainerImage && f.Severity == checks.SeverityWarning {
 			return true
 		}
 	}

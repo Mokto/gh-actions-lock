@@ -79,7 +79,7 @@ func ParseAll(paths []string, store *lockfile.State) []checks.ParsedWorkflow {
 		pw.SelfRepositoryRefs = mergeStrings(scan.SelfRepositoryRefs, selfScan.SelfRepositoryRefs)
 		pw.SelfRepositoryRefErrs = mergeStrings(scan.SelfRepositoryRefErrs, selfScan.SelfRepositoryRefErrs)
 		pw.SelfRepositoryResolutionErrs = selfScan.Errors
-		pw.ParseWarnings = append(scan.Warnings, selfScan.Warnings...)
+		pw.ContainerImages = append(scan.ContainerImages, selfScan.ContainerImages...)
 		out = append(out, pw)
 	}
 	return out

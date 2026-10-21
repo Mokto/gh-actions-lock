@@ -7,6 +7,7 @@ import (
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/dockerimage"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
@@ -301,5 +302,25 @@ workflows:
 			assert.Equal(t, tc.wantValid, report.IsValid())
 			assert.Equal(t, !hasError, report.IsValid(), "valid must agree with severities")
 		})
+	}
+}
+
+func TestVerifyLocalCoverage_ContainerImagesWarnOffline(t *testing.T) {
+	store := writeTestLockfile(t, t.TempDir(), testLockfileContent)
+	parsed := []checks.ParsedWorkflow{{
+		Path: ".github/workflows/empty.yml",
+		ContainerImages: []dockerimage.Image{
+			{Ref: "docker://alpine:3"},
+			{Ref: "node:20", Location: "jobs.build.container"},
+			{Ref: "Dockerfile", Local: "$/actions/build"},
+		},
+	}}
+
+	report := VerifyLocalCoverage(parsed, store)
+	assert.True(t, report.IsValid())
+	require.Len(t, report.Workflows[0].Findings, 3)
+	for _, f := range report.Workflows[0].Findings {
+		assert.Equal(t, checks.ContainerImage, f.Category)
+		assert.Equal(t, checks.SeverityWarning, f.Severity)
 	}
 }

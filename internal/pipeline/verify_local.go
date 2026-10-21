@@ -87,6 +87,7 @@ func VerifyLocalCoverage(parsed []checks.ParsedWorkflow, store *lockfile.State) 
 		if len(pw.LocalPaths) > 0 {
 			wr.Findings = append(wr.Findings, localActionFinding(pw))
 		}
+		appendWorkflowContainerImages(&wr, pw)
 
 		// Use RunChecks with a nil resolver to get structural-only findings
 		// (NotPinned, ShaAsRef, RefChanged, Stale). No network calls.

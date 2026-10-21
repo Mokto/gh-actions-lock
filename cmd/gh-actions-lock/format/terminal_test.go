@@ -11,6 +11,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ui"
+	"github.com/stretchr/testify/assert"
 )
 
 // newTestUI returns a UI whose narration log sinks to io.Discard, mirroring
@@ -305,26 +306,35 @@ func TestPresentResults_TransitiveSHAAsRefStillSuppressed(t *testing.T) {
 	}
 }
 
-// TestPresentResults_ParseWarningsSurface guards the per-workflow
-// ParseWarnings rendering: malformed `uses:` lines must reach the
-// terminal, not just JSON.
-func TestPresentResults_ParseWarningsSurface(t *testing.T) {
+func withLocations(f checks.Finding, locations ...string) checks.Finding {
+	f.Locations = locations
+	return f
+}
+
+func TestPresentResults_ContainerImagesGroupAcrossWorkflows(t *testing.T) {
 	u, buf := newTestUI()
-	report := &checks.Report{
-		Workflows: []checks.WorkflowReport{{
-			Path:          ".github/workflows/a.yml",
-			ParseWarnings: []string{"malformed uses: at line 12"},
-		}},
+	image := func(path string) checks.Finding {
+		return checks.Finding{
+			WorkflowPath: path,
+			Category:     checks.ContainerImage,
+			Severity:     checks.SeverityWarning,
+			Confidence:   checks.ConfidenceHigh,
+			ParentNWO:    "o/r@v1",
+			Detail:       "docker://alpine:3 (pulled by o/r@v1) is not covered by the actions lockfile",
+			Remediation:  "ask the action's maintainer to pin the image by digest",
+		}
 	}
+	report := &checks.Report{Workflows: []checks.WorkflowReport{
+		{Path: ".github/workflows/a.yml", Findings: []checks.Finding{image(".github/workflows/a.yml")}},
+		{Path: ".github/workflows/b.yml", Findings: []checks.Finding{withLocations(image(".github/workflows/b.yml"), "jobs.build.container", "jobs.test.container")}},
+	}}
 	PresentResults(u, report, true, false)
 
 	got := buf.String()
-	if !strings.Contains(got, "malformed uses:") {
-		t.Errorf("ParseWarnings missing from terminal output:\n%s", got)
-	}
-	if !strings.Contains(got, ".github/workflows/a.yml") {
-		t.Errorf("ParseWarnings should be prefixed with workflow path:\n%s", got)
-	}
+	assert.Equal(t, 1, strings.Count(got, "docker://alpine:3 (pulled by o/r@v1)"), got)
+	assert.Contains(t, got, "in .github/workflows/a.yml\n")
+	assert.Contains(t, got, "in .github/workflows/b.yml (jobs.build.container, jobs.test.container)\n")
+	assert.Contains(t, got, "ask the action's maintainer to pin the image by digest")
 }
 
 // TestPresentResults_ExcludeCategoriesSkipsImpostor verifies that excluded

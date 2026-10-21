@@ -82,6 +82,9 @@ type Finding struct {
 	Reresolve bool
 	// IncompleteLockfile distinguishes damaged recorded graphs from new refs.
 	IncompleteLockfile bool
+	// Locations are where in the workflow a container-image finding's image
+	// appears, such as `jobs.build.container`. Terminal only.
+	Locations []string
 }
 
 // InventoryEntry describes a single dependency with context.
@@ -116,8 +119,6 @@ type WorkflowReport struct {
 	Deps []dep.Dependency
 	// Inventory lists all dependencies with direct/transitive classification.
 	Inventory []InventoryEntry
-	// ParseWarnings from ExtractActionRefs (e.g. malformed uses: lines).
-	ParseWarnings []string
 	// Deferred are findings parity excused or accepted on the strength of
 	// a write the run has yet to plan.
 	Deferred []Deferred
@@ -130,7 +131,7 @@ func (r *WorkflowReport) NeedsAttention() bool {
 			continue
 		}
 		switch f.Category {
-		case Valid, RunOnly, LocalAction, MisleadingSHA, RefMoved, VersionRef, SelfRepositoryAction:
+		case Valid, RunOnly, LocalAction, MisleadingSHA, RefMoved, VersionRef, SelfRepositoryAction, ContainerImage:
 			continue
 		default:
 			return true
@@ -168,7 +169,7 @@ func (f *Finding) IsWarning() bool {
 		return true
 	case f.Category == RefMoved:
 		return true
-	case f.Category == LocalAction, f.Category == RepoRenamed:
+	case f.Category == LocalAction, f.Category == RepoRenamed, f.Category == ContainerImage:
 		return true
 	case f.Category.IsInconclusive():
 		return true
