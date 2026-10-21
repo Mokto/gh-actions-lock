@@ -34,6 +34,9 @@ type Scenario struct {
 	Tags        []string `yaml:"tags"`
 	Flags       []string `yaml:"flags"`
 	LiveRepo    string   `yaml:"live_repo"`
+	// StubManifest replaces the action.yml the stubbed actions/checkout
+	// serves, so a scenario can stand in for any kind of action.
+	StubManifest string `yaml:"stub_manifest,omitempty"`
 
 	// Env sets or unsets process environment variables for the run. A nil
 	// value unsets the variable (YAML null), letting scenarios strip ambient

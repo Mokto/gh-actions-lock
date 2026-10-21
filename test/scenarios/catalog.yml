@@ -8,6 +8,7 @@
 #   description: what the scenario validates
 #   needs_token: true if the scenario requires a real GH_TOKEN
 #   needs_stub:  true if the scenario uses a stub HTTP server
+#   stub_manifest: action.yml served for the stubbed actions/checkout
 #   tags:        labels for filtering (e.g. "smoke", "security")
 #   flags:       CLI flags passed to the binary
 #   fixtures:    inline workflow/lockfile content (Ruby-side hydrates these)
@@ -451,6 +452,134 @@ scenarios:
       exit: 0
       output_contains:
         - "alpine:3.18 is not covered by the actions lockfile; container image tags are mutable"
+
+  - name: job_container_images_warn
+    category: workflow_parsing
+    description: "Real-binary delta over TestContainerImagesNamedInRepository: the compiled binary's offline --verify-local reads job containers, services and an own $/ Docker action from disk"
+    needs_token: false
+    needs_stub: false
+    tags: [stub]
+    flags: ["--verify-local"]
+    fixtures:
+      workflows:
+        ci.yml:
+          raw: |
+            name: CI
+            on: push
+            jobs:
+              build:
+                runs-on: ubuntu-latest
+                container:
+                  image: node:20
+                  credentials:
+                    username: u
+                services:
+                  db: postgres@sha256:0000000000000000000000000000000000000000000000000000000000000000
+                  cache:
+                    image: redis
+                  dynamic:
+                    image: ${{ matrix.image }}
+                steps:
+                  - uses: $/actions/build
+              test:
+                runs-on: ubuntu-latest
+                container: node:20
+                steps:
+                  - run: true
+      lockfile: |
+        version: 'v0.0.3'
+        workflows:
+          '.github/workflows/ci.yml': []
+      files:
+        actions/build/action.yml: |
+          runs:
+            using: docker
+            image: Dockerfile
+    expect:
+      exit: 0
+      output_contains:
+        - "node:20 is not covered by the actions lockfile; container image tags are mutable"
+        - "in .github/workflows/ci.yml (jobs.build.container, jobs.test.container)"
+        - "redis is not covered by the actions lockfile; an untagged image pulls the mutable latest tag"
+        - "Dockerfile (built by $/actions/build) is not covered by the actions lockfile"
+      output_excludes: ["postgres@sha256", "matrix.image", "maintainer"]
+
+  - name: docker_action_tag_warns
+    category: workflow_parsing
+    description: "Real-binary delta over TestRemoteContainerImageWarnings: the compiled binary's --verify path reads runs.image from the locked manifest served over the stub API and still exits 0"
+    needs_stub: true
+    stub_manifest: "name: Scan\nruns:\n  using: docker\n  image: docker://ghcr.io/o/scan:v2\n"
+    tags: [stub]
+    flags: ["--verify"]
+    fixtures:
+      workflows:
+        ci.yml:
+          name: CI
+          actions: ["actions/checkout@v4"]
+      lockfile_template: pinned_checkout
+    expect:
+      exit: 0
+      output_contains:
+        - "ghcr.io/o/scan:v2 (pulled by actions/checkout@v4) is not covered by the actions lockfile; the lock pins the action's commit, not the image"
+        - "ask the action's maintainer to pin the image by digest"
+
+  - name: docker_action_digest_quiet
+    category: workflow_parsing
+    description: "Real-binary delta over TestRemoteContainerImageWarnings: a digest-pinned runs.image read by the compiled binary stays silent"
+    needs_stub: true
+    stub_manifest: "name: Scan\nruns:\n  using: docker\n  image: docker://ghcr.io/o/scan@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"
+    tags: [stub]
+    flags: ["--verify"]
+    fixtures:
+      workflows:
+        ci.yml:
+          name: CI
+          actions: ["actions/checkout@v4"]
+      lockfile_template: pinned_checkout
+    expect:
+      exit: 0
+      output_excludes: ["not covered by the actions lockfile"]
+
+  - name: docker_action_dockerfile_warns
+    category: workflow_parsing
+    description: "Real-binary delta over TestRemoteContainerImageWarnings: the compiled binary pins a Dockerfile action through the real lockfile emitter and warns about the run-time build"
+    needs_stub: true
+    stub_manifest: "name: Build\nruns:\n  using: docker\n  image: Dockerfile\n"
+    tags: [stub]
+    flags: ["--no-narrow"]
+    fixtures:
+      workflows:
+        ci.yml:
+          name: CI
+          actions: ["actions/checkout@v4"]
+    expect:
+      exit: 0
+      output_contains:
+        - "Dockerfile (built by actions/checkout@v4) is not covered by the actions lockfile"
+        - "built on the runner at run time"
+
+  - name: composite_docker_step_warns
+    category: workflow_parsing
+    description: "Real-binary delta over TestRemoteContainerImageWarnings: the compiled binary's --json output carries a remote composite's docker:// step as a container-image warning"
+    needs_stub: true
+    stub_manifest: "name: Release\nruns:\n  using: composite\n  steps:\n    - uses: docker://ghcr.io/o/release:3\n"
+    tags: [stub]
+    flags: ["--verify", "--json=valid,findings"]
+    fixtures:
+      workflows:
+        ci.yml:
+          name: CI
+          actions: ["actions/checkout@v4"]
+      lockfile_template: pinned_checkout
+    expect:
+      exit: 0
+      stdout_is_json: true
+      stdout_contains:
+        - "\"category\": \"container-image\""
+        - "\"severity\": \"warning\""
+        - "\"required_by\": \"actions/checkout@v4\""
+        - "ghcr.io/o/release:3 (pulled by actions/checkout@v4)"
+        - "\"valid\": true"
 
   - name: local_actions_allowed
     category: workflow_parsing

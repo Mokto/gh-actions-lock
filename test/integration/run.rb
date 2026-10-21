@@ -586,7 +586,9 @@ def checkout_graphql_ref_move(srv, live_sha)
   end
 end
 
-def checkout_graphql_success(srv, name_with_owner: "actions/checkout")
+CHECKOUT_MANIFEST = "name: Checkout\ndescription: Checkout\nruns:\n  using: node20\n  main: dist/index.js\n"
+
+def checkout_graphql_success(srv, name_with_owner: "actions/checkout", manifest: CHECKOUT_MANIFEST)
   srv.on(:POST, %r{/graphql$}) do |req|
     body = JSON.parse(req.body) rescue {}
     query = body["query"] || ""
@@ -601,7 +603,7 @@ def checkout_graphql_success(srv, name_with_owner: "actions/checkout")
            oid: CHECKOUT_SHA,
            file: {
              object: {
-               text: "name: Checkout\ndescription: Checkout\nruns:\n  using: node20\n  main: dist/index.js\n"
+               text: manifest
              }
            }
          }
@@ -613,9 +615,9 @@ def checkout_graphql_success(srv, name_with_owner: "actions/checkout")
   end
 end
 
-def wire_checkout_success(s, token)
+def wire_checkout_success(s, token, manifest: CHECKOUT_MANIFEST)
   s.stub_server do |srv|
-    checkout_graphql_success(srv)
+    checkout_graphql_success(srv, manifest: manifest)
     checkout_repo_rest(srv)
     srv.on(:GET, %r{/repos/actions/checkout/releases}) do |_req|
       [200, { "Content-Type" => "application/json" },
@@ -952,10 +954,15 @@ catalog["scenarios"].each do |spec|
       end
     end
 
+    # A catalog stub_manifest replaces the action.yml served for actions/checkout.
+    if spec["stub_manifest"]
+      wire_checkout_success(s, "gho_fake_#{name}_token", manifest: spec["stub_manifest"])
+    end
+
     # Stub server wiring
     if STUB_WIRING[name]
       STUB_WIRING[name].call(s)
-    elsif needs_stub && !STUB_WIRING[name]
+    elsif needs_stub && !STUB_WIRING[name] && !spec["stub_manifest"]
       # Default stub: SSO 403 (reliable failure trigger)
       s.stub_server { |srv| sso_403_all(srv) }
       s.env("GH_TOKEN" => "gho_fake_default_stub_token")
