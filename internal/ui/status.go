@@ -183,6 +183,18 @@ func (u *UI) TermCaution(msg string, args ...any) {
 	fmt.Fprintf(u.w, "%s %s\n", u.paint("3", IconWarning), fmt.Sprintf(msg, args...))
 }
 
+// TermNotice prints a yellow "!" line to the terminal while a run is in
+// progress, pausing any spinner, even when narration goes to a log. Use it
+// for waits the user must see so a slow run doesn't look hung.
+func (u *UI) TermNotice(msg string, args ...any) {
+	text := fmt.Sprintf(msg, args...)
+	if u.headless {
+		u.headlessEmit(text)
+		return
+	}
+	u.printLine(func() { fmt.Fprintf(u.w, "%s %s\n", u.paint("3", IconWarning), text) })
+}
+
 // TermDetail prints an indented summary detail line directly to the terminal.
 func (u *UI) TermDetail(msg string, args ...any) {
 	if u.headless {

@@ -28,8 +28,13 @@ func fakeBudget() (*retryBudget, *time.Duration) {
 	b.now = func() time.Time { return testNow.Add(slept) }
 	b.sleep = func(_ context.Context, d time.Duration) { slept += d }
 	b.jitter = func(max time.Duration) time.Duration { return max }
+	b.notify = func(string) {}
 	return b, &slept
 }
+
+// backoffTotal is the wait before giving up on a request that never gets
+// an answer, with jitter at its upper bound: 1+2+4+8+16+30+30s.
+const backoffTotal = 91 * time.Second
 
 func status(code int, h map[string]string) func() (*http.Response, error) {
 	return func() (*http.Response, error) {
@@ -61,22 +66,23 @@ func TestRetryTransport_Taxonomy(t *testing.T) {
 		unknown bool
 		code    int
 	}{
-		{name: "dial refused", attempt: fail(refused), attempts: 3, waited: 3 * time.Second, unknown: true},
-		{name: "dial timeout", attempt: fail(&net.OpError{Op: "dial", Err: timeoutErr{}}), attempts: 3, waited: 3 * time.Second, unknown: true},
-		{name: "dns failure", attempt: fail(&net.DNSError{Err: "no such host", Name: "api.github.com", IsNotFound: true}), attempts: 3, waited: 3 * time.Second, unknown: true},
-		{name: "tls handshake timeout", attempt: fail(errors.New("net/http: TLS handshake timeout")), attempts: 3, waited: 3 * time.Second, unknown: true},
-		{name: "connection reset", attempt: fail(&net.OpError{Op: "read", Err: syscall.ECONNRESET}), attempts: 3, waited: 3 * time.Second, unknown: true},
-		{name: "unexpected eof", attempt: fail(io.ErrUnexpectedEOF), attempts: 3, waited: 3 * time.Second, unknown: true},
-		{name: "response header timeout", attempt: fail(context.DeadlineExceeded), attempts: 3, waited: 3 * time.Second, unknown: true},
+		{name: "dial refused", attempt: fail(refused), attempts: 8, waited: backoffTotal, unknown: true},
+		{name: "dial timeout", attempt: fail(&net.OpError{Op: "dial", Err: timeoutErr{}}), attempts: 8, waited: backoffTotal, unknown: true},
+		{name: "dns failure", attempt: fail(&net.DNSError{Err: "no such host", Name: "api.github.com", IsNotFound: true}), attempts: 8, waited: backoffTotal, unknown: true},
+		{name: "tls handshake timeout", attempt: fail(errors.New("net/http: TLS handshake timeout")), attempts: 8, waited: backoffTotal, unknown: true},
+		{name: "connection reset", attempt: fail(&net.OpError{Op: "read", Err: syscall.ECONNRESET}), attempts: 8, waited: backoffTotal, unknown: true},
+		{name: "unexpected eof", attempt: fail(io.ErrUnexpectedEOF), attempts: 8, waited: backoffTotal, unknown: true},
+		{name: "response header timeout", attempt: fail(context.DeadlineExceeded), attempts: 8, waited: backoffTotal, unknown: true},
 		{name: "untrusted certificate", attempt: fail(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}), attempts: 1},
 		{name: "certificate for another host", attempt: fail(x509.HostnameError{Host: "api.github.com"}), attempts: 1},
-		{name: "503", attempt: status(503, nil), attempts: 3, waited: 3 * time.Second, code: 503},
-		{name: "500", attempt: status(500, nil), attempts: 3, waited: 3 * time.Second, code: 500},
-		{name: "429 retry-after seconds", attempt: status(429, map[string]string{"Retry-After": "5"}), attempts: 3, waited: 10 * time.Second, code: 429},
-		{name: "429 without headers backs off", attempt: status(429, nil), attempts: 3, waited: 3 * time.Second, code: 429},
-		{name: "secondary limit retry-after http date", attempt: status(403, map[string]string{"Retry-After": testNow.Add(7 * time.Second).Format(http.TimeFormat)}), attempts: 3, waited: 7 * time.Second, code: 403},
-		{name: "retry-after past the budget fails fast", attempt: status(429, map[string]string{"Retry-After": "120"}), attempts: 1, code: 429},
-		{name: "primary limit reset soon", attempt: status(403, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(testNow.Add(9 * time.Second).Unix())}), attempts: 3, waited: 10 * time.Second, code: 403},
+		{name: "503", attempt: status(503, nil), attempts: 8, waited: backoffTotal, code: 503},
+		{name: "500", attempt: status(500, nil), attempts: 8, waited: backoffTotal, code: 500},
+		{name: "429 retry-after seconds", attempt: status(429, map[string]string{"Retry-After": "5"}), attempts: 8, waited: 35 * time.Second, code: 429},
+		{name: "429 without headers backs off", attempt: status(429, nil), attempts: 8, waited: backoffTotal, code: 429},
+		{name: "secondary limit retry-after http date", attempt: status(403, map[string]string{"Retry-After": testNow.Add(7 * time.Second).Format(http.TimeFormat)}), attempts: 8, waited: 13 * time.Second, code: 403},
+		{name: "retry-after of minutes is waited out", attempt: status(429, map[string]string{"Retry-After": "120"}), attempts: 3, waited: 240 * time.Second, code: 429},
+		{name: "retry-after past the outage window fails fast", attempt: status(429, map[string]string{"Retry-After": "600"}), attempts: 1, code: 429},
+		{name: "primary limit reset soon", attempt: status(403, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(testNow.Add(9 * time.Second).Unix())}), attempts: 8, waited: 16 * time.Second, code: 403},
 		{name: "primary limit reset in 40m fails fast", attempt: status(403, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(testNow.Add(40 * time.Minute).Unix())}), attempts: 1, code: 403},
 		{name: "plain 403 is an answer", attempt: status(403, nil), attempts: 1, code: 403},
 		{name: "401 is an answer", attempt: status(401, nil), attempts: 1, code: 401},
@@ -133,75 +139,82 @@ func TestRetryTransport_RecoversAfterOutage(t *testing.T) {
 	assert.Equal(t, time.Second, *slept)
 }
 
-func TestRetryTransport_RunBudgetIsShared(t *testing.T) {
+// TestRetryTransport_OutageWindowIsShared: requests waiting out one outage
+// share its window, so a run gives up about five minutes after GitHub stops
+// answering, however many requests it makes; an answer reopens it.
+func TestRetryTransport_OutageWindowIsShared(t *testing.T) {
 	budget, slept := fakeBudget()
+	up := false
+	n := 0
 	rt := newRetryTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return status(429, map[string]string{"Retry-After": "25"})()
+		n++
+		if up {
+			return status(200, nil)()
+		}
+		return status(429, map[string]string{"Retry-After": "100"})()
 	}), budget)
 	calls := func() int {
-		n := 0
-		inner := rt.inner
-		rt.inner = roundTripFunc(func(r *http.Request) (*http.Response, error) { n++; return inner.RoundTrip(r) })
-		defer func() { rt.inner = inner }()
+		n = 0
 		req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/x", nil)
 		resp, err := rt.RoundTrip(req)
 		require.NoError(t, err)
 		resp.Body.Close()
 		return n
 	}
-	assert.Equal(t, 3, calls(), "first request waits 25s twice")
-	assert.Equal(t, 1, calls(), "10s left can't cover another 25s wait")
-	assert.Equal(t, 50*time.Second, *slept)
+	assert.Equal(t, 4, calls(), "waits 100s three times, the whole window")
+	assert.Equal(t, 1, calls(), "the window is spent")
+	assert.Equal(t, 300*time.Second, *slept)
+	up = true
+	assert.Equal(t, 1, calls())
+	up = false
+	assert.Equal(t, 4, calls(), "an answer reopens the window")
 }
 
-func TestRetryTransport_CircuitBreaker(t *testing.T) {
+// TestRetryTransport_Notices: each wait says why and for how long, so a
+// long wait doesn't look like a hang.
+func TestRetryTransport_Notices(t *testing.T) {
+	tests := []struct {
+		name    string
+		attempt func() (*http.Response, error)
+		want    string
+	}{
+		{"server error", status(503, nil), "GitHub API unavailable (503 Service Unavailable); retrying in 1s, attempt 2/8"},
+		{"refused", fail(&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}), "GitHub API unreachable (connection refused); retrying in 1s, attempt 2/8"},
+		{"dns", fail(&net.DNSError{Err: "no such host", Name: "api.github.com"}), "GitHub API unreachable (DNS lookup failed); retrying in 1s, attempt 2/8"},
+		{"rate limit", status(429, map[string]string{"Retry-After": "150"}), "GitHub API rate limit; waiting until 14:02 UTC, attempt 2/8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budget, _ := fakeBudget()
+			var got []string
+			budget.notify = func(msg string) { got = append(got, msg) }
+			rt := newRetryTransport(roundTripFunc(func(*http.Request) (*http.Response, error) { return tt.attempt() }), budget)
+			req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/x", nil)
+			resp, err := rt.RoundTrip(req)
+			if err == nil {
+				resp.Body.Close()
+			}
+			require.NotEmpty(t, got)
+			assert.Equal(t, tt.want, got[0])
+		})
+	}
+}
+
+// TestRetryTransport_NoticesAreThrottled: concurrent requests waiting out
+// the same outage print one line, not one each.
+func TestRetryTransport_NoticesAreThrottled(t *testing.T) {
 	budget, _ := fakeBudget()
-	calls := map[string]int{}
-	rt := newRetryTransport(roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		calls[r.URL.Host]++
-		if r.URL.Host == "api.github.com" {
-			return nil, &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}
-		}
-		return status(200, nil)()
-	}), budget)
-	get := func(host string) error {
-		req, _ := http.NewRequest(http.MethodGet, "https://"+host+"/x", nil)
+	budget.sleep = func(context.Context, time.Duration) {}
+	var got []string
+	budget.notify = func(msg string) { got = append(got, msg) }
+	rt := newRetryTransport(roundTripFunc(func(*http.Request) (*http.Response, error) { return status(502, nil)() }), budget)
+	for range 5 {
+		req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/x", nil)
 		resp, err := rt.RoundTrip(req)
-		if err == nil {
-			resp.Body.Close()
-		}
-		return err
+		require.NoError(t, err)
+		resp.Body.Close()
 	}
-	for range breakerThreshold {
-		require.Error(t, get("api.github.com"))
-	}
-	before := calls["api.github.com"]
-	err := get("api.github.com")
-	var unknown *UnknownOutcomeError
-	require.ErrorAs(t, err, &unknown)
-	assert.Contains(t, err.Error(), "did not respond to the last 3 requests")
-	assert.Equal(t, before, calls["api.github.com"], "an open breaker makes no request")
-	assert.NoError(t, get("ghe.example.com"), "other hosts are unaffected")
-}
-
-func TestRetryTransport_AnswerClosesBreaker(t *testing.T) {
-	budget, _ := fakeBudget()
-	down := true
-	rt := newRetryTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
-		if down {
-			return nil, io.ErrUnexpectedEOF
-		}
-		return status(404, nil)()
-	}), budget)
-	req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/x", nil)
-	for range breakerThreshold - 1 {
-		_, err := rt.RoundTrip(req)
-		require.Error(t, err)
-	}
-	down = false
-	_, err := rt.RoundTrip(req)
-	require.NoError(t, err)
-	assert.False(t, budget.open("api.github.com"))
+	assert.Len(t, got, 1)
 }
 
 func TestRetryTransport_CallerCancelStops(t *testing.T) {

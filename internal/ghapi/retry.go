@@ -13,22 +13,23 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
 // Retry policy for every GitHub API request. This transport is the only
-// retry layer: callers above it never retry or split a batch because of an
-// outage, so one run's total wait stays bounded.
+// retry layer: callers above it never retry, and never split a batch because
+// of an outage. A CLI run can afford to wait out a short outage or a rate
+// limit, so it retries patiently and gives up only once GitHub has given no
+// answer for outageWindow.
 const (
-	maxAttempts = 3
+	maxAttempts = 8
 	backoffBase = time.Second
-	backoffCap  = 8 * time.Second
-	// runRetryBudget caps the time one run spends waiting between retries,
-	// across all requests and hosts.
-	runRetryBudget = 60 * time.Second
-	// breakerThreshold is how many consecutive requests to one host may
-	// exhaust their retries before later requests to it fail at once.
-	breakerThreshold = 3
+	backoffCap  = 30 * time.Second
+	// outageWindow is how long a run keeps retrying once GitHub stops
+	// answering. Any answer closes the window.
+	outageWindow = 5 * time.Minute
 
 	dialTimeout           = 10 * time.Second
 	tlsHandshakeTimeout   = 10 * time.Second
@@ -37,9 +38,9 @@ const (
 )
 
 // UnknownOutcomeError reports a request that ended without an answer from
-// GitHub: the connection failed, timed out, or was never attempted because
-// the host stopped responding. Retrying later may succeed. RetryAt, when
-// set, is the earliest time GitHub said a retry could succeed.
+// GitHub: the connection failed or timed out on every attempt. Retrying
+// later may succeed. RetryAt, when set, is the earliest time GitHub said a
+// retry could succeed.
 type UnknownOutcomeError struct {
 	Cause   error
 	RetryAt time.Time
@@ -49,60 +50,84 @@ func (e *UnknownOutcomeError) Error() string { return e.Cause.Error() }
 
 func (e *UnknownOutcomeError) Unwrap() error { return e.Cause }
 
-// retryBudget is shared by every transport of one Client so a run's retries
-// draw on one time budget and one circuit breaker per host.
+// retryNotify receives one line per retry wait. Set it with SetRetryNotifier.
+var retryNotify atomic.Pointer[func(string)]
+
+// SetRetryNotifier routes retry progress ("retrying in 20s, attempt 3/8")
+// to fn, so a long wait doesn't look like a hang. nil silences it.
+func SetRetryNotifier(fn func(string)) {
+	if fn == nil {
+		retryNotify.Store(nil)
+		return
+	}
+	retryNotify.Store(&fn)
+}
+
+// retryBudget is shared by every transport of one Client so a run's
+// requests agree on when an outage started.
 type retryBudget struct {
-	mu        sync.Mutex
-	remaining time.Duration
-	failures  map[string]int
+	mu sync.Mutex
+	// since is when GitHub last stopped answering; zero while it answers.
+	since time.Time
+	// noticed throttles notices to one per reason per second, since many
+	// requests wait out the same outage at once.
+	noticed map[string]time.Time
 
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration)
 	jitter func(max time.Duration) time.Duration
+	notify func(string)
 }
 
 func newRetryBudget() *retryBudget {
 	return &retryBudget{
-		remaining: runRetryBudget,
-		failures:  map[string]int{},
-		now:       time.Now,
-		sleep:     DefaultSleep,
+		noticed: map[string]time.Time{},
+		now:     time.Now,
+		sleep:   DefaultSleep,
 		jitter: func(max time.Duration) time.Duration {
 			if max <= 0 {
 				return 0
 			}
 			return rand.N(max + 1)
 		},
+		notify: func(msg string) {
+			if fn := retryNotify.Load(); fn != nil {
+				(*fn)(msg)
+			}
+		},
 	}
 }
 
-// reserve claims d from the budget, reporting false when it doesn't fit.
-func (b *retryBudget) reserve(d time.Duration) bool {
+// allow reports whether a wait of d still ends inside the outage window,
+// opening the window if this is the first failure since an answer.
+func (b *retryBudget) allow(d time.Duration) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if d > b.remaining {
-		return false
+	now := b.now()
+	if b.since.IsZero() {
+		b.since = now
 	}
-	b.remaining -= d
-	return true
+	return !now.Add(d).After(b.since.Add(outageWindow))
 }
 
-func (b *retryBudget) open(host string) bool {
+// answered closes the outage window: GitHub is responding again.
+func (b *retryBudget) answered() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.failures[host] >= breakerThreshold
+	b.since = time.Time{}
 }
 
-// record notes how a request to host ended: gaveUp when it ran out of
-// retries without an answer. Any answer closes the breaker.
-func (b *retryBudget) record(host string, gaveUp bool) {
+func (b *retryBudget) notice(reason, msg string) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if gaveUp {
-		b.failures[host]++
+	now := b.now()
+	last, seen := b.noticed[reason]
+	if seen && now.Sub(last) < time.Second {
+		b.mu.Unlock()
 		return
 	}
-	delete(b.failures, host)
+	b.noticed[reason] = now
+	b.mu.Unlock()
+	b.notify(msg)
 }
 
 // retryTransport retries requests that ended without an answer: transport
@@ -124,10 +149,6 @@ func newRetryTransport(inner http.RoundTripper, budget *retryBudget) *retryTrans
 }
 
 func (rt *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	host := req.URL.Host
-	if rt.budget.open(host) {
-		return nil, &UnknownOutcomeError{Cause: fmt.Errorf("skipped: %s did not respond to the last %d requests", host, breakerThreshold)}
-	}
 	// Snapshot the body so POST requests can be replayed on retry.
 	var body []byte
 	if req.Body != nil {
@@ -154,21 +175,23 @@ func (rt *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if !retryableTransportErr(err) {
 				return nil, err
 			}
-			if !rt.wait(req.Context(), attempt, time.Time{}) {
-				rt.budget.record(host, true)
+			if !rt.wait(req.Context(), attempt, time.Time{}, "GitHub API unreachable ("+transportReason(err)+")") {
 				return nil, &UnknownOutcomeError{Cause: err}
 			}
 			continue
 		}
 		if retryAt, ok := retryableResponse(resp, rt.budget.now()); ok {
-			if rt.wait(req.Context(), attempt, retryAt) {
+			reason := fmt.Sprintf("GitHub API unavailable (%d %s)", resp.StatusCode, http.StatusText(resp.StatusCode))
+			if resp.StatusCode < 500 {
+				reason = "GitHub API rate limit"
+			}
+			if rt.wait(req.Context(), attempt, retryAt, reason) {
 				drain(resp.Body)
 				cancel()
 				continue
 			}
-			rt.budget.record(host, true)
 		} else {
-			rt.budget.record(host, false)
+			rt.budget.answered()
 		}
 		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 		return resp, nil
@@ -176,24 +199,49 @@ func (rt *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // wait sleeps before the next attempt and reports whether one should be
-// made. A wait GitHub asked for (retryAt) is honored only if it fits the
-// run's remaining budget; otherwise the caller gets the answer now rather
-// than a run that stalls until the reset.
-func (rt *retryTransport) wait(ctx context.Context, attempt int, retryAt time.Time) bool {
+// made. Backoff is exponential with full jitter; a wait GitHub asked for
+// (retryAt) is honored if it ends inside the outage window, and otherwise
+// the caller gets the answer now rather than a run that stalls past it.
+func (rt *retryTransport) wait(ctx context.Context, attempt int, retryAt time.Time, reason string) bool {
 	if attempt >= maxAttempts || ctx.Err() != nil {
 		return false
 	}
-	var d time.Duration
-	if retryAt.IsZero() {
-		d = rt.budget.jitter(min(backoffCap, backoffBase<<(attempt-1)))
-	} else {
-		d = max(retryAt.Sub(rt.budget.now()), 0)
+	d := rt.budget.jitter(min(backoffCap, backoffBase<<(attempt-1)))
+	if !retryAt.IsZero() {
+		// Never retry a stale reset immediately.
+		d = max(retryAt.Sub(rt.budget.now()), backoffBase)
 	}
-	if !rt.budget.reserve(d) {
+	if !rt.budget.allow(d) {
 		return false
 	}
+	next := fmt.Sprintf("retrying in %s, attempt %d/%d", d.Round(time.Second), attempt+1, maxAttempts)
+	if !retryAt.IsZero() && d >= time.Minute {
+		next = fmt.Sprintf("waiting until %s, attempt %d/%d", rt.budget.now().Add(d).UTC().Format("15:04 UTC"), attempt+1, maxAttempts)
+	}
+	rt.budget.notice(reason, reason+"; "+next)
 	rt.budget.sleep(ctx, d)
 	return ctx.Err() == nil
+}
+
+// transportReason names a transport failure briefly for a progress line.
+func transportReason(err error) string {
+	var dns *net.DNSError
+	var op *net.OpError
+	switch {
+	case errors.As(err, &dns):
+		return "DNS lookup failed"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
+		return "connection reset"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &op) && op.Timeout():
+		return "timed out"
+	}
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return "timed out"
+	}
+	return "network error"
 }
 
 // retryableResponse reports whether resp is an outage or rate limit worth
