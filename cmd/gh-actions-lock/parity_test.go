@@ -389,6 +389,97 @@ jobs:
 	}
 }
 
+// TestParity_MovedFloatingPathRefIsSticky: a fix run that bumps one action
+// reads a path action's manifest live, so it sees the action's floating ref
+// moved ahead. The locked commit is still in the ref's history: the run keeps
+// it with a ref-moved warning and writes the bump, and only --relock or
+// --accept-moved re-pins it. A ref whose history lost the commit blocks in
+// every mode, and an exact tag locked behind its commit still blocks.
+func TestParity_MovedFloatingPathRefIsSticky(t *testing.T) {
+	const (
+		oldCheckout = "8ade135a41bc03ea155e62e844d188df1ea18608"
+		newCheckout = "11bd71901bbe5b1630ceea73d27597364c9af683"
+		lost        = "cccccccccccccccccccccccccccccccccccccccc"
+	)
+	fix := []string{"--no-onboard", "--no-narrow", "--no-interactive"}
+	tests := []struct {
+		name     string
+		ref      string
+		status   string
+		base     string
+		args     []string
+		want     string // blocking category; "" for a run that writes
+		severity string
+		repinned bool
+	}{
+		{name: "fix run keeps the locked commit", ref: "v3", status: "ahead", base: parityTestSHA, args: fix, want: "ref-moved", severity: "warning"},
+		{name: "relock re-pins", ref: "v3", status: "ahead", base: parityTestSHA, args: append([]string{"--relock"}, fix...), repinned: true},
+		{name: "accept-moved re-pins", ref: "v3", status: "ahead", base: parityTestSHA, args: append([]string{"--accept-moved"}, fix...), repinned: true},
+		{name: "force-push blocks a fix run", ref: "v3", status: "diverged", base: lost, args: fix, want: "unreachable-pin", severity: "error"},
+		{name: "force-push blocks no-fix", ref: "v3", status: "diverged", base: lost, args: []string{"--no-fix"}, want: "unreachable-pin", severity: "error"},
+		{name: "force-push blocks verify", ref: "v3", status: "diverged", base: lost, args: []string{"--verify"}, want: "unreachable-pin", severity: "error"},
+		{name: "exact tag behind blocks a fix run", ref: "v3.28.0", status: "ahead", base: parityTestSHA, args: fix, want: "tag-commit-mismatch", severity: "error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &httpmock.Registry{}
+			stubGraph(t, reg,
+				map[string]string{"github/codeql-action": parityTestMoved},
+				map[string]string{"github/codeql-action": parityTestMoved, "actions/checkout": newCheckout},
+				nil)
+			for _, nwo := range []string{"actions/checkout", "github/codeql-action"} {
+				reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`/(branches|tags)`), httpmock.JSONResponse([]any{}))
+			}
+			reg.RegisterReusable(httpmock.REST("GET", `repos/github/codeql-action/compare/`+parityTestSHA+`\.\.\.`+parityTestMoved),
+				httpmock.JSONResponse(map[string]any{"status": tt.status, "merge_base_commit": map[string]any{"sha": tt.base}}))
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: github/codeql-action/init@`+tt.ref+`
+`, "actions/checkout@v4.1.0=sha1-"+oldCheckout, "github/codeql-action@"+tt.ref+"=sha1-"+parityTestSHA)
+			lockPath := filepath.Join(".github", "workflows", "actions.lock")
+			before, err := os.ReadFile(lockPath)
+			require.NoError(t, err)
+
+			p, err := runParity(t, reg, append(tt.args, path)...)
+			after, readErr := os.ReadFile(lockPath)
+			require.NoError(t, readErr)
+			var found *format.Finding
+			for i := range p.Findings {
+				if p.Findings[i].Category == tt.want {
+					found = &p.Findings[i]
+				}
+			}
+			if tt.severity == "error" {
+				require.ErrorIs(t, err, errSilent)
+				assert.False(t, p.Valid)
+				require.NotNil(t, found, "%+v", p.Findings)
+				assert.Equal(t, "error", found.Severity)
+				assert.Equal(t, string(before), string(after), "a blocked run must not write the lockfile")
+				return
+			}
+			require.NoError(t, err, "%+v\n%s", p.Findings, after)
+			if tt.want != "" {
+				require.NotNil(t, found, "%+v", p.Findings)
+				assert.Equal(t, tt.severity, found.Severity)
+			}
+			assert.Contains(t, string(after), "sha1-"+newCheckout, "the bump is locked")
+			if tt.repinned {
+				assert.Contains(t, string(after), "sha1-"+parityTestMoved)
+				assert.NotContains(t, string(after), parityTestSHA)
+				return
+			}
+			assert.Contains(t, string(after), "sha1-"+parityTestSHA, "the moved ref keeps its locked commit")
+			assert.NotContains(t, string(after), parityTestMoved)
+		})
+	}
+}
+
 // TestParity_RenamedExactTagBehindBlocks: a same-ID rename only warns, and
 // must not hide an exact tag locked behind its commit.
 func TestParity_RenamedExactTagBehindBlocks(t *testing.T) {
