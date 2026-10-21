@@ -2967,10 +2967,11 @@ func TestParity_RelockRepairsExactTagBehind(t *testing.T) {
 	}
 }
 
-// TestParity_ExactTagBehindInCompositeNamesHolder: a composite's exact-tag
-// entry locked behind its tag blocks, and the advice names the composite.
-// --relock can't repair it while the composite is unchanged.
-func TestParity_ExactTagBehindInCompositeNamesHolder(t *testing.T) {
+// TestParity_ExactTagBehindInCompositeRelocks: a composite's exact-tag
+// entry locked behind its tag blocks. --relock rebuilds the composite's
+// closure from its manifest, so it locks the tag's commit, and the result
+// verifies.
+func TestParity_ExactTagBehindInCompositeRelocks(t *testing.T) {
 	const rootSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	reg := exactTagBehindRegistry(t, rootSHA)
 	path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/root@v1\n")
@@ -2979,22 +2980,26 @@ func TestParity_ExactTagBehindInCompositeNamesHolder(t *testing.T) {
 		"    uses:\n      - 'actions/checkout@v7.0.1'\n" +
 		"  'actions/checkout@v7.0.1':\n    ref: 'v7.0.1'\n    commit: 'sha1-" + parityTestSHA + "'\n    owner_id: 1\n    repo_id: 1\n" +
 		"workflows:\n  '.github/workflows/workflow.yml':\n    - 'octo/root@v1'\n"
-	require.NoError(t, os.WriteFile(filepath.Join(".github", "workflows", "actions.lock"), []byte(lock), 0o600))
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
 
 	p, err := runParity(t, reg, "--verify", path)
 	require.ErrorIs(t, err, errSilent)
 	require.Len(t, p.Findings, 1, "%+v", p.Findings)
 	assert.Equal(t, "tag-commit-mismatch", p.Findings[0].Category)
-	assert.Equal(t, "upgrade or replace octo/root@v1; `gh actions-lock --relock` helps only if octo/root@v1 itself advances", p.Findings[0].Remediation)
+	assert.Equal(t, "run `gh actions-lock --relock` to lock the tag's commit", p.Findings[0].Remediation)
 
-	// The composite didn't move, so --relock keeps its recorded entry:
-	// the run blocks, writes nothing, and points only at the composite.
 	_, stderr, err := runCommandWithHTTP(t, reg, "--relock", "--no-interactive", path)
-	require.ErrorIs(t, err, errSilent, stderr)
-	assert.Contains(t, stderr, "upgrade octo/root@v1 to a version that locks actions/checkout@v7.0.1 at the tag's commit")
-	after, rerr := os.ReadFile(filepath.Join(".github", "workflows", "actions.lock"))
+	require.NoError(t, err, stderr)
+	after, rerr := os.ReadFile(lockPath)
 	require.NoError(t, rerr)
-	assert.Equal(t, lock, string(after), "nothing is written")
+	assert.Contains(t, string(after), "'actions/checkout@v7.0.1':\n        ref: 'v7.0.1'\n        commit: 'sha1-"+parityTestMoved+"'", "the tag's commit is written")
+	assert.NotContains(t, string(after), parityTestSHA, "the older commit is not")
+	assert.Contains(t, string(after), "sha1-"+rootSHA, "the composite keeps its commit")
+
+	p, err = runParity(t, reg, "--verify", path)
+	require.NoError(t, err, "the relocked lock verifies")
+	assert.True(t, p.Valid, "%+v", p.Findings)
 }
 
 // TestParity_ExactTagBehindSeededCompositeChildBlocks: a new composite
