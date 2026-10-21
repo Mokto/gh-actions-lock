@@ -2,17 +2,68 @@ package pipeline
 
 import (
 	"errors"
+	"net"
+	"net/http"
+	"net/url"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/cli/go-gh/v2/pkg/api"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
+	"github.com/github/gh-actions-lock/internal/resolve"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// refused is a transport failure: GitHub never answered.
+var refused = &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}
+
+// TestParityFinding_RetryWording: an unanswered check says when to re-run,
+// and a rate limit points at a token with a higher limit.
+func TestParityFinding_RetryWording(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	reset := time.Date(2026, 1, 2, 14, 5, 0, 0, time.UTC)
+	limited := &api.HTTPError{StatusCode: http.StatusForbidden, Headers: http.Header{
+		"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {"1767362699"},
+	}}
+	tests := []struct {
+		name       string
+		err        error
+		wantRemedy string
+		wantReason string
+		wantLimit  bool
+	}{
+		{"connection refused", refused, "couldn't verify; re-run this check once the GitHub API is reachable", "GitHub API unreachable (connection refused)", false},
+		{"rate limit", &ghapi.UnknownOutcomeError{Cause: limited, RetryAt: reset}, "couldn't verify; re-run after 14:05 UTC, or use a token with a higher rate limit", "GitHub API rate limit exhausted", true},
+		{"server error", &api.HTTPError{StatusCode: http.StatusServiceUnavailable}, "couldn't verify; re-run this check once the GitHub API is reachable", "GitHub API returned 503 Service Unavailable", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lp := lockfile.LockedPin{
+				Pin:    parserlock.Pin{NWO: "actions/checkout", Owner: "actions", Repo: "checkout", Ref: "v4"},
+				Action: parserlock.Action{Ref: "v4", Commit: "sha1-" + sha},
+			}
+			ref := parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: "v4"}
+			pc := ghapi.PinCheck{Owner: "actions", Repo: "checkout", SHA: sha, Head: "v4"}
+			f, ok := parityFinding(checks.ParsedWorkflow{Path: ".github/workflows/ci.yml"}, ref, lp, pc, ghapi.PinState{Err: tt.err})
+			require.True(t, ok)
+			assert.Equal(t, checks.ReachabilityUnknown, f.Category)
+			assert.Equal(t, checks.SeverityError, f.Severity)
+			assert.True(t, f.Retryable)
+			assert.Equal(t, tt.wantRemedy, f.Remediation)
+			assert.Equal(t, tt.wantReason, f.RetryReason)
+			assert.Equal(t, tt.wantLimit, f.RateLimited)
+			assert.NotContains(t, f.Remediation, "Actions backend")
+		})
+	}
+}
 
 func TestParityFinding(t *testing.T) {
 	const (
@@ -86,7 +137,14 @@ func TestParityFinding(t *testing.T) {
 			name: "deleted tag asks for a new ref", ref: "v2.2.2", state: ghapi.PinState{NameWithOwner: "krzema12/github-actions-typing", CommitFound: true}, want: checks.UnreachablePin,
 			wantRemedy: "point `uses:` at a tag or branch that exists, then run `gh actions-lock`",
 		},
-		{name: "network error is inconclusive", ref: "v2", state: ghapi.PinState{Err: errors.New("timeout")}, want: checks.ReachabilityUnknown},
+		{
+			name: "network error is retryable", ref: "v2", state: ghapi.PinState{Err: refused}, want: checks.ReachabilityUnknown,
+			wantRemedy: "couldn't verify; re-run this check once the GitHub API is reachable",
+		},
+		{
+			name: "a definitive error is not retryable", ref: "v2", state: ghapi.PinState{Err: errors.New("Resource not accessible by integration")}, want: checks.RepoUnavailable,
+			wantRemedy: "use a token that can read krzema12/github-actions-typing or authorize SSO for krzema12, then re-run",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -103,7 +161,8 @@ func TestParityFinding(t *testing.T) {
 			}
 			assert.True(t, ok)
 			assert.Equal(t, tt.want, f.Category)
-			assert.Equal(t, tt.wantWarn || tt.want == checks.ReachabilityUnknown, f.Severity == checks.SeverityWarning)
+			assert.Equal(t, tt.wantWarn, f.Severity == checks.SeverityWarning)
+			assert.Equal(t, tt.want == checks.ReachabilityUnknown, f.Retryable)
 			if tt.wantDetail != "" {
 				assert.Equal(t, tt.wantDetail, f.Detail)
 			}
@@ -164,7 +223,7 @@ func TestParityFinding_FullSHAKey(t *testing.T) {
 			state: ghapi.PinState{NameWithOwner: "actions/checkout", CommitFound: true}, want: checks.UnreachablePin,
 			wantDetail: "ref does-not-exist is not a tag or branch of actions/checkout; the Actions backend will reject this pin",
 		},
-		{name: "inconclusive stays a warning", head: "v6.1.0", state: ghapi.PinState{Err: errors.New("timeout")}, want: checks.ReachabilityUnknown},
+		{name: "inconclusive blocks", head: "v6.1.0", state: ghapi.PinState{Err: refused}, want: checks.ReachabilityUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -181,7 +240,7 @@ func TestParityFinding_FullSHAKey(t *testing.T) {
 			}
 			assert.True(t, ok)
 			assert.Equal(t, tt.want, f.Category)
-			assert.Equal(t, tt.want == checks.ReachabilityUnknown, f.Severity == checks.SeverityWarning)
+			assert.Equal(t, checks.SeverityError, f.Severity)
 			if tt.wantDetail != "" {
 				assert.Equal(t, tt.wantDetail, f.Detail)
 			}
@@ -310,6 +369,51 @@ func TestPlannedAway(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, plannedAway(tt.lp, tt.composites, tt.effect))
+		})
+	}
+}
+
+// TestDropSuperseded: a finding is settled only by an answer to the same
+// question, never by a different check of the same pin.
+func TestDropSuperseded(t *testing.T) {
+	const (
+		sha   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		live  = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		other = "cccccccccccccccccccccccccccccccccccccccc"
+	)
+	d := &dep.Dependency{NWO: "actions/checkout", Ref: "v4", SHA: sha}
+	ancestry := checks.Finding{Category: checks.AncestryUnknown, Severity: checks.SeverityError, Retryable: true, Dependency: d, ObservedSHA: live}
+	refused := checks.Finding{Category: checks.RepoUnavailable, Severity: checks.SeverityError, Dependency: d, ObservedSHA: live}
+	outage := checks.Finding{Category: checks.ReachabilityUnknown, Severity: checks.SeverityError, Retryable: true}
+	pinErr := checks.Finding{Category: checks.ReachabilityUnknown, Severity: checks.SeverityError, Retryable: true, Dependency: d, RecordedRef: "v4"}
+	confirmed := map[string]resolve.AncestryStatus{compareKey("actions/checkout", sha, live): resolve.AncestryConfirmed}
+	elsewhere := map[string]resolve.AncestryStatus{compareKey("actions/checkout", sha, other): resolve.AncestryConfirmed}
+	tests := []struct {
+		name     string
+		wr       checks.WorkflowReport
+		answered map[string]resolve.AncestryStatus
+		wantKept []checks.Category
+	}{
+		{"parity's error on the pin replaces it", checks.WorkflowReport{Findings: []checks.Finding{ancestry, refused, pinErr}}, nil, []checks.Category{checks.ReachabilityUnknown}},
+		{"parity confirmed the same comparison", checks.WorkflowReport{Findings: []checks.Finding{ancestry, refused}}, confirmed, []checks.Category{checks.RefMoved, checks.RefMoved}},
+		{"parity confirmed a different comparison", checks.WorkflowReport{Findings: []checks.Finding{ancestry}}, elsewhere, []checks.Category{checks.AncestryUnknown}},
+		{"parity didn't check the pin", checks.WorkflowReport{Findings: []checks.Finding{ancestry}}, nil, []checks.Category{checks.AncestryUnknown}},
+		{"a pin finding replaces the resolver outage", checks.WorkflowReport{Findings: []checks.Finding{outage, pinErr}}, nil, []checks.Category{checks.ReachabilityUnknown}},
+		{"so does a deferred one", checks.WorkflowReport{Findings: []checks.Finding{outage}, Deferred: []checks.Deferred{{Finding: pinErr}}}, nil, nil},
+		{"the resolver outage alone stays", checks.WorkflowReport{Findings: []checks.Finding{outage}}, nil, []checks.Category{checks.ReachabilityUnknown}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dropSuperseded(&tt.wr, tt.answered)
+			var got []checks.Category
+			for _, f := range tt.wr.Findings {
+				got = append(got, f.Category)
+				if f.Category == checks.RefMoved {
+					assert.Equal(t, checks.SeverityWarning, f.Severity)
+					assert.False(t, f.Retryable)
+				}
+			}
+			assert.Equal(t, tt.wantKept, got)
 		})
 	}
 }

@@ -2,10 +2,12 @@ package checks
 
 import (
 	"context"
+	"net/http"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/cli/go-gh/v2/pkg/api"
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/resolve"
 )
@@ -24,6 +26,7 @@ type stubCheckResolver struct {
 	refs            map[stubRefKey]string                      // resolved ref → sha; absence = unknown
 	ancestry        map[stubAncestryKey]resolve.AncestryStatus // (cand, head) ancestry decision
 	ancestryDetails map[stubAncestryKey]string                 // optional per-key detail string; absence = ""
+	ancestryErrs    map[stubAncestryKey]error                  // optional per-key API error behind the decision
 	tagObjects      map[stubTagObjectKey]string                // sha → peeled commit
 }
 
@@ -35,16 +38,16 @@ func (s *stubCheckResolver) ResolveRef(owner, repo, ref string) (string, bool) {
 	return sha, ok
 }
 
-func (s *stubCheckResolver) CheckAncestry(_ context.Context, owner, repo, cand, head string) (resolve.AncestryStatus, string) {
+func (s *stubCheckResolver) CheckAncestry(_ context.Context, owner, repo, cand, head string) (resolve.AncestryStatus, string, error) {
 	if s == nil {
-		return resolve.AncestryUnknown, ""
+		return resolve.AncestryUnknown, "", nil
 	}
 	key := stubAncestryKey{owner, repo, cand, head}
 	v, ok := s.ancestry[key]
 	if !ok {
-		return resolve.AncestryUnknown, s.ancestryDetails[key]
+		return resolve.AncestryUnknown, s.ancestryDetails[key], s.ancestryErrs[key]
 	}
-	return v, s.ancestryDetails[key]
+	return v, s.ancestryDetails[key], s.ancestryErrs[key]
 }
 
 func (s *stubCheckResolver) PeelTagObject(_ context.Context, owner, repo, sha string) (string, bool) {
@@ -402,8 +405,43 @@ func TestRunChecks(t *testing.T) {
 				if got[0].Confidence != ConfidenceMedium {
 					t.Errorf("Confidence: got %q, want %q (AncestryUnknown is the rate-limit fallback path)", got[0].Confidence, ConfidenceMedium)
 				}
-				if got[0].Severity != SeverityWarning {
-					t.Errorf("Severity: got %q, want %q (inconclusive findings stay warnings)", got[0].Severity, SeverityWarning)
+				if got[0].Severity != SeverityError {
+					t.Errorf("Severity: got %q, want %q (an unverified pin blocks)", got[0].Severity, SeverityError)
+				}
+				if !got[0].Retryable {
+					t.Error("Retryable: want true")
+				}
+				if got[0].Remediation != "couldn't verify; re-run this check once the GitHub API is reachable" {
+					t.Errorf("Remediation: got %q", got[0].Remediation)
+				}
+			},
+		},
+		{
+			// A refused comparison is an answer, not an outage: the move
+			// stays unproven, but re-running won't change it.
+			name: "refused ancestry check is not retryable",
+			lockfile: map[string][]string{
+				wfPath: {checkPinKey("actions", "checkout", "v4", shaCheckoutV3)},
+			},
+			workflowRefs: []parserlock.ActionRef{checkRef("actions", "checkout", "v4")},
+			resolver: &stubCheckResolver{
+				refs: map[stubRefKey]string{
+					{"actions", "checkout", "v4"}: shaCheckoutV4,
+				},
+				ancestry: map[stubAncestryKey]resolve.AncestryStatus{
+					{"actions", "checkout", shaCheckoutV3, shaCheckoutV4}: resolve.AncestryNotAncestor,
+				},
+				ancestryErrs: map[stubAncestryKey]error{
+					{"actions", "checkout", shaCheckoutV3, shaCheckoutV4}: &api.HTTPError{StatusCode: http.StatusForbidden},
+				},
+			},
+			wantCategories: []Category{RepoUnavailable},
+			extra: func(t *testing.T, got []Finding) {
+				if got[0].Severity != SeverityError {
+					t.Errorf("Severity: got %q, want error", got[0].Severity)
+				}
+				if got[0].Retryable {
+					t.Error("Retryable: want false for a 403")
 				}
 			},
 		},

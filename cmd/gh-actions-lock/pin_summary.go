@@ -20,8 +20,9 @@ import (
 // severity findings that the autofix cannot resolve. Pinning resolves
 // not-pinned findings, so those are expected in the pre-fix report and
 // don't count. LocalAction and UnreachablePin errors are unfixable --
-// the workflow or lockfile must be investigated. ReachabilityUnknown is
-// an error only when a fresh pin's identity couldn't be confirmed.
+// the workflow or lockfile must be investigated. ReachabilityUnknown and
+// AncestryUnknown are errors when GitHub didn't answer: only a later run can
+// verify the pin.
 func reportHasUnfixableErrors(report *checks.Report, acceptMoved bool) bool {
 	for _, wr := range report.Workflows {
 		for _, f := range wr.Findings {
@@ -29,7 +30,7 @@ func reportHasUnfixableErrors(report *checks.Report, acceptMoved bool) bool {
 				continue
 			}
 			switch f.Category {
-			case checks.LocalAction, checks.InvalidSelfRepositoryRef, checks.RepoRenamed, checks.RepoReplaced, checks.RepoUnavailable, checks.ReachabilityUnknown:
+			case checks.LocalAction, checks.InvalidSelfRepositoryRef, checks.RepoRenamed, checks.RepoReplaced, checks.RepoUnavailable, checks.ReachabilityUnknown, checks.AncestryUnknown:
 				return true
 			case checks.NotPinned:
 				if !f.IsRemediableNotPinned() {
@@ -90,6 +91,7 @@ func reportHasNonInvestigatedUnfixableErrors(report *checks.Report) bool {
 				f.Category == checks.RepoReplaced ||
 				f.Category == checks.RepoUnavailable ||
 				f.Category == checks.ReachabilityUnknown ||
+				f.Category == checks.AncestryUnknown ||
 				f.Category == checks.NotPinned && !f.IsRemediableNotPinned() {
 				return true
 			}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -231,6 +232,12 @@ func testRepoResponse(nameWithOwner, oid, actionYAML string) map[string]any {
 			"fileYaml": nil,
 		},
 	}
+}
+
+// compareAhead answers a Compare API request as if head descends from base.
+func compareAhead(req *http.Request) (*http.Response, error) {
+	base, _, _ := strings.Cut(path.Base(req.URL.Path), "...")
+	return httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": base}})(req)
 }
 
 // registerParity stubs one parity query that reports every pin intact, and
@@ -722,16 +729,21 @@ jobs:
 }
 
 // TestCheck_UnreachablePin_RateLimited verifies that when the ancestry
-// check is rate-limited, the finding surfaces as ancestry-unknown — not
-// ref-moved (which would imply a benign-but-known move) and not
-// unreachable-pin (which requires an authoritative not-ancestor answer).
+// check is rate-limited, the pin blocks as a retryable error — not ref-moved
+// (which would imply a benign-but-known move) and not unreachable-pin
+// (which requires an authoritative not-ancestor answer).
 func TestCheck_UnreachablePin_RateLimited(t *testing.T) {
 	reg := &httpmock.Registry{}
-	defer reg.Verify(t)
 
 	pinnedSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	liveSHA := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
+	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{
+			"a0": map[string]any{"nameWithOwner": "example/action", "commit": map[string]any{"oid": pinnedSHA}, "tag": map[string]any{"oid": liveSHA}, "tagRef": map[string]any{}},
+			"a1": map[string]any{"nameWithOwner": "example/action", "commit": map[string]any{"oid": liveSHA}, "tag": map[string]any{"oid": liveSHA}, "tagRef": map[string]any{}},
+		},
+	}))
 	reg.Register(
 		httpmock.GraphQLForRepo("example", "action"),
 		httpmock.JSONResponse(map[string]any{
@@ -740,9 +752,8 @@ func TestCheck_UnreachablePin_RateLimited(t *testing.T) {
 			},
 		}),
 	)
-
 	// Compare API: rate limited.
-	reg.Register(
+	reg.RegisterReusable(
 		httpmock.REST("GET", "repos/example/action/compare/"),
 		httpmock.StatusResponse(429),
 	)
@@ -762,35 +773,37 @@ jobs:
 	stdout, _, err := runCommandWithHTTP(t, reg,
 		"--relock", "--no-fix", "--json=valid,findings", workflowPath,
 	)
-	require.NoError(t, err, "ref-moved is a warning, should not error")
+	require.ErrorIs(t, err, errSilent, "an unverified pin blocks")
 
 	var payload struct {
 		Valid    bool             `json:"valid"`
 		Findings []format.Finding `json:"findings"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
-	assert.True(t, payload.Valid, "ancestry-unknown is a warning, workflow is still valid")
+	assert.False(t, payload.Valid)
 
+	var retryable []format.Finding
 	categories := map[string]bool{}
 	for _, f := range payload.Findings {
 		categories[f.Category] = true
+		if f.Retryable {
+			retryable = append(retryable, f)
+		}
 	}
-	assert.True(t, categories["ancestry-unknown"], "should classify as ancestry-unknown when rate limited: %+v", payload.Findings)
+	require.Len(t, retryable, 1, "%+v", payload.Findings)
+	assert.Equal(t, "error", retryable[0].Severity)
+	assert.Contains(t, retryable[0].Remediation, "or use a token with a higher rate limit")
 	assert.False(t, categories["unreachable-pin"], "should NOT have unreachable-pin when rate limited: %+v", payload.Findings)
 	assert.False(t, categories["ref-moved"], "should NOT downgrade to ref-moved when rate limited: %+v", payload.Findings)
 	assert.False(t, categories["valid"], "rate-limited ancestry must not regress to CategoryValid: %+v", payload.Findings)
-
-	// Verify the detail mentions the inconclusive ancestry check.
-	for _, f := range payload.Findings {
-		if f.Category == "ancestry-unknown" {
-			assert.Contains(t, f.Detail, "ancestry check inconclusive")
-		}
-	}
 }
 
 func TestCheckCommand_JSONDependenciesWithRequiredBy(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerParity(reg)
+	// The pins moved; their history checks confirm the moves.
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/[^/]+/compare/`), compareAhead)
 
 	compositeYAML := "name: Setup Go\nruns:\n  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
 
@@ -880,6 +893,9 @@ jobs:
 func TestCheckCommand_JSONDependenciesInfersRequiredByWithoutComments(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
+	registerParity(reg)
+	// The pins moved; their history checks confirm the moves.
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/[^/]+/compare/`), compareAhead)
 
 	compositeYAML := "name: Setup Go\nruns:\n  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
 
@@ -940,6 +956,7 @@ jobs:
 
 func TestCheckCommand_JSONDefaultFieldsExcludesDependencies(t *testing.T) {
 	reg := &httpmock.Registry{}
+	reg.RegisterReusable(httpmock.REST("GET", `repos/actions/[^/]+/compare/`), compareAhead)
 	defer reg.Verify(t)
 
 	reg.Register(

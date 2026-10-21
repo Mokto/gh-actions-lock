@@ -96,16 +96,17 @@ func TestRetryTransport_Taxonomy(t *testing.T) {
 		{name: "untrusted certificate", attempt: fail(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}), attempts: 1},
 		{name: "certificate for another host", attempt: fail(x509.HostnameError{Host: "api.github.com"}), attempts: 1},
 		{name: "503", attempt: status(503, nil), attempts: 8, waited: backoffTotal, code: 503},
-		{name: "503 retry-after", attempt: status(503, map[string]string{"Retry-After": "20"}), attempts: 8, waited: 140 * time.Second, code: 503},
+		{name: "503 retry-after", attempt: status(503, map[string]string{"Retry-After": "20"}), attempts: 7, waited: 120 * time.Second, code: 503},
 		{name: "graphql rate limited", url: "https://api.github.com/graphql", attempt: graphQLRateLimitedResp(map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(testNow.Add(19 * time.Second).Unix())}), attempts: 8, waited: 26 * time.Second, code: 200},
 		{name: "graphql error that is an answer", url: "https://api.github.com/graphql", attempt: graphQLBody(`{"errors":[{"type":"NOT_FOUND","path":["a0"]}]}`), attempts: 1, code: 200},
 		{name: "500", attempt: status(500, nil), attempts: 8, waited: backoffTotal, code: 500},
 		{name: "429 retry-after seconds", attempt: status(429, map[string]string{"Retry-After": "5"}), attempts: 8, waited: 35 * time.Second, code: 429},
 		{name: "429 without headers backs off", attempt: status(429, nil), attempts: 8, waited: backoffTotal, code: 429},
 		{name: "secondary limit retry-after http date", attempt: status(403, map[string]string{"Retry-After": testNow.Add(7 * time.Second).Format(http.TimeFormat)}), attempts: 8, waited: 13 * time.Second, code: 403},
-		{name: "retry-after of minutes is waited out", attempt: status(429, map[string]string{"Retry-After": "120"}), attempts: 3, waited: 240 * time.Second, code: 429},
+		{name: "retry-after of minutes is waited out", attempt: status(429, map[string]string{"Retry-After": "60"}), attempts: 3, waited: 120 * time.Second, code: 429},
 		{name: "retry-after past the outage window fails fast", attempt: status(429, map[string]string{"Retry-After": "600"}), attempts: 1, code: 429},
 		{name: "primary limit reset soon", attempt: status(403, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(testNow.Add(9 * time.Second).Unix())}), attempts: 8, waited: 16 * time.Second, code: 403},
+		{name: "primary limit reset past the window fails fast", attempt: status(403, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(testNow.Add(3 * time.Minute).Unix())}), attempts: 1, code: 403},
 		{name: "primary limit reset in 40m fails fast", attempt: status(403, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(testNow.Add(40 * time.Minute).Unix())}), attempts: 1, code: 403},
 		{name: "plain 403 is an answer", attempt: status(403, nil), attempts: 1, code: 403},
 		{name: "401 is an answer", attempt: status(401, nil), attempts: 1, code: 401},
@@ -167,7 +168,7 @@ func TestRetryTransport_RecoversAfterOutage(t *testing.T) {
 }
 
 // TestRetryTransport_OutageWindowIsShared: requests waiting out one outage
-// share its window, so a run gives up about five minutes after GitHub stops
+// share its window, so a run gives up about two minutes after GitHub stops
 // answering, however many requests it makes; an answer reopens it.
 func TestRetryTransport_OutageWindowIsShared(t *testing.T) {
 	budget, slept := fakeBudget()
@@ -178,7 +179,7 @@ func TestRetryTransport_OutageWindowIsShared(t *testing.T) {
 		if up {
 			return status(200, nil)()
 		}
-		return status(429, map[string]string{"Retry-After": "100"})()
+		return status(429, map[string]string{"Retry-After": "40"})()
 	}), budget)
 	calls := func() int {
 		n = 0
@@ -188,9 +189,9 @@ func TestRetryTransport_OutageWindowIsShared(t *testing.T) {
 		resp.Body.Close()
 		return n
 	}
-	assert.Equal(t, 4, calls(), "waits 100s three times, the whole window")
+	assert.Equal(t, 4, calls(), "waits 40s three times, the whole window")
 	assert.Equal(t, 1, calls(), "the window is spent")
-	assert.Equal(t, 300*time.Second, *slept)
+	assert.Equal(t, 120*time.Second, *slept)
 	up = true
 	assert.Equal(t, 1, calls())
 	up = false
@@ -208,7 +209,7 @@ func TestRetryTransport_Notices(t *testing.T) {
 		{"server error", status(503, nil), "GitHub API unavailable (503 Service Unavailable); retrying in 1s, attempt 2/8"},
 		{"refused", fail(&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}), "GitHub API unreachable (connection refused); retrying in 1s, attempt 2/8"},
 		{"dns", fail(&net.DNSError{Err: "no such host", Name: "api.github.com"}), "GitHub API unreachable (DNS lookup failed); retrying in 1s, attempt 2/8"},
-		{"rate limit", status(429, map[string]string{"Retry-After": "150"}), "GitHub API rate limit; waiting until 14:02 UTC, attempt 2/8"},
+		{"rate limit", status(429, map[string]string{"Retry-After": "90"}), "GitHub API rate limit; waiting until 14:01 UTC, attempt 2/8"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

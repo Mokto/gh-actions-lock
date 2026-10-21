@@ -2,8 +2,11 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"testing"
 
+	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/github/gh-actions-lock/internal/lockfile"
 	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
@@ -110,4 +113,25 @@ func TestDiagnoseOneParsed_SelfRepositoryResolutionError(t *testing.T) {
 	assert.Equal(t, checks.InvalidSelfRepositoryRef, wr.Findings[0].Category)
 	assert.Equal(t, checks.SeverityError, wr.Findings[0].Severity)
 	assert.False(t, wr.IsValid())
+}
+
+func TestResolveErrFinding(t *testing.T) {
+	outage := &api.HTTPError{StatusCode: http.StatusServiceUnavailable}
+	tests := []struct {
+		name          string
+		err           error
+		wantCategory  checks.Category
+		wantRetryable bool
+	}{
+		{"an outage is retryable", fmt.Errorf("actions/checkout@v4: %w", outage), checks.ReachabilityUnknown, true},
+		{"an answer is not", fmt.Errorf("actions/checkout@v4: %w", &api.HTTPError{StatusCode: http.StatusForbidden}), checks.RepoUnavailable, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := resolveErrFinding(".github/workflows/ci.yml", tt.err)
+			assert.Equal(t, tt.wantCategory, f.Category)
+			assert.Equal(t, checks.SeverityError, f.Severity)
+			assert.Equal(t, tt.wantRetryable, f.Retryable)
+		})
+	}
 }

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
+	"github.com/github/gh-actions-lock/internal/ghapi"
 	"github.com/github/gh-actions-lock/internal/resolve"
 )
 
@@ -110,31 +112,45 @@ func checkOneRefMoved(ctx context.Context, pw ParsedWorkflow, ref parserlock.Act
 	if strings.EqualFold(sha, pin.SHA()) {
 		return Finding{}, false
 	}
-	ancestry, ancestryDetail := r.CheckAncestry(ctx, ref.Owner, ref.Repo, pin.SHA(), sha)
+	ancestry, ancestryDetail, cause := r.CheckAncestry(ctx, ref.Owner, ref.Repo, pin.SHA(), sha)
 	f := newRefFinding(pw, ref, "", "", "")
 	f.ObservedSHA = sha
 	f.Dependency = synthDep(ref, pin.SHA())
-	switch ancestry {
-	case resolve.AncestryNotAncestor:
+	switch {
+	case ancestry == resolve.AncestryNotAncestor && cause != nil:
+		// GitHub refused the comparison: the move is unproven either way.
+		f.Category = RepoUnavailable
+		f.Severity = SeverityError
+		f.Confidence = ConfidenceHigh
+		f.Detail = fmt.Sprintf("ref %s now resolves to %s, lockfile pins %s, and GitHub refused to compare them: %s", ref.Ref, parserlock.ShortSHA(sha), parserlock.ShortSHA(pin.SHA()), ghapi.Brief(cause))
+		f.Remediation = fmt.Sprintf("use a token that can read %s/%s, then re-run", ref.Owner, ref.Repo)
+	case ancestry == resolve.AncestryNotAncestor:
 		f.Category = UnreachablePin
 		f.Severity = SeverityError
 		f.Confidence = ConfidenceHigh
 		f.Detail = NotInHistoryDetail(pin.SHA(), ref.Owner+"/"+ref.Repo, ref.Ref, sha)
 		f.Remediation = AcceptMovedRemediation
-	case resolve.AncestryUnknown:
+	case ancestry == resolve.AncestryUnknown:
 		f.Category = AncestryUnknown
-		f.Severity = SeverityWarning
 		f.Confidence = ConfidenceMedium
 		f.Detail = fmt.Sprintf("ref %s now resolves to %s, lockfile pins %s (ancestry check inconclusive%s)", ref.Ref, parserlock.ShortSHA(sha), parserlock.ShortSHA(pin.SHA()), suffixWith(ancestryDetail))
-		f.Remediation = "retry when the Compare API is available to classify this as ref-moved or unreachable-pin"
+		f.MarkRetryable(cause)
 	default:
-		f.Category = RefMoved
-		f.Severity = SeverityWarning
-		f.Confidence = ConfidenceHigh
-		f.Detail = fmt.Sprintf("ref %s now resolves to %s, lockfile pins %s", ref.Ref, parserlock.ShortSHA(sha), parserlock.ShortSHA(pin.SHA()))
-		f.Remediation = "run `gh actions-lock --relock` to refresh the lock entry"
+		f.MarkRefMoved()
 	}
 	return f, true
+}
+
+// MarkRefMoved makes f, a ref-moved check of f.Dependency whose ref now
+// resolves to f.ObservedSHA, the warning for a commit confirmed in the
+// ref's history.
+func (f *Finding) MarkRefMoved() {
+	f.Category = RefMoved
+	f.Severity = SeverityWarning
+	f.Confidence = ConfidenceHigh
+	f.Retryable, f.RetryReason, f.RetryAt, f.RateLimited = false, "", time.Time{}, false
+	f.Detail = fmt.Sprintf("ref %s now resolves to %s, lockfile pins %s", f.Dependency.Ref, parserlock.ShortSHA(f.ObservedSHA), parserlock.ShortSHA(f.Dependency.SHA))
+	f.Remediation = "run `gh actions-lock --relock` to refresh the lock entry"
 }
 
 // AcceptMovedRemediation is the single next step for a pin the runner

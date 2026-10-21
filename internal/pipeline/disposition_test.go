@@ -40,7 +40,7 @@ func TestDisposeParity(t *testing.T) {
 		{name: "an inconclusive own-SHA entry blocks", category: checks.ReachabilityUnknown, subject: paritySubject{pin: shaPin, ownSHA: true, inconclusive: true}, wantKeep: true, wantSev: checks.SeverityError},
 		{name: "relock keeps an inconclusive own-SHA entry blocking", category: checks.ReachabilityUnknown, mode: relock, subject: paritySubject{pin: shaPin, ownSHA: true, away: true, inconclusive: true}, wantKeep: true, wantSev: checks.SeverityError},
 		{name: "an inconclusive history check blocks", category: checks.ReachabilityUnknown, subject: paritySubject{pin: tagPin, head: "v4", inconclusive: true}, wantKeep: true, wantSev: checks.SeverityError},
-		{name: "an inconclusive check without a ref warns", category: checks.ReachabilityUnknown, subject: paritySubject{pin: tagPin, inconclusive: true}, wantKeep: true, wantSev: checks.SeverityWarning},
+		{name: "an inconclusive check without a ref blocks", category: checks.ReachabilityUnknown, subject: paritySubject{pin: tagPin, inconclusive: true}, wantKeep: true, wantSev: checks.SeverityError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

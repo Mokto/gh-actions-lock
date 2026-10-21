@@ -292,7 +292,7 @@ scenarios:
 
   - name: api_unauthorized_401
     category: api_errors
-    description: "Unauthorized 401 — permission denied error"
+    description: "Unauthorized 401 — the run stops with one line naming the token (exit 2)"
     needs_stub: true
     tags: [stub]
     fixtures:
@@ -301,9 +301,34 @@ scenarios:
           name: CI
           actions: ["actions/checkout@v4"]
     expect:
-      exit: 1
+      exit: 2
       output_contains:
+        - "GitHub rejected the token in GH_"
+      output_excludes:
         - "could not be resolved"
+
+  - name: verify_outage_retryable_blocks
+    category: api_errors
+    description: "--verify during a 5xx outage exits 1 with retryable error findings. Go command tests cover the classification; this covers only the real binary's JSON and exit code."
+    needs_stub: true
+    tags: [stub]
+    flags: ["--verify", "--json=valid,findings"]
+    fixtures:
+      workflows:
+        ci.yml:
+          name: CI
+          actions: ["actions/checkout@v4"]
+      lockfile_template: pinned_checkout
+    expect:
+      exit: 1
+      stdout_is_json: true
+      jq:
+        - expr: ".valid"
+          equals: "false"
+        - expr: '[.findings[] | select(.retryable == true and .severity == "error")] | length'
+          greater_than: 0
+        - expr: '[.findings[] | select(.retryable != true)] | length'
+          equals: "0"
 
   # ╔═════════════════════════════════════════════════════════════════════════╗
   # ║═══════════════════════════════ lockfile ════════════════════════════════║
@@ -1968,6 +1993,8 @@ scenarios:
           equals: 'reachability-unknown'
         - expr: '.findings[0].severity'
           equals: 'error'
+        - expr: '.findings[0].retryable'
+          equals: 'true'
 
       lockfile_contains:
         - "version: 'v0.0.2'"

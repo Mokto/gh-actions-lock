@@ -44,7 +44,7 @@ type retryPolicy struct {
 var (
 	// patientPolicy is for CI: nobody is watching, and a job that waits
 	// out a short outage or rate limit beats a red check.
-	patientPolicy = retryPolicy{attempts: 8, backoffCap: 30 * time.Second, window: 5 * time.Minute}
+	patientPolicy = retryPolicy{attempts: 8, backoffCap: 30 * time.Second, window: 2 * time.Minute}
 	// quickPolicy is for a terminal: retry a blip, then report and exit
 	// so the user can decide.
 	quickPolicy = retryPolicy{attempts: 3, backoffCap: 2 * time.Second, window: 10 * time.Second}
@@ -95,6 +95,8 @@ type retryBudget struct {
 	// noticed throttles notices to one per reason per second, since many
 	// requests wait out the same outage at once.
 	noticed map[string]time.Time
+	// retried is the longest outage the run waited through.
+	retried time.Duration
 
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration)
@@ -131,7 +133,21 @@ func (b *retryBudget) allow(d time.Duration) bool {
 	if b.since.IsZero() {
 		b.since = now
 	}
-	return !now.Add(d).After(b.since.Add(b.policy.window))
+	if now.Add(d).After(b.since.Add(b.policy.window)) {
+		return false
+	}
+	b.retried = max(b.retried, now.Add(d).Sub(b.since))
+	return true
+}
+
+// RetriedFor is the longest the run spent retrying through one outage.
+func (c *Client) RetriedFor() time.Duration {
+	if c == nil || c.budget == nil {
+		return 0
+	}
+	c.budget.mu.Lock()
+	defer c.budget.mu.Unlock()
+	return c.budget.retried
 }
 
 // answered closes the outage window: GitHub is responding again.
@@ -339,8 +355,16 @@ func retryAfter(h http.Header, now time.Time) time.Time {
 }
 
 // RetryAt returns the earliest time GitHub said a retry of the request
-// behind err could succeed, or the zero time if it didn't say.
+// behind err could succeed, or the zero time if it didn't say. For a joined
+// error it reads the branch cause picks.
 func RetryAt(err error) time.Time {
+	if err == nil {
+		return time.Time{}
+	}
+	return retryAt(cause(err))
+}
+
+func retryAt(err error) time.Time {
 	var unknown *UnknownOutcomeError
 	if errors.As(err, &unknown) && !unknown.RetryAt.IsZero() {
 		return unknown.RetryAt
@@ -355,18 +379,17 @@ func RetryAt(err error) time.Time {
 // retry. A certificate GitHub's TLS chain doesn't satisfy is configuration
 // (a proxy or CA bundle), not an outage.
 func retryableTransportErr(err error) bool {
+	return !errors.Is(err, context.Canceled) && !untrustedCert(err)
+}
+
+// untrustedCert reports a TLS certificate the client doesn't trust.
+func untrustedCert(err error) bool {
 	var unknownAuthority x509.UnknownAuthorityError
 	var hostname x509.HostnameError
 	var invalid x509.CertificateInvalidError
 	var verify *tls.CertificateVerificationError
-	switch {
-	case errors.Is(err, context.Canceled):
-		return false
-	case errors.As(err, &unknownAuthority), errors.As(err, &hostname),
-		errors.As(err, &invalid), errors.As(err, &verify):
-		return false
-	}
-	return true
+	return errors.As(err, &unknownAuthority) || errors.As(err, &hostname) ||
+		errors.As(err, &invalid) || errors.As(err, &verify)
 }
 
 func drain(body io.ReadCloser) {

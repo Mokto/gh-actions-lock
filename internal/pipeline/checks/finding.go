@@ -1,8 +1,12 @@
 package checks
 
 import (
+	"fmt"
+	"time"
+
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
+	"github.com/github/gh-actions-lock/internal/ghapi"
 )
 
 // Finding represents a single diagnosed issue (or clean bill) for a workflow.
@@ -82,9 +86,40 @@ type Finding struct {
 	// from the inventory and resolve it afresh (see PrunesDependency).
 	Reresolve bool
 	// Retryable marks a check that ended without an answer from GitHub (an
-	// outage or rate limit): nothing is known to be wrong, but the entry is
-	// unverified, so it blocks until a re-run succeeds.
+	// outage or rate limit): the entry is unverified, so it blocks until a
+	// re-run succeeds. See MarkRetryable.
 	Retryable bool
+	// RetryReason says why, e.g. "GitHub API unreachable (connection
+	// refused)"; RetryAt is the earliest time GitHub said a retry could
+	// succeed (zero when it didn't say), and RateLimited marks a rate limit.
+	RetryReason string
+	RetryAt     time.Time
+	RateLimited bool
+}
+
+// MarkRetryable makes f a blocking, retryable finding for a check that
+// failed with cause, a transient error.
+func (f *Finding) MarkRetryable(cause error) {
+	f.Severity = SeverityError
+	f.Retryable = true
+	f.RetryReason, f.RateLimited = ghapi.Outage(cause)
+	f.RetryAt = ghapi.RetryAt(cause)
+	f.Remediation = "couldn't verify; " + RetryAdvice(f.RetryAt, f.RateLimited)
+}
+
+// RetryAdvice is the next step for a check an outage or rate limit stopped.
+func RetryAdvice(at time.Time, rateLimited bool) string {
+	advice := "re-run this check once the GitHub API is reachable"
+	switch {
+	case !at.IsZero():
+		advice = fmt.Sprintf("re-run after %s UTC", at.UTC().Format("15:04"))
+	case rateLimited:
+		advice = "re-run once the rate limit resets"
+	}
+	if rateLimited {
+		advice += ", or use a token with a higher rate limit"
+	}
+	return advice
 }
 
 // InventoryEntry describes a single dependency with context.
@@ -210,6 +245,9 @@ type Report struct {
 	// Verified holds the on-disk keys and commits this run resolved afresh
 	// and checked with no blocking finding, by VerifiedKey.
 	Verified map[string]bool
+	// RetriedFor is how long the run waited between retries of requests
+	// GitHub didn't answer.
+	RetriedFor time.Duration
 }
 
 // IsValid returns true if all workflows in the report pass validation.

@@ -60,6 +60,12 @@ To check without writing anything, for example in CI, run:
 gh actions-lock --verify
 ```
 
+If the GitHub API is unreachable or rate-limited, `--verify` retries for up to
+about 2 minutes in CI (a few seconds elsewhere), then fails (exit 1) with the pins it couldn't verify. Their
+`--json` findings carry `"retryable": true`; re-run the check once the API is
+reachable. An untrusted TLS certificate or a rejected token stops the run
+instead (exit 2).
+
 Every mode checks each locked commit against the lockfile entry's `ref`, which
 is looked up only as an existing tag, then branch, of exactly that name, the
 way the Actions backend resolver does. Every pin, whether an exact tag

@@ -20,6 +20,7 @@ import (
 // Client holds authenticated REST and GraphQL clients for a single
 // GitHub hostname. Construct via New with ClientOption values.
 type Client struct {
+	budget   *retryBudget
 	graphql  *api.GraphQLClient
 	rest     *api.RESTClient
 	Hostname string
@@ -109,7 +110,7 @@ func New(hostname string, opts ...ClientOption) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{Hostname: hostname, local: local, public: public, pinned: map[Repo]string{}}, nil
+	return &Client{Hostname: hostname, local: local, public: public, pinned: map[Repo]string{}, budget: budget}, nil
 }
 
 // DependabotProxy reports whether the CLI runs inside Dependabot, behind its
@@ -128,6 +129,7 @@ func newClient(hostname string, opts ...ClientOption) (*Client, error) {
 	c := &Client{
 		Hostname: hostname,
 		restOnly: DependabotProxy(),
+		budget:   cfg.budget,
 	}
 
 	apiOpts := api.ClientOptions{Host: hostname}

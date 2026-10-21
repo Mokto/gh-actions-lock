@@ -117,6 +117,9 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			var err error
 			resolved, parents, err = r.ResolveAllRecursive(ctx, refs)
 			endResolve()
+			if cerr := ghapi.ConfigError(err); cerr != nil {
+				return nil, cerr
+			}
 			// Behind the proxy a pin that can't be resolved for a transient
 			// reason is a retry, not a not-pinned finding.
 			if err != nil && ghapi.DependabotProxy() && ghapi.IsTransient(err) {
@@ -153,5 +156,8 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
+	if r != nil {
+		report.RetriedFor = r.GHClient().RetriedFor()
+	}
 	return &RunResult{Report: report, Valid: report.IsValid()}, nil
 }

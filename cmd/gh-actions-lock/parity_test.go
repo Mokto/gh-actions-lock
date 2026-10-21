@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -446,9 +448,9 @@ jobs:
 		path := writeTempWorkflow(t, workflow, "actions/checkout@v4.2.1=sha1-"+parityTestSHA)
 		_, stderr, err := runCommandWithHTTP(t, parityDown{&httpmock.Registry{}}, "--verify", path)
 		require.ErrorIs(t, err, errSilent, stderr)
-		assert.Contains(t, stderr, "✗ reachability unknown actions/checkout@v4.2.1")
+		assert.Contains(t, stderr, "Couldn't verify 1 pin: GitHub API returned 502 Bad Gateway\n  actions/checkout@v4.2.1\n")
 		assert.NotContains(t, stderr, "actions/checkout@v4.2.1: could not verify", "an error must not also print as a warning")
-		assert.Contains(t, stderr, "could not verify locked actions/checkout@9ddf35b71a48: GitHub returned 502 Bad Gateway")
+		assert.Contains(t, stderr, "GitHub API returned 502 Bad Gateway")
 		assert.NotContains(t, stderr, "api.github.com", "the request URL stays out of the terminal")
 	})
 	for _, tt := range []struct {
@@ -697,7 +699,7 @@ jobs:
 
 	_, stderr, err := runCommandWithHTTP(t, parityDown{reg}, path)
 	require.ErrorIs(t, err, errSilent)
-	assert.Contains(t, stderr, "could not verify locked actions/checkout")
+	assert.Contains(t, stderr, "Couldn't verify 1 pin")
 	assert.NoFileExists(t, ".github/workflows/actions.lock")
 }
 
@@ -723,7 +725,7 @@ jobs:
 
 	_, stderr, err := runCommandWithHTTP(t, parityDown{reg}, "--no-narrow", path)
 	require.ErrorIs(t, err, errSilent)
-	assert.Contains(t, stderr, "could not verify locked")
+	assert.Contains(t, stderr, "Couldn't verify 1 pin")
 	assert.NoFileExists(t, ".github/workflows/actions.lock")
 }
 
@@ -879,7 +881,7 @@ jobs:
 
 	_, stderr, err := runCommandWithHTTP(t, parityDown{reg}, "--verify", path)
 	require.ErrorIs(t, err, errSilent, stderr)
-	assert.Contains(t, stderr, "could not verify locked actions/checkout")
+	assert.Contains(t, stderr, "Couldn't verify 1 pin")
 }
 
 // TestParity_UnreachableAPIBlocks is #199's repro: with the API unreachable
@@ -905,8 +907,66 @@ jobs:
 	for _, f := range p.Findings {
 		assert.Equal(t, "reachability-unknown", f.Category)
 		assert.Equal(t, "error", f.Severity)
+		assert.True(t, f.Retryable)
 		assert.Contains(t, f.Detail, "connection refused")
+		assert.Equal(t, "couldn't verify; re-run this check once the GitHub API is reachable", f.Remediation)
 	}
+
+	_, stderr, err = runCommandWithHTTP(t, unreachable{}, "--verify", path)
+	require.ErrorIs(t, err, errSilent)
+	assert.Contains(t, stderr, "Couldn't verify 1 pin: GitHub API unreachable (connection refused)\n  actions/checkout@v4\n")
+	assert.Contains(t, stderr, "↳ re-run this check once the GitHub API is reachable\n")
+	assert.NotContains(t, stderr, "workflow failed", "an outage alone is not a failed workflow")
+}
+
+// TestParity_ConfigErrorsAbort: an untrusted certificate or a rejected
+// token fails every request the same way, so the run stops with one line
+// (exit 2) instead of a finding per pin.
+func TestParity_ConfigErrorsAbort(t *testing.T) {
+	tests := []struct {
+		name string
+		rt   http.RoundTripper
+		want string
+	}{
+		{"untrusted certificate", untrustedCert{}, "TLS certificate for api.github.com is not trusted; check HTTPS_PROXY or your CA bundle"},
+		{"rejected token", rejectedToken{}, "GitHub rejected the token in GH_TOKEN (401); check it, or unset it to use `gh auth login`"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GH_TOKEN", "test-token")
+			path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+`, "actions/checkout@v4=sha1-"+parityTestSHA)
+
+			stdout, _, err := runCommandWithHTTP(t, tt.rt, "--verify", "--json=valid,findings", path)
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, errSilent, "a tool failure exits 2")
+			assert.Equal(t, tt.want, err.Error())
+			assert.Empty(t, stdout)
+		})
+	}
+}
+
+type untrustedCert struct{}
+
+func (untrustedCert) raw() {}
+
+func (untrustedCert) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}
+}
+
+type rejectedToken struct{}
+
+func (rejectedToken) raw() {}
+
+func (rejectedToken) RoundTrip(req *http.Request) (*http.Response, error) {
+	return httpmock.StatusResponse(http.StatusUnauthorized)(req)
 }
 
 // unreachable fails every request the way a refused connection does.
@@ -1378,8 +1438,13 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 		},
 		{
 			name: "inconclusive history check blocks", ref: "main",
-			head: map[string]any{"oid": live}, compare: httpmock.StatusResponse(http.StatusForbidden),
+			head: map[string]any{"oid": live}, compare: httpmock.StatusResponse(http.StatusServiceUnavailable),
 			want: "reachability-unknown", detail: "checking main history",
+		},
+		{
+			name: "refused history check blocks", ref: "main",
+			head: map[string]any{"oid": live}, compare: httpmock.StatusResponse(http.StatusForbidden),
+			want: "repo-unavailable", detail: "checking main history",
 		},
 		{
 			name: "commit in recorded ref passes", ref: "main",
@@ -1419,10 +1484,10 @@ func TestParity_FullSHAKeyProvenance(t *testing.T) {
 				}
 				if tt.want == "" {
 					reg.Register(httpmock.REST("GET", `repos/actions/checkout/tags`), httpmock.JSONResponse(httpmock.TagListResponse("v6.1.0", parityTestSHA)))
-					reg.RegisterReusable(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
-						"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
-					}))
 				}
+				reg.RegisterReusable(httpmock.GraphQLForRepo("actions", "checkout"), httpmock.JSONResponse(map[string]any{
+					"data": map[string]any{"a0": testRepoResponse("actions/checkout", parityTestSHA, nodeActionYAML)},
+				}))
 				path := writeFullSHAWorkflow(t, tt.ref)
 
 				assertFullSHARun(t, reg, args, path, tt.want, tt.detail)
@@ -3945,7 +4010,7 @@ jobs:
 			_, stderr, err := runCommandWithHTTP(t, rt, "--relock", "--no-narrow", "--no-interactive", path, otherPath)
 			require.ErrorIs(t, err, errSilent)
 			if name == "planning fails" {
-				assert.Contains(t, stderr, "could not check v4 history", "the terminal reports it too")
+				assert.Contains(t, stderr, "Couldn't verify 1 pin: GitHub API returned 503 Service Unavailable\n  actions/checkout@v4\n", "the terminal reports it too")
 			}
 		})
 	}
@@ -5093,4 +5158,44 @@ func TestSHARecordedRef_RenameKeepsFullSHAUse(t *testing.T) {
 	lock := readTempLockfilePins(t)
 	assert.Contains(t, lock, "'"+newName+"@"+parityTestSHA+"':\n        ref: 'v2.2.2'")
 	assert.NotContains(t, lock, "krzema12")
+}
+
+// TestParity_AnswerSettlesFailedRefMovedCheck: a ref-moved comparison that
+// fails and then succeeds when parity asks the same question settles as
+// the ref-moved warning, so --relock still re-pins the entry. Any other
+// check succeeding would leave the failure blocking.
+func TestParity_AnswerSettlesFailedRefMovedCheck(t *testing.T) {
+	const pinned, live = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{
+			"a0": map[string]any{"nameWithOwner": "example/action", "commit": map[string]any{"oid": pinned}, "tag": map[string]any{"oid": live}, "tagRef": map[string]any{}},
+			"a1": map[string]any{"nameWithOwner": "example/action", "commit": map[string]any{"oid": live}, "tag": map[string]any{"oid": live}, "tagRef": map[string]any{}},
+		},
+	}))
+	reg.Register(httpmock.GraphQLForRepo("example", "action"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("example/action", live, nodeActionYAML)},
+	}))
+	reg.Register(httpmock.REST("GET", "repos/example/action/compare/"), httpmock.StatusResponse(http.StatusServiceUnavailable))
+	reg.Register(httpmock.REST("GET", "repos/example/action/compare/"), httpmock.JSONResponse(map[string]any{
+		"status": "ahead", "merge_base_commit": map[string]any{"sha": pinned},
+	}))
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: example/action@v1
+`, "example/action@v1=sha1-"+pinned)
+
+	p, err := runParity(t, reg, "--relock", "--no-fix", path)
+	require.NoError(t, err, "%+v", p.Findings)
+	reg.Verify(t)
+	var categories []string
+	for _, f := range p.Findings {
+		categories = append(categories, f.Category)
+	}
+	assert.Equal(t, []string{"ref-moved"}, categories)
 }

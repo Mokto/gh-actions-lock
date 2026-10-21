@@ -195,22 +195,42 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 	// tagMoved marks an exact-version tag that moved ahead of its commit. A
 	// branch named like one is a floating ref.
 	tagMoved := make([]bool, len(states))
+	// answered holds GitHub's answer to each comparison it answered, by
+	// compareKey.
+	answered := map[string]resolve.AncestryStatus{}
+	defer func() {
+		for i := range report.Workflows {
+			dropSuperseded(&report.Workflows[i], answered)
+		}
+	}()
 	for i := range states {
 		st, pc := &states[i], pins[i]
 		if pc.Head == "" || st.Err != nil || !st.CommitFound || st.HeadOID == "" || strings.EqualFold(st.HeadOID, pc.SHA) {
 			continue
 		}
-		switch ancestry, detail, cause := r.CheckAncestryCause(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID); ancestry {
-		case resolve.AncestryNotAncestor:
+		ancestry, detail, cause := r.CheckAncestryCause(ctx, pc.Owner, pc.Repo, pc.SHA, st.HeadOID)
+		if cause == nil && ancestry != resolve.AncestryUnknown {
+			answered[compareKey(pc.Owner+"/"+pc.Repo, pc.SHA, st.HeadOID)] = ancestry
+		}
+		switch {
+		case ancestry == resolve.AncestryNotAncestor && cause == nil:
 			st.CommitFound = false
-		case resolve.AncestryUnknown:
+		case ancestry == resolve.AncestryConfirmed:
+			tagMoved[i] = st.HeadIsTag && exactTag(pc.Head)
+		default:
+			// GitHub didn't answer, or refused: the commit is unproven.
 			brief := fmt.Sprintf("could not check %s history", pc.Head)
+			err := fmt.Errorf("checking %s history: %s", pc.Head, detail)
 			if cause != nil {
 				brief += ": " + ghapi.Brief(cause)
+				err = fmt.Errorf("checking %s history: %w", pc.Head, cause)
 			}
-			st.Err = &ghapi.BriefError{Msg: brief, Err: fmt.Errorf("checking %s history: %s", pc.Head, detail)}
-		default:
-			tagMoved[i] = st.HeadIsTag && exactTag(pc.Head)
+			st.Err = &ghapi.BriefError{Msg: brief, Err: err}
+		}
+	}
+	for _, st := range states {
+		if err := ghapi.ConfigError(st.Err); err != nil {
+			return err
 		}
 	}
 	if ghapi.DependabotProxy() {
@@ -267,7 +287,7 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 				} else {
 					f.RecordedRef = o.lp.Action.Ref
 				}
-				verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: st.Err != nil})
+				verdict, blocking := disposeParity(mode, &f, paritySubject{pin: o.lp.Pin, fresh: o.fresh, ownSHA: !o.fresh && lockfile.RecordsOwnSHA(o.lp.Pin, o.lp.Action.Ref), away: o.away, heldBy: o.heldBy, head: pins[i].Head, inconclusive: unanswered(st.Err)})
 				if verdict != verdictKeep {
 					wr.Deferred = append(wr.Deferred, checks.Deferred{
 						Key: lockfile.EntryKey(o.lp.Pin), Ref: o.lp.Action.Ref, Commit: pins[i].SHA, Finding: blocking,
@@ -311,6 +331,78 @@ func rootPaths(recorded []parserlock.ActionRef, lp lockfile.LockedPin) []string 
 		}
 	}
 	return out
+}
+
+// unanswered reports a check GitHub didn't answer, which a later run may
+// complete. An SSO block whose anonymous fallback was rate-limited is
+// answered: authorizing the token is the fix.
+func unanswered(err error) bool {
+	return ghapi.IsTransient(err) && !errors.As(err, new(*ghapi.SSORateLimitedError))
+}
+
+// dropSuperseded fails closed: it settles a finding only where another
+// check answers the same question. A ref-moved check that couldn't compare
+// a pin's commit with the ref's takes parity's answer to that comparison
+// (in answered, by compareKey): confirmed makes it the ref-moved warning,
+// so --relock still re-pins it; anything else leaves parity's own finding.
+// It also goes once parity reports its own error on the pin. A workflow's
+// resolver outage goes once a pin of the workflow blocks, now or should its
+// deferred finding be restored.
+func dropSuperseded(wr *checks.WorkflowReport, answered map[string]resolve.AncestryStatus) {
+	pinBlocks := func(f checks.Finding) bool {
+		return f.Severity == checks.SeverityError && f.DepKey() != ""
+	}
+	parityBlocks := map[string]bool{}
+	for _, f := range wr.Findings {
+		if pinBlocks(f) && (f.RecordedRef != "" || f.FreshRef) {
+			parityBlocks[findingPinKey(f)] = true
+		}
+	}
+	for _, d := range wr.Deferred {
+		if pinBlocks(d.Finding) {
+			parityBlocks[findingPinKey(d.Finding)] = true
+		}
+	}
+	blocked := slices.ContainsFunc(wr.Findings, pinBlocks) || len(parityBlocks) > 0
+	wr.Findings = slices.DeleteFunc(wr.Findings, func(f checks.Finding) bool {
+		switch {
+		case refMovedUnproven(f) && f.Dependency != nil:
+			if parityBlocks[findingPinKey(f)] {
+				return true
+			}
+			a, ok := answered[compareKey(f.Dependency.NWO, f.Dependency.SHA, f.ObservedSHA)]
+			return ok && a != resolve.AncestryConfirmed
+		case f.Category == checks.ReachabilityUnknown && f.Retryable && f.DepKey() == "":
+			return blocked
+		}
+		return false
+	})
+	for i, f := range wr.Findings {
+		if !refMovedUnproven(f) || f.Dependency == nil {
+			continue
+		}
+		if a, ok := answered[compareKey(f.Dependency.NWO, f.Dependency.SHA, f.ObservedSHA)]; ok && a == resolve.AncestryConfirmed {
+			wr.Findings[i].MarkRefMoved()
+		}
+	}
+}
+
+// compareKey names a comparison of a pinned commit with a ref's commit.
+func compareKey(nwo, pinned, head string) string {
+	return strings.ToLower(nwo + "@" + pinned + "..." + head)
+}
+
+func findingPinKey(f checks.Finding) string {
+	if f.Dependency == nil {
+		return ""
+	}
+	return checks.PruneKey(f.Dependency.NWO, f.Dependency.Ref, f.Dependency.SHA)
+}
+
+// refMovedUnproven reports a ref-moved check whose comparison GitHub didn't
+// answer or refused (see checks.checkOneRefMoved).
+func refMovedUnproven(f checks.Finding) bool {
+	return f.Category == checks.AncestryUnknown || f.Category == checks.RepoUnavailable && f.ObservedSHA != ""
 }
 
 type parityOwner struct {
@@ -570,16 +662,21 @@ func parityFinding(pw checks.ParsedWorkflow, ref parserlock.ActionRef, lp lockfi
 	short := parserlock.ShortSHA(pc.SHA)
 	switch {
 	case st.Err != nil:
-		f.Category = checks.ReachabilityUnknown
-		f.Severity = checks.SeverityWarning
-		f.Confidence = checks.ConfidenceLow
-		f.Detail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, verbose(st.Err))
+		f.Detail = fmt.Sprintf("could not verify locked %s@%s%s: %s", nwo, short, via, verbose(st.Err))
 		f.TermDetail = fmt.Sprintf("could not verify locked %s@%s: %s", nwo, short, briefCause(st.Err))
 		var be *ghapi.BriefError
 		if errors.As(st.Err, &be) {
 			f.TermDetail = be.Msg
 		}
-		f.Remediation = "retry; the Actions backend will re-check this pin when the job starts"
+		if unanswered(st.Err) {
+			f.Category = checks.ReachabilityUnknown
+			f.Confidence = checks.ConfidenceLow
+			f.MarkRetryable(st.Err)
+			break
+		}
+		// GitHub answered, but not with the pin: a re-run won't change that.
+		f.Category = checks.RepoUnavailable
+		f.Remediation = fmt.Sprintf("use a token that can read %s or authorize SSO for %s, then re-run", nwo, pc.Owner)
 	case st.RepoMissing:
 		f.Category = checks.RepoUnavailable
 		f.Detail = fmt.Sprintf("%s is missing or not visible to this token%s", nwo, via)
