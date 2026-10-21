@@ -55,7 +55,7 @@ must move with the release. Update `dependabot-core` when the release changes:
 Dependabot
 [pins the CLI version and binary checksums](https://github.com/dependabot/dependabot-core/blob/main/github_actions/Dockerfile)
 and currently
-[accepts only lockfile schema `v0.0.2`](https://github.com/dependabot/dependabot-core/blob/main/github_actions/lib/dependabot/github_actions/constants.rb).
+[accepts lockfile schemas `v0.0.2` and `v0.0.3`](https://github.com/dependabot/dependabot-core/blob/main/github_actions/lib/dependabot/github_actions/constants.rb).
 Add schema support there before this CLI emits a new version. Unrelated releases
 do not need a Dependabot bump.
 
@@ -76,6 +76,12 @@ needs this decision. Unreleased changes of that kind:
   reusable workflows and in `./…` actions are not scanned. The category is
   additive: `valid`, exit codes and existing findings are unchanged, and
   Dependabot only acts on `error` findings.
+
+## Recorded-ref validation upgrade
+
+The release candidate containing #174 is behavior-breaking and needs a major
+release classification and Dependabot coordination before publication. It does
+not introduce a lockfile schema or select a release version.
 
 ## Workspace-local action coverage
 
