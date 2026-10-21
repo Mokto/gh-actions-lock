@@ -86,8 +86,11 @@ or branch contains still fails the run and nothing is written. A run given
 workflow paths leaves another workflow's such entry as it is, warns about it
 (exit 0), and doesn't report every workflow valid.
 `--verify-local` runs
-offline, never writes, and only checks that every ref has a lockfile entry,
-not that the entries are trustworthy; use `--verify` in CI for that.
+offline, never writes, and only checks that every ref has a lockfile entry and
+that every entry a workflow reaches through `uses:` exists, not that the
+entries are trustworthy; use `--verify` in CI for that. A missing entry fails
+every mode, and a plain run writes nothing; run `gh actions-lock --relock` to
+rebuild the graph.
 
 Pins to branches or partial versions (e.g. `main`, `v4`) are not advanced when
 upstream moves. To regenerate the lockfile from the current upstream commits,
@@ -97,10 +100,12 @@ run:
 gh actions-lock --relock
 ```
 
-`--relock` re-resolves refs that have legitimately moved and rewrites the
-lockfile to the new SHA. Suspicious pins whose recorded commit is no longer
-reachable upstream are left as errors — use `--accept-moved` to re-resolve
-those as well.
+`--relock` re-resolves every ref, rewrites the lockfile to the current SHAs,
+and rebuilds each composite action's `uses:` from its manifest, even when no
+ref moved, so children it gained are added and ones it dropped go. Suspicious
+pins whose recorded commit is no longer reachable upstream are left as errors —
+use `--accept-moved` to re-resolve those as well. A plain run keeps a locked
+composite's recorded `uses:` as they are.
 
 ### GitHub Enterprise Cloud with data residency
 

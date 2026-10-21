@@ -154,9 +154,11 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// Drop stale inventory entries so a re-pin converges: the orphan leaves
 	// workflows[path] and Save's GC removes its dependencies[] entry.
 	inventory := pruneStaleInventory(wr.Inventory, wr.Findings, opts.AcceptMoved, opts.Relock)
-	repinMoved := repinsMoved(opts) && wr.CountByCategory(checks.RefMoved) > 0
+	// --relock and --accept-moved rebuild the workflow's whole closure from
+	// live manifests, even when no ref moved.
+	rebuild := repinsMoved(opts)
 
-	if !wr.NeedsAttention() && !repinMoved {
+	if !wr.NeedsAttention() && !rebuild {
 		entries = verifiedEntries(inventory, wr.Path)
 		rw := narrowVerifiedEntries(ctx, entries, opts, rewriteRefs)
 		if err := rejectPartialSelfActionRewrites(opts, wr.SelfActionRefs, rw); err != nil {
@@ -167,14 +169,14 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	}
 
 	// --relock must not rewrite a workflow that still carries an
-	// unreachable-pin finding: re-resolving a moved sibling pulls the whole
-	// tree (including the possibly-tampered unreachable dep, which may be
-	// transitive and absent from the direct-only inventory) through
-	// ResolveAllRecursive, and buildPinnedEntries would commit it at a live
-	// SHA before the hard-error gate runs. Leave the workflow untouched from
-	// its original inventory; the unreachable-pin error still fails the run.
+	// unreachable-pin finding: the rebuild pulls the whole tree (including
+	// the possibly-tampered unreachable dep, which may be transitive and
+	// absent from the direct-only inventory) through ResolveAllRecursive,
+	// and buildPinnedEntries would commit it at a live SHA before the
+	// hard-error gate runs. Leave the workflow untouched from its original
+	// inventory; the unreachable-pin error still fails the run.
 	// --accept-moved deliberately accepts these, so it is exempt.
-	if opts.Relock && !opts.AcceptMoved && wr.CountByCategory(checks.UnreachablePin) > 0 && repinMoved {
+	if relockKeepsUnreachable(opts, wr) {
 		entries = verifiedEntries(wr.Inventory, wr.Path)
 		wplans = append(wplans, WorkflowPlan{Path: wr.Path, SelfActionFiles: wr.SelfActionFiles})
 		return planResult{entries: entries, wplans: wplans}, nil
@@ -184,12 +186,13 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	unrecordedRefs, inventorySHA := partitionByInventory(inventory, wr.ActionRefs)
 	entries = verifiedEntries(inventory, wr.Path)
 
-	// A moved *transitive* dep is pruned from inventory but is not a direct
-	// ActionRef, so partitionByInventory marks nothing unrecorded and the
-	// verified fast path would silently drop it instead of bumping it. Force
-	// the workflow's direct roots through recursive resolution so the moved
-	// transitive is re-pinned to its current SHA.
-	if len(unrecordedRefs) == 0 && repinMoved {
+	// A rebuild resolves every root recursively, so moved transitive deps
+	// are re-pinned and every composite's edges are read from its manifest.
+	recorded := make(map[string]dep.Dependency, len(inventory))
+	for _, inv := range inventory {
+		recorded[checks.PruneKey(inv.Dep.NWO, inv.Dep.Ref, inv.Dep.SHA)] = inv.Dep
+	}
+	if rebuild {
 		unrecordedRefs, inventorySHA = partitionByInventory(nil, wr.ActionRefs)
 		entries = verifiedEntries(nil, wr.Path)
 	}
@@ -231,11 +234,26 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	preservedDeps := make(map[int]bool)
 
 	narrowDirectDeps(ctx, opts, deps, rewriteTracker, rewrites, preservedDeps)
-	reRecorded := preserveReRecorded(opts, deps, rewriteTracker, preservedDeps)
+	reRecorded := preserveReRecorded(opts, deps, preservedDeps)
+	// A rebuild leaves a root still at its recorded commit as a run that
+	// trusts the lock would: its `uses:` and recorded ref stay.
+	settled := make(map[int]bool)
+	for i := range deps {
+		d := &deps[i]
+		inv, ok := recorded[checks.PruneKey(d.NWO, d.Ref, d.SHA)]
+		if !rebuild || !ok || !rewriteTracker.IsDirect(i) {
+			continue
+		}
+		preservedDeps[i] = true
+		if !reRecorded[d.Key()] {
+			d.Tag, d.Branch = inv.Tag, inv.Branch
+			settled[i] = true
+		}
+	}
 
 	// ReverseLookup canonicalizes each dep's ref while preserving the tags
 	// narrowing chose and transitive deps' declared refs.
-	rlRewrites, lookupIssues, err := reverseLookupRewrites(ctx, opts, wr, deps, rewriteTracker, preservedDeps)
+	rlRewrites, lookupIssues, err := reverseLookupRewrites(ctx, opts, wr, deps, rewriteTracker, preservedDeps, settled)
 	if err != nil {
 		return planResult{}, err
 	}
@@ -252,6 +270,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 				Issue:      "reverse-lookup",
 				Reason:     issue.Message,
 				Workflows:  []string{wr.Path},
+				RequiredBy: parentMap[issue.NWO+"@"+issue.Ref],
 			})
 			skip[issue.Index] = true
 		}
@@ -386,17 +405,17 @@ func rejectPartialSelfActionRewrites(opts PlanOptions, selfActionRefs []parserlo
 	return nil
 }
 
-// preserveReRecorded keeps the `uses:` of each direct full-SHA pin whose
-// entry recorded the SHA itself as its ref: the run only re-records the
-// entry's tag or branch. It returns the keys of those deps.
-func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, directTracker lockfile.DirectTracker, preservedDeps map[int]bool) map[string]bool {
+// preserveReRecorded keeps the `uses:` of each full-SHA pin whose entry
+// recorded the SHA itself as its ref: the run only re-records the entry's
+// tag or branch. It returns the keys of those deps.
+func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, preservedDeps map[int]bool) map[string]bool {
 	out := map[string]bool{}
 	if opts.Store == nil {
 		return out
 	}
 	for i, d := range deps {
 		owner, repo := d.OwnerRepo()
-		if directTracker.IsDirect(i) && parserlock.IsFullSha(d.Ref) && opts.Store.RecordsOwnSHA(owner, repo, d.Ref) {
+		if parserlock.IsFullSha(d.Ref) && opts.Store.RecordsOwnSHA(owner, repo, d.Ref) {
 			preservedDeps[i] = true
 			out[d.Key()] = true
 		}
@@ -465,15 +484,30 @@ func narrowDirectDeps(ctx context.Context, opts PlanOptions, deps []dep.Dependen
 // reverseLookupRewrites canonicalizes refs via ReverseLookup, preserving
 // narrowed refs, transitive declarations, and existing locked targets.
 // It returns rewrites, indices of unresolvable deps, and any hard error.
-func reverseLookupRewrites(ctx context.Context, opts PlanOptions, wr checks.WorkflowReport, deps []dep.Dependency, directTracker lockfile.DirectTracker, preservedDeps map[int]bool) (map[string]string, []resolve.LookupIssue, error) {
+func reverseLookupRewrites(ctx context.Context, opts PlanOptions, wr checks.WorkflowReport, deps []dep.Dependency, directTracker lockfile.DirectTracker, preservedDeps, settled map[int]bool) (map[string]string, []resolve.LookupIssue, error) {
 	originalRefs := make([]string, len(deps))
 	for i := range deps {
 		originalRefs[i] = deps[i].Ref
 	}
 
-	normRewrites, lookupIssues, err := opts.Resolver.ReverseLookup(ctx, deps)
+	// Settled deps keep their recorded ref; look up the rest.
+	var lookup []dep.Dependency
+	var index []int
+	for i := range deps {
+		if !settled[i] {
+			lookup = append(lookup, deps[i])
+			index = append(index, i)
+		}
+	}
+	normRewrites, lookupIssues, err := opts.Resolver.ReverseLookup(ctx, lookup)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reverse lookup: %w", err)
+	}
+	for j, i := range index {
+		deps[i] = lookup[j]
+	}
+	for k := range lookupIssues {
+		lookupIssues[k].Index = index[lookupIssues[k].Index]
 	}
 	// Composite refs must match their action.yml. A direct rewrite must not
 	// reuse a ref locked to a different commit. Keep the discovered metadata.
@@ -503,6 +537,21 @@ func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.D
 	}
 
 	directKeys := directTracker.Keys(deps)
+	// A parent with an edge to no dep here (a composite's use under a name
+	// the run resolved to a new one) wasn't read whole: it keeps its
+	// recorded edges.
+	depKeys := make(map[string]bool, len(deps))
+	for _, d := range deps {
+		depKeys[d.Key()] = true
+	}
+	partial := make(map[string]bool)
+	for child, parents := range parentMap {
+		if !depKeys[child] {
+			for _, p := range parents {
+				partial[p] = true
+			}
+		}
+	}
 	var out []Entry
 	for _, dep := range deps {
 		// Each key needs its own entry: a ref that moved onto a commit a
@@ -527,6 +576,7 @@ func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.D
 			Workflows:  []string{wr.Path},
 			RequiredBy: parents,
 			Direct:     directKeys[depKey],
+			FromLock:   dep.FromLock || partial[depKey],
 		}
 		for _, orig := range dep.OriginalRefs {
 			entry.RenamedFrom = append(entry.RenamedFrom, orig.NWO()+"@"+orig.Ref)
@@ -628,6 +678,12 @@ func repinsMoved(opts PlanOptions) bool {
 	return opts.Relock || opts.AcceptMoved
 }
 
+// relockKeepsUnreachable reports whether a --relock leaves wr as recorded
+// because it carries an unreachable pin.
+func relockKeepsUnreachable(opts PlanOptions, wr checks.WorkflowReport) bool {
+	return opts.Relock && !opts.AcceptMoved && wr.CountByCategory(checks.UnreachablePin) > 0
+}
+
 // verifiedEntries builds Verified plan entries for every inventory item.
 func verifiedEntries(inventory []checks.InventoryEntry, path string) []Entry {
 	out := make([]Entry, len(inventory))
@@ -643,6 +699,7 @@ func verifiedEntries(inventory []checks.InventoryEntry, path string) []Entry {
 			Workflows:  []string{path},
 			Direct:     inv.Direct,
 			RequiredBy: inv.Parents,
+			FromLock:   true,
 		}
 	}
 	return out
@@ -756,7 +813,7 @@ func staleRoots(report *checks.Report, opts PlanOptions) map[string]map[string]b
 		if wr.SkipCommit || wr.BlockingResolverError || wr.CountByCategory(checks.InvalidSelfRepositoryRef) > 0 {
 			continue
 		}
-		if opts.Relock && !opts.AcceptMoved && wr.CountByCategory(checks.UnreachablePin) > 0 && wr.CountByCategory(checks.RefMoved) > 0 {
+		if relockKeepsUnreachable(opts, wr) {
 			continue
 		}
 		stale := make(map[string]bool)

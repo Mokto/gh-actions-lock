@@ -36,6 +36,9 @@ type Dependency struct {
 	OriginalRef string
 	// RenamedFrom lists the lockfile keys before a same-repository rename.
 	RenamedFrom []string
+	// FromLock marks a dependency taken from the lockfile without reading
+	// its manifest, so the lockfile keeps its recorded `uses:`.
+	FromLock bool
 	// Tag is the discovered release/tag pointing at SHA, if any. Optional.
 	// Populated by the pin-time discovery pass; not read from `uses:`.
 	Tag string
@@ -96,6 +99,8 @@ func Dedup(deps []Dependency) []Dependency {
 			out = append(out, d)
 			continue
 		}
+		// Another sub-action of the same entry may come from the lockfile.
+		out[i].FromLock = out[i].FromLock || d.FromLock
 		for _, ref := range d.OriginalRefs {
 			if !slices.Contains(out[i].OriginalRefs, ref) {
 				out[i].OriginalRefs = append(out[i].OriginalRefs, ref)

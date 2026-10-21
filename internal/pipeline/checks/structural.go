@@ -7,6 +7,7 @@ import (
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/dep"
 	"github.com/github/gh-actions-lock/internal/lockfile"
+	"github.com/github/gh-actions-lock/internal/workflowfile"
 )
 
 // checkUntracked emits NotPinned for a workflow with no uses: refs that
@@ -192,6 +193,32 @@ func checkStale(pw ParsedWorkflow, depPins []lockedPin) []Finding {
 			},
 		}
 		out = append(out, f)
+	}
+	return out
+}
+
+// checkLockGraph emits a NotPinned error for each recorded edge of the
+// workflow's closure a reader can't follow: a `uses:` key with no
+// dependencies entry, or a cycle. Only a rebuild from live manifests can
+// restore the missing entries; a plain run keeps recorded edges as they are.
+func checkLockGraph(pw ParsedWorkflow, lf parserlock.File) []Finding {
+	use := lockfile.RootUse(pw.Refs)
+	live := func(p parserlock.Pin, a parserlock.Action) bool {
+		_, ok := use(p, a.Commit)
+		return ok
+	}
+	var out []Finding
+	for _, fault := range lockfile.GraphFaults(lf, workflowfile.KeyFromPath(pw.Path), live) {
+		out = append(out, Finding{
+			WorkflowPath:  pw.Path,
+			Category:      NotPinned,
+			Severity:      SeverityError,
+			Confidence:    ConfidenceHigh,
+			Remediable:    true,
+			TrackedAction: true,
+			Detail:        "lock graph is incomplete: " + fault.String(),
+			Remediation:   "run `gh actions-lock --relock` to rebuild the workflow's lock graph",
+		})
 	}
 	return out
 }

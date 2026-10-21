@@ -35,7 +35,7 @@ func TestPreview(t *testing.T) {
 	preview := store.Preview()
 	// o/new has no cached IDs: the preview fills a placeholder offline.
 	newDep := dep.Dependency{NWO: "o/new", Ref: "v1", SHA: b}
-	rootDep := dep.Dependency{NWO: "o/root", Ref: "v1", SHA: b}
+	rootDep := dep.Dependency{NWO: "o/root", Ref: "v1", SHA: b, FromLock: true}
 	require.NoError(t, preview.Set(context.Background(), ".github/workflows/ci.yml",
 		[]dep.Dependency{rootDep, newDep}, nil, map[string]bool{rootDep.Key(): true, newDep.Key(): true}))
 	preview.GC()
@@ -43,7 +43,7 @@ func TestPreview(t *testing.T) {
 	got, ok := preview.Entry("o/root@v1")
 	require.True(t, ok)
 	assert.Equal(t, "sha1-"+b, got.Commit)
-	assert.Equal(t, []string{"o/child@v2"}, got.Uses, "writing a workflow keeps recorded edges")
+	assert.Equal(t, []string{"o/child@v2"}, got.Uses, "writing a workflow keeps an unread entry's recorded edges")
 	_, ok = preview.Entry("o/child@v2")
 	assert.True(t, ok, "a recorded edge keeps its child through GC")
 	assert.Equal(t, []string{"o/root@v1"}, preview.UsedBy("o/child@v2"))

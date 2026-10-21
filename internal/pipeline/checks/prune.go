@@ -8,8 +8,8 @@ import (
 
 // PruneEffect is what planning does with a recorded entry a finding prunes
 // from the workflow's inventory. Either way the recorded entry itself stays
-// in the lock while another entry's recorded `uses:` lists it: writing a
-// workflow merges, never drops, recorded edges.
+// in the lock while another entry's `uses:` lists it; only a composite whose
+// manifest the run read has its edges replaced (see lockfile.State.Set).
 type PruneEffect int
 
 const (

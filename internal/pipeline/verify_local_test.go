@@ -303,3 +303,33 @@ workflows:
 		})
 	}
 }
+
+func TestVerifyLocalCoverage_DanglingEdge(t *testing.T) {
+	dir := t.TempDir()
+	store := writeTestLockfile(t, dir, `version: 'v0.0.3'
+dependencies:
+  'octo/comp@v1':
+    ref: 'v1'
+    commit: 'sha1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    owner_id: 1
+    repo_id: 1
+    uses:
+      - 'octo/child@v2'
+workflows:
+  '.github/workflows/ci.yml':
+    - 'octo/comp@v1'
+`)
+	parsed := []checks.ParsedWorkflow{{
+		Path: ".github/workflows/ci.yml",
+		Refs: []parserlock.ActionRef{{Owner: "octo", Repo: "comp", Ref: "v1"}},
+	}}
+
+	report := VerifyLocalCoverage(parsed, store)
+	assert.False(t, report.IsValid())
+	require.Len(t, report.Workflows[0].Findings, 1)
+	f := report.Workflows[0].Findings[0]
+	assert.Equal(t, checks.NotPinned, f.Category)
+	assert.Equal(t, checks.SeverityError, f.Severity)
+	assert.Contains(t, f.Detail, "octo/comp@v1 uses octo/child@v2, which has no dependencies entry")
+	assert.Contains(t, f.Remediation, "gh actions-lock --relock")
+}

@@ -142,7 +142,8 @@ func entryRefError(pin parserlock.Pin, ref string) error {
 // workflow uses: strings.
 func pinToDep(p parserlock.Pin) dep.Dependency {
 	return dep.Dependency{
-		NWO: p.NWO,
-		Ref: p.Ref,
+		NWO:      p.NWO,
+		Ref:      p.Ref,
+		FromLock: true,
 	}
 }

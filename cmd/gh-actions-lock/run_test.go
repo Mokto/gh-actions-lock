@@ -543,3 +543,70 @@ func TestRun_LockedManifestsInconclusive(t *testing.T) {
 		})
 	}
 }
+
+// TestRun_RelockRebuildsUnchangedComposite: octo/comp@v1 is locked at its
+// current commit with no recorded children, but its manifest uses
+// octo/child@v2. A plain run trusts the lock; --relock rebuilds the
+// closure from the manifest even though no ref moved.
+func TestRun_RelockRebuildsUnchangedComposite(t *testing.T) {
+	const compSHA, childSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "cccccccccccccccccccccccccccccccccccccccc"
+	reg := &httpmock.Registry{}
+	stubGraph(t, reg, nil,
+		map[string]string{"octo/comp": compSHA, "octo/child": childSHA},
+		map[string]string{"octo/comp": "name: c\nruns:\n  using: composite\n  steps:\n    - uses: octo/child@v2\n"})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/octo/child$`), httpmock.JSONResponse(map[string]any{"id": 2, "owner": map[string]any{"id": 1}}))
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/comp@v1\n")
+	lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - 'octo/comp@v1'\n" +
+		"dependencies:\n    'octo/comp@v1':\n        ref: 'v1'\n        commit: 'sha1-" + compSHA + "'\n        owner_id: 1\n        repo_id: 1\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
+	require.NoError(t, err, stderr)
+	assert.NotContains(t, readTempLockfilePins(t), "octo/child", "a plain run trusts the lock")
+
+	_, stderr, err = runCommandWithHTTP(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
+	require.NoError(t, err, stderr)
+	after := readTempLockfilePins(t)
+	assert.Contains(t, after, "'octo/comp@v1':\n        ref: 'v1'\n        commit: 'sha1-"+compSHA+"'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - 'octo/child@v2'\n")
+	assert.Contains(t, after, "'octo/child@v2':\n        ref: 'v2'\n        commit: 'sha1-"+childSHA+"'")
+}
+
+// TestRun_DanglingEdgeBlocksUntilRelock: a recorded edge with no entry
+// fails --verify-local and a plain run, which writes nothing; --relock
+// rebuilds the graph.
+func TestRun_DanglingEdgeBlocksUntilRelock(t *testing.T) {
+	const compSHA, childSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "cccccccccccccccccccccccccccccccccccccccc"
+	reg := &httpmock.Registry{}
+	stubGraph(t, reg, nil,
+		map[string]string{"octo/comp": compSHA, "octo/child": childSHA},
+		map[string]string{"octo/comp": "name: c\nruns:\n  using: composite\n  steps:\n    - uses: octo/child@v2\n"})
+	reg.RegisterReusable(httpmock.REST("GET", `repos/octo/child$`), httpmock.JSONResponse(map[string]any{"id": 2, "owner": map[string]any{"id": 1}}))
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/comp@v1\n")
+	lock := "version: 'v0.0.3'\nworkflows:\n    '.github/workflows/workflow.yml':\n        - 'octo/comp@v1'\n" +
+		"dependencies:\n    'octo/comp@v1':\n        ref: 'v1'\n        commit: 'sha1-" + compSHA + "'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - 'octo/child@v2'\n"
+	lockPath := filepath.Join(".github", "workflows", "actions.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(lock), 0o600))
+
+	for _, mode := range []string{"--verify-local", "--verify"} {
+		p, err := runParity(t, reg, mode, path)
+		require.ErrorIs(t, err, errSilent, mode)
+		require.Len(t, p.Findings, 1, "%s: %+v", mode, p.Findings)
+		assert.Equal(t, "error", p.Findings[0].Severity)
+		assert.Contains(t, p.Findings[0].Detail, "octo/comp@v1 uses octo/child@v2, which has no dependencies entry")
+		assert.Contains(t, p.Findings[0].Remediation, "gh actions-lock --relock")
+	}
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-narrow", "--no-interactive", path)
+	require.Error(t, err, stderr)
+	assert.Contains(t, err.Error(), "gh actions-lock --relock")
+	assert.Equal(t, lock, readTempLockfilePins(t), "nothing is written")
+
+	_, stderr, err = runCommandWithHTTP(t, reg, "--relock", "--no-narrow", "--no-interactive", path)
+	require.NoError(t, err, stderr)
+	assert.Contains(t, readTempLockfilePins(t), "'octo/child@v2':\n        ref: 'v2'\n        commit: 'sha1-"+childSHA+"'")
+	_, stderr, err = runCommandWithHTTP(t, reg, "--verify-local", path)
+	require.NoError(t, err, stderr)
+}
