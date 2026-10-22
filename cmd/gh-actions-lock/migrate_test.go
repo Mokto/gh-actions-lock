@@ -278,6 +278,35 @@ jobs:
 	})
 }
 
+func TestMigrateLocalActions_UnreadableWorkflowAborts(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+	write := func(rel, content string) string {
+		full := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+		return full
+	}
+	write("local/action.yml", "runs:\n  using: composite\n")
+	const good = "jobs:\n  build:\n    steps:\n      - uses: ./local\n"
+	goodPath := write(".github/workflows/good.yml", good)
+	lockedPath := write(".github/workflows/locked.yml", good)
+	require.NoError(t, os.Chmod(lockedPath, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(lockedPath, 0o644) })
+	if _, err := os.ReadFile(lockedPath); err == nil {
+		t.Skip("file permissions not enforced for this user")
+	}
+
+	total, _, err := migrateLocalActions([]string{goodPath, lockedPath})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, os.ErrPermission)
+	assert.Zero(t, total)
+	got, readErr := os.ReadFile(goodPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, good, string(got))
+}
+
 // TestMigrateLocalActions_UnparseableWorkflowIsAFinding: a workflow that
 // won't parse doesn't abort migration; it's reported like a default run.
 func TestMigrateLocalActions_UnparseableWorkflowIsAFinding(t *testing.T) {
