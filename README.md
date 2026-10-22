@@ -23,6 +23,14 @@ Requires the [`gh` CLI](https://cli.github.com/). Install it first, then install
 gh extension install github/gh-actions-lock
 ```
 
+## AI agent integration
+
+Install the gh-actions-lock skill so your AI coding agent knows how to lock, verify and fix workflow dependencies with the `gh actions-lock` CLI:
+
+```bash
+gh skill install github/gh-actions-lock
+```
+
 ## Usage
 
 Scan every workflow under `.github/workflows/` directory, pin each resolvable action to a SHA, and update the lockfile:
