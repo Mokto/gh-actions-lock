@@ -472,8 +472,13 @@ func (u *UI) StartProgress(label string) {
 	u.spinner = sp
 	u.progDetail = ""
 	u.progPaused = false
+	u.progPending = false
+	u.armProgressGrace()
+}
 
-	// Defer the visible start so fast runs never flicker.
+// armProgressGrace defers the visible start so fast runs never flicker.
+func (u *UI) armProgressGrace() {
+	sp, sw := u.spinner, u.spinWriter
 	done := make(chan struct{})
 	u.progGraceDone = done
 	u.progGrace = time.AfterFunc(progressGrace, func() {
@@ -491,13 +496,26 @@ func (u *UI) PauseProgress() {
 	if u.spinner == nil || u.progPaused {
 		return
 	}
-	// Cancel grace timer — if the spinner hasn't appeared yet, keep it hidden.
+	// Cancel grace timer. A spinner that hasn't appeared yet stays hidden,
+	// and ResumeProgress restarts its grace period rather than showing it.
 	if u.progGrace != nil {
-		if !u.progGrace.Stop() {
+		if u.progGrace.Stop() {
+			u.progPending = true
+		} else {
 			<-u.progGraceDone
 		}
 		u.progGrace = nil
 		u.progGraceDone = nil
+	}
+	if u.progPending {
+		if u.spinWriter != nil {
+			u.spinWriter.mu.Lock()
+			u.spinWriter.workers = nil
+			u.spinWriter.hints = nil
+			u.spinWriter.mu.Unlock()
+		}
+		u.progPaused = true
+		return
 	}
 	if u.spinWriter != nil {
 		u.spinWriter.stopAnimator()
@@ -524,6 +542,12 @@ func (u *UI) ResumeProgress() {
 		return
 	}
 	u.progPaused = false
+	if u.progPending {
+		u.progPending = false
+		u.renderProgress()
+		u.armProgressGrace()
+		return
+	}
 	u.renderProgress()
 	u.spinner.Start()
 	if u.spinWriter != nil {
@@ -564,5 +588,6 @@ func (u *UI) StopProgress() {
 		u.spinWriter = nil
 		u.progDetail = ""
 		u.progPaused = false
+		u.progPending = false
 	}
 }
