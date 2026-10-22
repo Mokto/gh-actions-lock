@@ -13,7 +13,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/cli/go-gh/v2/pkg/repository"
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -324,16 +323,11 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		ReadOnly:    opts.noFix,
 		Profile:     prof,
 	}
-	// Defer spinner start until actual network work begins. The fast path
-	// (everything trusted from the lockfile) returns before resolve fires,
-	// so the spinner never appears and there's no flicker.
+	// Recorded pins are still checked online (parity, ancestry, locked
+	// manifests), so start the spinner before the pipeline. Its grace period
+	// keeps runs that finish quickly from flickering one.
 	if showSpinner {
-		var once sync.Once
-		runOpts.OnResolveProgress = func(done, total int) {
-			once.Do(func() {
-				console.StartProgress("Resolving actions")
-			})
-		}
+		console.StartProgress(fmt.Sprintf("Checking %d %s", total, ui.Pluralize(total, "workflow", "workflows")))
 	}
 
 	endRun := prof.Phase("pipeline.Run (scan+resolve+reachability+diagnose)")
