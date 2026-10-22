@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -274,4 +276,83 @@ jobs:
 		assert.Contains(t, got, "uses: ./.github/actions/foo", "opt-out leaves the ./… ref in place")
 		assert.NotContains(t, got, "$/", "opt-out means no migration to $/")
 	})
+}
+
+func TestMigrateLocalActions_UnreadableWorkflowAborts(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+	write := func(rel, content string) string {
+		full := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+		return full
+	}
+	write("local/action.yml", "runs:\n  using: composite\n")
+	const good = "jobs:\n  build:\n    steps:\n      - uses: ./local\n"
+	goodPath := write(".github/workflows/good.yml", good)
+	lockedPath := write(".github/workflows/locked.yml", good)
+	require.NoError(t, os.Chmod(lockedPath, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(lockedPath, 0o644) })
+	if _, err := os.ReadFile(lockedPath); err == nil {
+		t.Skip("file permissions not enforced for this user")
+	}
+
+	total, _, err := migrateLocalActions([]string{goodPath, lockedPath})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, os.ErrPermission)
+	assert.Zero(t, total)
+	got, readErr := os.ReadFile(goodPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, good, string(got))
+}
+
+// TestMigrateLocalActions_UnparseableWorkflowIsAFinding: a workflow that
+// won't parse doesn't abort migration; it's reported like a default run.
+func TestMigrateLocalActions_UnparseableWorkflowIsAFinding(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
+	reg.Register(
+		httpmock.GraphQLForRepo("actions", "setup-go"),
+		httpmock.JSONResponse(map[string]any{
+			"data": map[string]any{
+				"a0": testRepoResponse("actions/setup-go", setupGoSHA, nodeActionYAML),
+			},
+		}),
+	)
+
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+	const good = "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.github/actions/foo\n"
+	write(".github/workflows/good.yml", good)
+	write(".github/workflows/bad.yml", "name: [\n")
+	write(".github/actions/foo/action.yml",
+		"name: Foo\nruns:\n  using: composite\n  steps:\n    - uses: actions/setup-go@v6\n")
+	t.Chdir(dir)
+
+	stdout, _, err := runCommandWithHTTP(t, reg, "--migrate-local-actions", "--json=valid,findings")
+
+	require.ErrorIs(t, err, errSilent, "the load error blocks the write like a default run")
+	var payload struct {
+		Valid    bool             `json:"valid"`
+		Findings []format.Finding `json:"findings"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
+	assert.False(t, payload.Valid)
+	var loadErrors []string
+	for _, f := range payload.Findings {
+		if strings.Contains(f.Detail, "failed to load workflow") {
+			loadErrors = append(loadErrors, f.Workflow)
+		}
+	}
+	assert.Equal(t, []string{".github/workflows/bad.yml"}, loadErrors)
+	got, readErr := os.ReadFile(filepath.Join(dir, ".github", "workflows", "good.yml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, good, string(got), "a blocked run rolls back the migration")
 }

@@ -748,8 +748,14 @@ func migrateLocalActions(paths []string) (int, func(), error) {
 		if err != nil {
 			return 0, undo, fmt.Errorf("loading %s: %w", path, err)
 		}
-		wf, err := workflowfile.Load(path)
+		// Invalid YAML can't be migrated; the scan reports it as a load
+		// finding like any other run, so skip it. Anything else aborts.
+		wf, err := workflowfile.Parse(path, original)
 		if err != nil {
+			var syntaxErr *workflowfile.SyntaxError
+			if errors.As(err, &syntaxErr) {
+				continue
+			}
 			return 0, undo, fmt.Errorf("loading %s: %w", path, err)
 		}
 		content, changed, err := wf.MigrateLocalActionsToSelfRepository()

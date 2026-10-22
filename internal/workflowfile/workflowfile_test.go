@@ -1,6 +1,7 @@
 package workflowfile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -733,4 +734,30 @@ func TestDiscoverCompositeActionFiles_RejectsSymlinkEscape(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outside repository root")
 	assert.Empty(t, paths)
+}
+
+func TestParseErrorKinds(t *testing.T) {
+	tests := []struct {
+		name       string
+		content    string
+		wantSyntax bool
+	}{
+		{name: "invalid YAML is a syntax error", content: "name: [\n", wantSyntax: true},
+		{name: "rejected uses expression is not a syntax error", content: "jobs:\n  b:\n    steps:\n      - uses: ${{ x }}\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse("wf.yml", []byte(tt.content))
+			require.Error(t, err)
+			var syntaxErr *SyntaxError
+			assert.Equal(t, tt.wantSyntax, errors.As(err, &syntaxErr))
+		})
+	}
+}
+
+func TestLoadReadErrorIsNotASyntaxError(t *testing.T) {
+	_, err := Load(filepath.Join(t.TempDir(), "missing.yml"))
+	require.Error(t, err)
+	var syntaxErr *SyntaxError
+	assert.False(t, errors.As(err, &syntaxErr))
 }

@@ -21,6 +21,16 @@ import (
 
 var errPathOutsideRoot = errors.New("path resolves outside repository root")
 
+// SyntaxError reports content that isn't valid YAML, as opposed to a file
+// that couldn't be read or a document that parsed but was rejected.
+type SyntaxError struct {
+	Err error
+}
+
+func (e *SyntaxError) Error() string { return "parsing workflow YAML: " + e.Err.Error() }
+
+func (e *SyntaxError) Unwrap() error { return e.Err }
+
 // File is the parsed workflow YAML the CLI rewrites in-place.
 // It carries the original byte content alongside the parsed node tree so
 // RewriteActionRefs can do anchored, comment-preserving substitution.
@@ -47,7 +57,7 @@ func Parse(path string, content []byte) (*File, error) {
 		Content: content,
 	}
 	if err := yaml.Unmarshal(content, &f.root); err != nil {
-		return nil, fmt.Errorf("parsing workflow YAML: %w", err)
+		return nil, &SyntaxError{Err: err}
 	}
 
 	var invalid []string
