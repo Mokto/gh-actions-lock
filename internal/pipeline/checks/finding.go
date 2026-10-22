@@ -58,10 +58,9 @@ type Finding struct {
 	// finding (regardless of outcome). Lets renderers distinguish
 	// "we didn't look" from "we looked and found nothing."
 	RecommendedSearched bool
-	// RefMissing marks a not-pinned or unreachable-pin finding whose ref
+	// RefMissing marks a ref-missing or unreachable-pin finding whose ref
 	// definitively does not exist upstream. Terminal output titles it
-	// separately and skips the release and doc links; the JSON category is
-	// unchanged.
+	// separately and skips the release and doc links.
 	RefMissing bool
 	// RefGone marks an unreachable-pin finding whose checked ref is not a
 	// tag or branch, including a full-SHA key's recorded ref, which

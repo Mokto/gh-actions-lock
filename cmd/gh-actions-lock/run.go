@@ -565,15 +565,35 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		injectFreshTagFindings(ctx, report, record, tagger, cooldownCfg)
 	}
 
-	// JSON mode emits the (pre-fix) diagnosis now — after the commit
-	// succeeded — so machine consumers never see findings for a run that
-	// then failed to write.
+	// JSON mode reports the state the commit left, and only after it
+	// succeeded, so machine consumers never see findings for a run that
+	// then failed to write. The run log keeps the pre-fix diagnosis.
 	if opts.jsonFields != "" {
-		return format.WriteJSON(out, report, record, valid, opts.jsonFields, cliVersion(), store.File().Version, r.Hostname())
+		fixed := postFixReport(report)
+		return format.WriteJSON(out, fixed, record, fixed.IsValid(), opts.jsonFields, cliVersion(), store.File().Version, r.Hostname())
 	}
 
 	// Terminal summary.
 	return renderPinSummary(ctx, console, record, report, r, refusedLabels, opts.noNarrow, opts.acceptMoved, store.OriginalVersion(), staleWorkflows)
+}
+
+// postFixReport is report as a committed write left it. A run commits only
+// when it can fix every error it found (see runHasBlockingErrors), so no error
+// stands afterwards; warnings and info findings remain.
+func postFixReport(report *checks.Report) *checks.Report {
+	unfixed := func(ff []checks.Finding) []checks.Finding {
+		return slices.DeleteFunc(slices.Clone(ff), func(f checks.Finding) bool {
+			return f.Severity == checks.SeverityError
+		})
+	}
+	out := *report
+	out.RepoFindings = unfixed(report.RepoFindings)
+	out.Workflows = make([]checks.WorkflowReport, len(report.Workflows))
+	for i, wr := range report.Workflows {
+		wr.Findings = unfixed(wr.Findings)
+		out.Workflows[i] = wr
+	}
+	return &out
 }
 
 // injectVersionRefFindings appends info-severity findings for entries pinned

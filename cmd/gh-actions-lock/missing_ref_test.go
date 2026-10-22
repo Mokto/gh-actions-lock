@@ -78,7 +78,7 @@ jobs:
 	require.NoError(t, json.Unmarshal([]byte(stdout), &out), stdout)
 	found := false
 	for _, f := range out.Findings {
-		if f.Category == "not-pinned" && f.Severity == "error" {
+		if f.Category == "ref-missing" && f.Severity == "error" {
 			found = true
 			assert.Equal(t, detail, f.Detail)
 			assert.Equal(t, remedy, f.Remediation)

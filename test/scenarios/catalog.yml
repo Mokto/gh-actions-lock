@@ -2023,7 +2023,7 @@ scenarios:
 
   - name: dbot_impostor_blocks
     category: dependabot
-    description: "Commit that does not exist upstream blocks with a not-pinned error"
+    description: "Commit that does not exist upstream blocks with a ref-missing error"
     needs_token: true
     tags: [smoke]
     flags: ["--no-onboard", "--no-narrow", "--no-interactive", "--no-fix", "--json=findings"]
@@ -2040,7 +2040,7 @@ scenarios:
         - expr: '.findings | length'
           gt: 0
         - expr: '.findings[0].category'
-          equals: 'not-pinned'
+          equals: 'ref-missing'
         - expr: '.findings[0].severity'
           equals: 'error'
 

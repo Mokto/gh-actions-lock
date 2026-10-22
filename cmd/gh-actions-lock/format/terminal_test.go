@@ -445,7 +445,7 @@ func TestPresentResults_ExcludedNotPinnedKeepsWorkflowLoadErrors(t *testing.T) {
 			{
 				Path: ".github/workflows/broken.yml",
 				Findings: []checks.Finding{{
-					Category: checks.NotPinned,
+					Category: checks.InvalidWorkflow,
 					Severity: checks.SeverityError,
 					Detail:   "failed to load workflow",
 				}},
@@ -456,7 +456,7 @@ func TestPresentResults_ExcludedNotPinnedKeepsWorkflowLoadErrors(t *testing.T) {
 	PresentResults(ui.NewPlain(&buf), report, false, false, checks.NotPinned)
 
 	got := buf.String()
-	if !strings.Contains(got, "1 of 2 workflows failed: 1 not-pinned") {
+	if !strings.Contains(got, "1 of 2 workflows failed: 1 invalid-workflow") {
 		t.Errorf("workflow load error should remain after remediation:\n%s", got)
 	}
 	if !strings.Contains(got, ".github/workflows/broken.yml") ||

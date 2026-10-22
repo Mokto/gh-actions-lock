@@ -65,7 +65,7 @@ func PresentResults(out *ui.UI, report *checks.Report, valid bool, willRemediate
 
 func findingExcluded(f checks.Finding, exclude map[checks.Category]bool, willRemediate bool) bool {
 	if f.Category == checks.NotPinned && !f.IsRemediableNotPinned() {
-		// Workflow-level NotPinned is a load failure, not a pin finding.
+		// A non-remediable NotPinned can't be fixed by pinning.
 		return false
 	}
 	return exclude[f.Category] || willRemediate && f.Category == checks.NotPinned
@@ -282,6 +282,10 @@ func categoryLabel(c checks.Category) string {
 	switch c {
 	case checks.NotPinned:
 		return "Not pinned"
+	case checks.MissingRef:
+		return "Ref does not exist"
+	case checks.InvalidWorkflow:
+		return "Invalid workflow"
 	case checks.RefChanged:
 		return "Ref changed"
 	case checks.MisleadingSHA:
@@ -397,7 +401,7 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 	parts := []string{}
 	for _, cat := range []checks.Category{
 		checks.RepoReplaced, checks.RepoUnavailable, checks.RepoRenamed, checks.UnreachablePin, checks.TagCommitMismatch,
-		checks.RefChanged, checks.NotPinned, checks.OnboardingRequired,
+		checks.RefChanged, checks.NotPinned, checks.MissingRef, checks.InvalidWorkflow, checks.OnboardingRequired,
 		checks.LocalAction, checks.InvalidSelfRepositoryRef,
 		checks.Stale, checks.MisleadingSHA, checks.IncompleteLockfile,
 	} {

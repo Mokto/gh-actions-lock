@@ -97,11 +97,12 @@ updates:
 						assert.True(t, payload.Valid)
 						assert.Empty(t, payload.Findings)
 					} else {
-						require.Len(t, payload.Findings, 2)
+						// The fix pinned the action; only the warning remains.
+						assert.True(t, payload.Valid)
+						require.Len(t, payload.Findings, 1)
 						assert.Equal(t, "cooldown-config-ignored", payload.Findings[0].Category)
 						assert.Equal(t, "warning", payload.Findings[0].Severity)
 						assert.Equal(t, warning, payload.Findings[0].Detail)
-						assert.Equal(t, "not-pinned", payload.Findings[1].Category)
 					}
 				} else if mode.readOnly {
 					assert.NotContains(t, stdout+stderr, warning)
@@ -917,4 +918,78 @@ func TestRun_LocalActionErrorLeadsTheOutput(t *testing.T) {
 			assert.Equal(t, local, strings.Index(stderr[first:], "\n")+first+3, "the first ✗ block is the local action:\n%s", stderr)
 		})
 	}
+}
+
+func TestPostFixReport(t *testing.T) {
+	report := &checks.Report{
+		Workflows: []checks.WorkflowReport{{
+			Path: ".github/workflows/ci.yml",
+			Findings: []checks.Finding{
+				{Category: checks.NotPinned, Severity: checks.SeverityError},
+				{Category: checks.FreshTag, Severity: checks.SeverityInfo},
+				{Category: checks.LocalAction, Severity: checks.SeverityWarning},
+			},
+		}},
+		RepoFindings: []checks.Finding{
+			{Category: checks.Stale, Severity: checks.SeverityError},
+			{Category: checks.StaleWorkflow, Severity: checks.SeverityInfo},
+		},
+	}
+	require.False(t, report.IsValid())
+
+	got := postFixReport(report)
+
+	assert.True(t, got.IsValid())
+	var cats []checks.Category
+	for _, f := range got.Workflows[0].Findings {
+		cats = append(cats, f.Category)
+	}
+	assert.Equal(t, []checks.Category{checks.FreshTag, checks.LocalAction}, cats, "non-blocking findings stay")
+	require.Len(t, got.RepoFindings, 1)
+	assert.Equal(t, checks.StaleWorkflow, got.RepoFindings[0].Category)
+	assert.Len(t, report.Workflows[0].Findings, 3, "the run log keeps the pre-fix report")
+	assert.Len(t, report.RepoFindings, 2)
+}
+
+func TestRun_FixJSONReportsPostFixState(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	path := writeTempWorkflow(t, `
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: example/action@main
+`)
+	t.Setenv("GH_ACTIONS_LOCK_CONFIG", filepath.Join(t.TempDir(), "none.yml"))
+	reg := &httpmock.Registry{}
+	reg.Register(httpmock.GraphQLForRepo("example", "action"), httpmock.JSONResponse(map[string]any{
+		"data": map[string]any{"a0": testRepoResponse("example/action", sha, nodeActionYAML)},
+	}))
+	reg.Register(httpmock.REST("GET", "repos/example/action$"), httpmock.JSONResponse(map[string]any{
+		"id": 2, "owner": map[string]any{"id": 1}, "default_branch": "main",
+	}))
+
+	stdout, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", "--json=valid,findings,workflows,pins", path)
+	require.NoError(t, err, "stderr:\n%s", stderr)
+
+	var payload struct {
+		Valid     bool              `json:"valid"`
+		Findings  []format.Finding  `json:"findings"`
+		Workflows []format.Workflow `json:"workflows"`
+		Pins      []format.Pin      `json:"pins"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &payload), stdout)
+	assert.True(t, payload.Valid, stdout)
+	for _, f := range payload.Findings {
+		assert.NotEqual(t, "error", f.Severity, "%+v", f)
+	}
+	require.Len(t, payload.Workflows, 1)
+	assert.True(t, payload.Workflows[0].Valid)
+	require.Len(t, payload.Pins, 1)
+	assert.Equal(t, "example/action", payload.Pins[0].NWO)
+	assert.Equal(t, sha, payload.Pins[0].SHA)
+	assert.Contains(t, readTempLockfilePins(t), sha)
+	reg.Verify(t)
 }

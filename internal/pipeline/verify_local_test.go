@@ -204,8 +204,7 @@ func TestVerifyLocalCoverage_LoadError(t *testing.T) {
 
 	report := VerifyLocalCoverage(parsed, store)
 	assert.False(t, report.IsValid())
-	assert.Equal(t, checks.NotPinned, report.Workflows[0].Findings[0].Category)
-	assert.False(t, report.Workflows[0].Findings[0].IsRemediableNotPinned())
+	assert.Equal(t, checks.InvalidWorkflow, report.Workflows[0].Findings[0].Category)
 }
 
 func TestVerifyLocalCoverage_DepsError(t *testing.T) {

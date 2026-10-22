@@ -122,6 +122,23 @@ func TestDiagnoseOneParsed_SelfRepositoryResolutionError(t *testing.T) {
 	assert.False(t, wr.IsValid())
 }
 
+func TestDiagnoseOneParsed_LoadErrorIsInvalidWorkflow(t *testing.T) {
+	pw := checks.ParsedWorkflow{
+		Path:    ".github/workflows/ci.yml",
+		LoadErr: fmt.Errorf("yaml: line 3: did not find expected node content"),
+	}
+	wr := diagnoseOneParsed(context.Background(), pw, nil, nil, nil)
+
+	require.Len(t, wr.Findings, 1)
+	f := wr.Findings[0]
+	assert.Equal(t, checks.InvalidWorkflow, f.Category)
+	assert.Equal(t, checks.SeverityError, f.Severity)
+	assert.Contains(t, f.Detail, "failed to load workflow")
+	assert.Empty(t, f.DocURL, "the security-hardening page doesn't explain a YAML error")
+	assert.True(t, wr.SkipCommit)
+	assert.False(t, wr.IsValid())
+}
+
 func TestResolveErrFinding(t *testing.T) {
 	outage := &api.HTTPError{StatusCode: http.StatusServiceUnavailable}
 	tests := []struct {
