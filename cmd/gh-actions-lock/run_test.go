@@ -817,6 +817,75 @@ func TestRun_SelfRepositoryLocalActionNamesItsParent(t *testing.T) {
 	assert.Contains(t, stderr, "./helper (in $/actions/build), ./helper (in $/actions/test)")
 }
 
+// TestRun_SharedSelfActionRewriteIsLockedForEveryWorkflow: ci.yml and
+// deploy.yml share $/.github/actions/restore, which uses
+// octo/cache/restore by SHA. ci.yml keeps that SHA, since octo/apt
+// declares it too; deploy.yml rewrites it to v2.0.0 in the shared file.
+// ci.yml then runs v2.0.0, so the lockfile must cover it. The SHA stays a
+// ci.yml root only while ci.yml still uses it directly; otherwise it is
+// locked only as octo/apt's child.
+func TestRun_SharedSelfActionRewriteIsLockedForEveryWorkflow(t *testing.T) {
+	const cacheSHA, aptSHA = "cccccccccccccccccccccccccccccccccccccccc", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	byCommit := "octo/cache/restore@" + strings.ToUpper(cacheSHA)
+	for name, tc := range map[string]struct {
+		steps string
+		roots []string
+	}{
+		"used directly too": {
+			steps: "      - uses: " + byCommit + "\n",
+			roots: []string{"octo/apt@v1.0.0", "octo/cache@" + cacheSHA, "octo/cache@v2.0.0"},
+		},
+		"used only in the shared action": {
+			roots: []string{"octo/apt@v1.0.0", "octo/cache@v2.0.0"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			manifests := map[string]string{"octo/apt": composite("octo/cache@" + cacheSHA)}
+			commits := map[string]string{"octo/cache": cacheSHA, "octo/apt": aptSHA}
+			reg := &httpmock.Registry{}
+			registerLockedManifests(reg, manifests)
+			for nwo, tags := range map[string]any{
+				"octo/cache": httpmock.TagListResponse("v2.0.0", cacheSHA, "v2", cacheSHA),
+				"octo/apt":   httpmock.TagListResponse("v1.0.0", aptSHA, "v1", aptSHA),
+			} {
+				reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`/tags`), httpmock.JSONResponse(tags))
+				reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`$`), httpmock.JSONResponse(map[string]any{"id": 1, "owner": map[string]any{"id": 1}, "default_branch": "main"}))
+				reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`/branches`), httpmock.JSONResponse(httpmock.BranchListResponse("main", commits[nwo])))
+				owner, repo, _ := strings.Cut(nwo, "/")
+				httpmock.NoTagsNamed(reg, owner, repo)
+			}
+			registerLive(reg, manifests, commits)
+			stubGraph(t, reg, nil, commits, nil)
+			useDefaultTransport(t, reg)
+			steps := "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+			ci := writeTempWorkflow(t, steps+"      - uses: octo/apt@v1.0.0\n"+tc.steps+"      - uses: $/.github/actions/restore\n")
+			require.NoError(t, os.Mkdir(".git", 0o755))
+			deploy := filepath.Join(".github", "workflows", "deploy.yml")
+			require.NoError(t, os.WriteFile(deploy, []byte(steps+"      - uses: $/.github/actions/restore\n"), 0o600))
+			restore := filepath.Join(".github", "actions", "restore", "action.yml")
+			require.NoError(t, os.MkdirAll(filepath.Dir(restore), 0o755))
+			require.NoError(t, os.WriteFile(restore, []byte(composite(byCommit)), 0o600))
+
+			_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive")
+			require.NoError(t, err, stderr)
+			lock := readTempLockfilePins(t)
+			action, err := os.ReadFile(restore)
+			require.NoError(t, err)
+			assert.Contains(t, string(action), "uses: octo/cache/restore@v2.0.0\n")
+			want := "'" + filepath.ToSlash(ci) + "':\n"
+			for _, root := range tc.roots {
+				want += "        - '" + root + "'\n"
+			}
+			assert.Contains(t, lock, want+"dependencies:")
+			assert.Contains(t, lock, "        uses:\n            - 'octo/cache@"+cacheSHA+"'\n")
+			for _, mode := range []string{"--verify-local", "--verify"} {
+				_, stderr, err := runCommandWithHTTP(t, reg, mode)
+				require.NoError(t, err, "%s: %s\n%s", mode, stderr, lock)
+			}
+		})
+	}
+}
+
 // TestRun_LocalActionUsingRemoteActionsBlocks: a `./…` composite in the
 // checkout that uses remote actions fails every mode, since the runner would
 // reject its unlocked uses; --ignore-local-actions (or the old

@@ -246,3 +246,14 @@ func stripTrailingComment(tail string) string {
 	}
 	return strings.TrimRight(tail[:idx], " \t")
 }
+
+// UsesValues returns every scalar `uses:` value in the file, as written.
+func (f *File) UsesValues() []string {
+	var out []string
+	walkYAMLNodes(&f.root, func(keyNode, valueNode *yaml.Node) {
+		if keyNode != nil && valueNode != nil && keyNode.Value == "uses" && valueNode.Kind == yaml.ScalarNode {
+			out = append(out, strings.TrimSpace(valueNode.Value))
+		}
+	})
+	return out
+}
