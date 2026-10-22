@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/github/gh-actions-lock/internal/profile"
@@ -45,9 +46,22 @@ type PinState struct {
 	Err       error
 }
 
-// pinCheckBatchSize is larger than the action-file batch because each alias
-// fetches no blobs.
-const pinCheckBatchSize = 50
+// GraphQL latency grows with the aliases in one query, so pins are checked in
+// small batches, a few at a time. Behind the Dependabot proxy, where retries
+// are patient and nobody waits on the run, they go in one large batch at a
+// time as before.
+const (
+	pinCheckBatchSize      = 6
+	pinCheckConcurrency    = 4
+	proxyPinCheckBatchSize = 50
+)
+
+func pinCheckBatching() (size, workers int) {
+	if DependabotProxy() {
+		return proxyPinCheckBatchSize, 1
+	}
+	return pinCheckBatchSize, pinCheckConcurrency
+}
 
 // CheckPins reports, per pin, the repository's canonical name and IDs,
 // whether the pinned commit exists, and where Head points. It does not walk
@@ -82,11 +96,19 @@ func (c *Client) CheckPins(ctx context.Context, pins []PinCheck) []PinState {
 	if c.restOnly {
 		return c.checkPinsREST(ctx, pins)
 	}
-	states := make([]PinState, 0, len(pins))
-	for start := 0; start < len(pins); start += pinCheckBatchSize {
-		end := min(start+pinCheckBatchSize, len(pins))
-		states = append(states, c.checkPinBatch(ctx, pins[start:end])...)
+	size, workers := pinCheckBatching()
+	states := make([]PinState, len(pins))
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for start := 0; start < len(pins); start += size {
+		end := min(start+size, len(pins))
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			copy(states[start:end], c.checkPinBatch(ctx, pins[start:end]))
+		})
 	}
+	wg.Wait()
 	return states
 }
 

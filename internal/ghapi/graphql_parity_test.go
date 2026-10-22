@@ -453,3 +453,26 @@ func TestCheckPins_UnpeelableTagShadowsBranch(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckPins_Batching(t *testing.T) {
+	t.Run("small concurrent batches", func(t *testing.T) {
+		reg := &httpmock.Registry{}
+		reg.RegisterReusable(httpmock.GraphQL(`commit: object\(oid`), httpmock.JSONResponse(map[string]any{"data": map[string]any{}}))
+		pins := make([]PinCheck, 2*pinCheckBatchSize+1)
+		for i := range pins {
+			pins[i] = PinCheck{Owner: "octo", Repo: fmt.Sprintf("r%d", i), SHA: paritySHA}
+		}
+
+		states := newTestClient(t, reg).CheckPins(context.Background(), pins)
+
+		assert.Len(t, states, len(pins))
+		assert.Len(t, reg.Requests, 3)
+	})
+
+	t.Run("one large batch at a time behind the dependabot proxy", func(t *testing.T) {
+		t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+		size, workers := pinCheckBatching()
+		assert.Equal(t, proxyPinCheckBatchSize, size)
+		assert.Equal(t, 1, workers)
+	})
+}
