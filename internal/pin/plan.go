@@ -346,8 +346,8 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 		entries = append(entries, e)
 	}
 
-	// Record findings that are informational (ref-moved, misleading-sha).
-	entries = append(entries, informationalEntries(wr, opts)...)
+	// Record findings that are informational (misleading-sha).
+	entries = append(entries, informationalEntries(wr)...)
 
 	return planResult{entries: entries, wplans: wplans}, nil
 }
@@ -605,20 +605,14 @@ func buildPinnedEntries(opts PlanOptions, wr checks.WorkflowReport, deps []dep.D
 	return out
 }
 
-// informationalEntries records ref-moved and misleading-sha findings as
-// Investigate entries. When the run re-pins moved refs (--relock or
-// --accept-moved), ref-moved is resolved by the re-pin and is not recorded
-// for investigation.
-func informationalEntries(wr checks.WorkflowReport, opts PlanOptions) []Entry {
+// informationalEntries records misleading-sha findings as Investigate
+// entries. A ref-moved floating ref is sticky: its locked commit is still in
+// the ref's history, so the run keeps it with a warning unless --relock or
+// --accept-moved re-pins it.
+func informationalEntries(wr checks.WorkflowReport) []Entry {
 	var out []Entry
 	for _, f := range wr.Findings {
-		switch f.Category {
-		case checks.RefMoved:
-			if repinsMoved(opts) {
-				continue
-			}
-			out = append(out, informationalEntry(f, wr.Path))
-		case checks.MisleadingSHA:
+		if f.Category == checks.MisleadingSHA {
 			out = append(out, informationalEntry(f, wr.Path))
 		}
 	}
