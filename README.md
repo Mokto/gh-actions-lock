@@ -1,9 +1,9 @@
 # gh-actions-lock
 
-A [GitHub CLI](https://cli.github.com/) extension that pins every direct and transitive action your workflows use to a verified commit, recorded in `.github/workflows/actions.lock`.
-
 > [!WARNING]
 > **Public preview.** gh-actions-lock is pre-1.0. The lockfile format, flags, and behavior may change between releases.
+
+A [GitHub CLI](https://cli.github.com/) extension that pins every direct and transitive action your workflows use to a verified commit, recorded in `.github/workflows/actions.lock`.
 
 ## Install
 
@@ -25,11 +25,12 @@ From the repository checkout:
 
 ```bash
 gh actions-lock            # onboard or fix: pin every resolvable action and write actions.lock
-gh actions-lock --verify   # confirm, without writing
-git add .github/workflows/
+git add .github/workflows/ # check into source
 ```
 
 Rerun `gh actions-lock` after adding a workflow or changing any `uses:`.
+
+Make sure you don't check in a corrupt lockfile. Copy [`.github/workflows/verify-lockfile.yml`](.github/workflows/verify-lockfile.yml) into your repository, modify it for your needs, then run `gh actions-lock` once so that workflow is locked too.
 
 ### GitHub Enterprise Cloud with data residency
 
@@ -55,18 +56,6 @@ Other flags:
 
 `gh actions-lock --help` is authoritative.
 
-## Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | Nothing to fix, or every finding was fixed |
-| 1 | Blocking findings remain |
-| 2 | The tool failed (bad flag, IO, network, malformed lockfile); see stderr |
-
-## CI
-
-Copy [`.github/workflows/verify-lockfile.yml`](.github/workflows/verify-lockfile.yml) into your repository, then run `gh actions-lock` once so that workflow is locked too.
-
 ## Learn more
 
 - [Workflow dependency lockfiles](https://docs.github.com/en/actions/concepts/security/workflow-dependency-lockfiles)
@@ -74,6 +63,13 @@ Copy [`.github/workflows/verify-lockfile.yml`](.github/workflows/verify-lockfile
 - [Enforce workflow lockfiles](https://docs.github.com/en/actions/how-tos/administer/enforce-workflow-lockfiles)
 - [Troubleshooting](docs/troubleshooting.md)
 
-## Contributing and support
+## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). Support is best-effort: file [issues](https://github.com/github/gh-actions-lock/issues) and see [SUPPORT.md](./SUPPORT.md). Maintained by @github/actions-dispatch-reviewers ([CODEOWNERS](./CODEOWNERS)). Licensed under [MIT](./LICENSE).
+See [CONTRIBUTING.md](./CONTRIBUTING.md)
+
+## Support
+
+See [SUPPORT.md](./SUPPORT.md).
+
+## License
+Licensed under [MIT](./LICENSE).
