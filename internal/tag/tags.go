@@ -4,7 +4,6 @@ import (
 	"context"
 	"sort"
 	"strings"
-	"time"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/ghapi"
@@ -53,17 +52,13 @@ type Lister struct {
 	tagCache     syncmap.Map[ghapi.Repo, []Info]
 	repoCache    syncmap.Map[ghapi.Repo, *RepoInfo]
 	releaseDates syncmap.Map[ghapi.Repo, map[string]string] // owner/repo → tag → published_at
-	cooldown     CooldownConfig
 	tagsSF       singleflight.Group
 	repoSF       singleflight.Group
 }
 
-// NewLister creates a Lister with the given API client and cooldown config.
-func NewLister(client *ghapi.Client, cooldown CooldownConfig) *Lister {
-	return &Lister{
-		client:   client,
-		cooldown: cooldown,
-	}
+// NewLister creates a Lister with the given API client.
+func NewLister(client *ghapi.Client) *Lister {
+	return &Lister{client: client}
 }
 
 // ListTags fetches tags for an action repo, enriched with release metadata.
@@ -154,30 +149,6 @@ func (tl *Lister) LookupTag(ctx context.Context, owner, repo, tagName string) *I
 	return nil
 }
 
-// LatestStableTag returns the latest non-major stable tag that passes cooldown.
-// It skips major-only tags (e.g. "v4"), pre-release tags, and tags younger
-// than the cooldown period. Returns ("", nil) if no suitable tag is found.
-func (tl *Lister) LatestStableTag(ctx context.Context, owner, repo string) (string, error) {
-	all, err := tl.ListTags(ctx, owner, repo)
-	if err != nil {
-		return "", err
-	}
-	for _, t := range all {
-		if t.IsMajor {
-			continue
-		}
-		sv, ok := parserlock.ParseSemVer(t.Name)
-		if !ok || sv.Rest != "" {
-			continue // skip pre-release, non-semver
-		}
-		if tl.isTagTooNew(owner, repo, t.Name) {
-			continue
-		}
-		return t.Name, nil
-	}
-	return "", nil
-}
-
 func (tl *Lister) fetchTags(ctx context.Context, owner, repo string) ([]Info, error) {
 	repoTags, err := tl.client.RepoTags(ctx, owner, repo)
 	if err != nil {
@@ -231,24 +202,6 @@ func (tl *Lister) ReleaseDate(owner, repo, tag string) string {
 		return dates[tag]
 	}
 	return ""
-}
-
-// isTagTooNew returns true if the tag's release date is younger than the cooldown period.
-// Tags without a known release date are never filtered (we can't determine their age).
-func (tl *Lister) isTagTooNew(owner, repo, tag string) bool {
-	days := tl.cooldown.CooldownDays(owner, repo)
-	if days <= 0 {
-		return false
-	}
-	isoDate := tl.ReleaseDate(owner, repo, tag)
-	if isoDate == "" {
-		return false
-	}
-	t, err := time.Parse(time.RFC3339, isoDate)
-	if err != nil {
-		return false
-	}
-	return time.Since(t) < time.Duration(days)*24*time.Hour
 }
 
 // GetRepoInfo fetches repository visibility and default branch. Cached per

@@ -3,7 +3,6 @@ package tag
 import (
 	"context"
 	"fmt"
-
 	"time"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
@@ -14,13 +13,6 @@ type Suggestion struct {
 	Tag       Info
 	Reason    string
 	Preferred bool // true if this tag points directly at the pinned SHA
-}
-
-// PickerTag is a tag formatted for the interactive picker.
-type PickerTag struct {
-	Tag       Info
-	Label     string // formatted display label
-	Installed bool   // true if this tag matches the currently pinned SHA
 }
 
 // BestPatchTagForSHA returns the highest full-semver patch tag in ref's version
@@ -206,83 +198,6 @@ func (tl *Lister) SuggestTagsForSHA(ctx context.Context, owner, repo, sha string
 	return suggestions, nil
 }
 
-// CuratePickerTags returns a short list of the most useful tags for a picker.
-// Shows the latest patch per major version (up to 3 majors), marks the one
-// matching pinnedSHA as "installed", and only puts 📦 on that one.
-func (tl *Lister) CuratePickerTags(ctx context.Context, owner, repo, pinnedSHA string) ([]PickerTag, error) {
-	all, err := tl.ListTags(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
-	if len(all) == 0 {
-		return nil, nil
-	}
-
-	// Pick the latest full-version tag per major (skip major-only tags, pre-releases).
-	type majorBucket struct {
-		major int
-		tag   Info
-	}
-	seen := make(map[int]bool)
-	var buckets []majorBucket
-
-	for _, t := range all {
-		if t.IsMajor {
-			continue
-		}
-		sv, ok := parserlock.ParseSemVer(t.Name)
-		if !ok || sv.Rest != "" {
-			continue
-		}
-		// Skip tags younger than the cooldown period.
-		if tl.isTagTooNew(owner, repo, t.Name) && !t.MatchesSHA(pinnedSHA) {
-			continue
-		}
-		if !seen[sv.Major] {
-			seen[sv.Major] = true
-			buckets = append(buckets, majorBucket{major: sv.Major, tag: t})
-		}
-		if len(buckets) >= 3 {
-			break
-		}
-	}
-
-	// Build picker entries.
-	var result []PickerTag
-	for _, b := range buckets {
-		installed := b.tag.MatchesSHA(pinnedSHA)
-		result = append(result, PickerTag{
-			Tag:       b.tag,
-			Label:     b.tag.Name,
-			Installed: installed,
-		})
-	}
-
-	// If pinnedSHA matches a tag that isn't in our buckets, prepend it.
-	pinnedFound := false
-	for _, pt := range result {
-		if pt.Installed {
-			pinnedFound = true
-			break
-		}
-	}
-	if !pinnedFound {
-		for _, t := range all {
-			if t.MatchesSHA(pinnedSHA) && !t.IsMajor {
-				label := t.Name + "  📦 installed"
-				result = append([]PickerTag{{
-					Tag:       t,
-					Label:     label,
-					Installed: true,
-				}}, result...)
-				break
-			}
-		}
-	}
-
-	return result, nil
-}
-
 // FormatTagAge returns a relative age string like "3d ago" from an ISO 8601 timestamp.
 func FormatTagAge(isoDate string) string {
 	if isoDate == "" {
@@ -292,7 +207,11 @@ func FormatTagAge(isoDate string) string {
 	if err != nil {
 		return ""
 	}
-	d := time.Since(t)
+	return FormatAge(time.Since(t))
+}
+
+// FormatAge returns a relative age string like "3d ago" for a duration.
+func FormatAge(d time.Duration) string {
 	switch {
 	case d < time.Hour:
 		return fmt.Sprintf("%dm ago", int(d.Minutes()))

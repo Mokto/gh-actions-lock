@@ -1,13 +1,12 @@
-// Package tag lists tags, classifies versions, and applies release
-// cooldown.
+// Package tag lists tags and classifies versions.
 package tag
 
 import "strings"
 
-// CooldownConfig controls the minimum age a tag must have before it's
-// suggested or pinned. DefaultDays applies to every action; RepoOverrides sets
-// a per-repo (owner/name) value that wins over the default. Zero DefaultDays
-// with no matching override disables cooldown filtering.
+// CooldownConfig is the configured minimum release age per action. It only
+// sets the fresh-tag warning window; it does not filter what gets pinned.
+// DefaultDays applies to every action; RepoOverrides sets a per-repo
+// (owner/name) value that wins over the default.
 type CooldownConfig struct {
 	DefaultDays   int
 	RepoOverrides map[string]int

@@ -96,10 +96,9 @@ const (
 	// target cannot be inspected. This includes a forbidden `@ref` suffix.
 	InvalidSelfRepositoryRef Category = "invalid-self-repository-ref"
 	// FreshTag is an informational, non-blocking security nudge: an action was
-	// pinned to a tag released less than the freshness window (3 days) ago and
-	// no Dependabot cooldown is configured. Surfaced so operators know they
-	// locked a very recent release and can configure a cooldown if they'd
-	// rather let fresh releases settle.
+	// pinned to a tag younger than its configured cooldown, or than 3 days when
+	// none is configured. Cooldown does not filter what gets pinned, so this
+	// is how operators learn they locked a very recent release.
 	FreshTag Category = "fresh-tag"
 	// CooldownConfigIgnored is an informational, non-blocking notice that the
 	// repository's Dependabot cooldown block sets keys this tool does not yet

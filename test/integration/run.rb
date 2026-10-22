@@ -659,8 +659,8 @@ end
 # wire_checkout_fresh stubs a checkout pin whose v4 release published_at is
 # computed relative to now, so the tag is genuinely within the 3-day freshness
 # window every time the suite runs (a hardcoded date would rot). The scenario's
-# .github/dependabot.yml (laid via catalog fixtures.files) selects whether the
-# fresh-tag warning fires or is suppressed.
+# .github/dependabot.yml (laid via catalog fixtures.files) selects the
+# fresh-tag warning's window and wording.
 def wire_checkout_fresh(s, token)
   s.stub_server do |srv|
     checkout_graphql_success(srv)
@@ -673,7 +673,7 @@ def wire_checkout_fresh(s, token)
   end
   s.env("GH_TOKEN" => token)
   # Pin the user config path at an empty file so the subprocess can't read a
-  # developer's real ~/.config/gh-actions-lock/config.yml and suppress the nudge.
+  # developer's real ~/.config/gh-actions-lock/config.yml and change the nudge.
   s.env("GH_ACTIONS_LOCK_CONFIG" => "/dev/null")
 end
 
@@ -692,8 +692,8 @@ STUB_WIRING = {
   fresh_tag_warns_without_cooldown: ->(s) {
     wire_checkout_fresh(s, "gho_fake_fresh_warn_token")
   },
-  fresh_tag_suppressed_by_cooldown: ->(s) {
-    wire_checkout_fresh(s, "gho_fake_fresh_suppressed_token")
+  fresh_tag_warns_within_cooldown: ->(s) {
+    wire_checkout_fresh(s, "gho_fake_fresh_cooldown_token")
   },
   fresh_tag_zero_days_still_warns: ->(s) {
     wire_checkout_fresh(s, "gho_fake_fresh_zero_token")
