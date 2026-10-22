@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -679,13 +680,16 @@ func TestParity_UnchangedRerunRequestCountRESTOnly(t *testing.T) {
 // countingTransport counts every request, matched or not.
 type countingTransport struct {
 	inner http.RoundTripper
+	mu    sync.Mutex
 	n     int
 	urls  []string
 }
 
 func (c *countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
 	c.n++
 	c.urls = append(c.urls, req.URL.Path)
+	c.mu.Unlock()
 	return c.inner.RoundTrip(req)
 }
 

@@ -188,6 +188,25 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 		return nil
 	}
 
+	// Manifest reads don't depend on parity's verdicts, only filtered by
+	// them, so they overlap the parity query and any ancestry checks. Behind
+	// the Dependabot proxy every read is a REST call, so pins parity
+	// rejects are not read at all.
+	var readsDone chan map[manifestNode]*manifestRead
+	if !ghapi.DependabotProxy() {
+		readCtx, cancelReads := context.WithCancel(ctx)
+		readsDone = make(chan map[manifestNode]*manifestRead, 1)
+		go func() {
+			readsDone <- readManifestGraph(readCtx, r, store.File(), byKey, roots, nil)
+		}()
+		defer func() {
+			cancelReads()
+			if readsDone != nil {
+				<-readsDone
+			}
+		}()
+	}
+
 	states := gh.CheckPins(ctx, pins)
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -314,7 +333,17 @@ func checkParity(ctx context.Context, r *resolve.Resolver, parsed []checks.Parse
 			}
 		}
 	}
-	return checkManifests(ctx, r, store.File(), byKey, report, roots, unhealthy)
+	var reads map[manifestNode]*manifestRead
+	if readsDone != nil {
+		reads = <-readsDone
+		readsDone = nil
+	} else {
+		reads = readManifestGraph(ctx, r, store.File(), byKey, roots, unhealthy)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return checkManifests(store.File(), report, roots, unhealthy, reads)
 }
 
 // rootPaths are the sub-action paths through which a workflow's recorded

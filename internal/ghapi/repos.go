@@ -340,6 +340,15 @@ func escapeBranchPath(name string) string {
 }
 
 // compareResponse is the subset of the GitHub Compare API response we need.
+// comparePath requests the second one-commit page of base...head: only the
+// first page carries the changed files, which can run to megabytes, and
+// every page carries the status and merge base.
+func comparePath(owner, repo, base, head string) string {
+	return fmt.Sprintf("repos/%s/%s/compare/%s...%s?per_page=1&page=2",
+		url.PathEscape(owner), url.PathEscape(repo),
+		url.PathEscape(base), url.PathEscape(head))
+}
+
 type compareResponse struct {
 	Status          string `json:"status"`
 	MergeBaseCommit struct {
@@ -371,9 +380,7 @@ func (c *Client) CompareCommits(ctx context.Context, owner, repo, sha, branchHea
 		if v, ok := c.compareCache.Get(key); ok {
 			return v, nil
 		}
-		path := fmt.Sprintf("repos/%s/%s/compare/%s...%s",
-			url.PathEscape(owner), url.PathEscape(repo),
-			url.PathEscape(sha), url.PathEscape(branchHeadSHA))
+		path := comparePath(owner, repo, sha, branchHeadSHA)
 		var resp compareResponse
 		if err := c.rest.DoWithContext(ctx, http.MethodGet, path, nil, &resp); err != nil {
 			var httpErr *api.HTTPError
@@ -412,9 +419,7 @@ func (c *Client) CompareRefs(ctx context.Context, owner, repo, base, head string
 	if err != nil {
 		return "", "", err
 	}
-	path := fmt.Sprintf("repos/%s/%s/compare/%s...%s",
-		url.PathEscape(owner), url.PathEscape(repo),
-		url.PathEscape(base), url.PathEscape(head))
+	path := comparePath(owner, repo, base, head)
 	var resp compareResponse
 	if c.restOnly {
 		err = c.anonGet(ctx, path, &resp)

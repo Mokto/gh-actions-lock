@@ -472,19 +472,38 @@ func (r *Resolver) resolveWithActionYMLParallel(ctx context.Context, refs []Nest
 	return deps, ymls, poolErr
 }
 
-// ReadManifests reads action.yml at each request's Ref, batched as
-// resolution batches them. Results align with reqs and are not cached.
+// Locked manifests are read in small batches, a few at a time: GraphQL
+// latency grows with the aliases in one query. Behind the Dependabot proxy,
+// where retries are patient, they are batched as resolution batches them.
+const (
+	manifestBatchSize   = 4
+	manifestConcurrency = 4
+)
+
+func manifestBatching(pool *pinpool.Pool) (int, *pinpool.Pool) {
+	if ghapi.DependabotProxy() {
+		return batchActionFileSize, pool
+	}
+	if pool.Workers > manifestConcurrency {
+		pool = &pinpool.Pool{Workers: manifestConcurrency, Reporter: pool.Reporter}
+	}
+	return manifestBatchSize, pool
+}
+
+// ReadManifests reads action.yml at each request's Ref. Results align with
+// reqs and are not cached.
 func (r *Resolver) ReadManifests(ctx context.Context, reqs []ghapi.ActionFileRequest) []ghapi.ActionFileResult {
 	out := make([]ghapi.ActionFileResult, len(reqs))
 	ctx = profile.WithGraphQLLabel(ctx, "manifests")
+	size, pool := manifestBatching(r.Pool)
 	var starts []int
-	for s := 0; s < len(reqs); s += batchActionFileSize {
+	for s := 0; s < len(reqs); s += size {
 		starts = append(starts, s)
 	}
-	_ = pinpool.RunTyped(r.Pool, ctx, "", starts,
+	_ = pinpool.RunTyped(pool, ctx, "", starts,
 		func(int) string { return "reading locked manifests" },
 		func(ctx context.Context, _ int, s int) error {
-			end := min(s+batchActionFileSize, len(reqs))
+			end := min(s+size, len(reqs))
 			copy(out[s:end], r.gh.ResolveActionFiles(ctx, reqs[s:end]))
 			return nil
 		},

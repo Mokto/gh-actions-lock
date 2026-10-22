@@ -297,9 +297,7 @@ func (c *Client) anonPeelTagObject(ctx context.Context, owner, repo, sha string)
 // anonCompareCommits reports whether sha is an ancestor of branchHeadSHA
 // using unauthenticated REST.
 func (c *Client) anonCompareCommits(ctx context.Context, owner, repo, sha, branchHeadSHA string) (bool, error) {
-	path := fmt.Sprintf("repos/%s/%s/compare/%s...%s",
-		url.PathEscape(owner), url.PathEscape(repo),
-		url.PathEscape(sha), url.PathEscape(branchHeadSHA))
+	path := comparePath(owner, repo, sha, branchHeadSHA)
 	var resp compareResponse
 	if err := c.anonGet(ctx, path, &resp); err != nil {
 		return false, err

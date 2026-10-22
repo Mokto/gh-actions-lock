@@ -39,15 +39,17 @@ type manifestRead struct {
 	local   []*resolve.CompositeLocalPathError
 }
 
-// checkManifests reads each root's action.yml at its locked commit, then
-// every recorded child it reaches, and reports any composite whose manifest
-// uses an action its entry's `uses:` omits. An entry's `uses:` is the union
-// over every path the lockfile reaches, so an edge no reached manifest
-// declares is not reported. Reads are batched per level across workflows.
-// roots holds, per report index, where its workflow enters the recorded
-// graph. unhealthy holds the pins parity already reported (pinKey of NWO and
-// commit); they are not read. byKey maps pinKey to each entry's key.
-func checkManifests(ctx context.Context, r *resolve.Resolver, file parserlock.File, byKey map[string]string, report *checks.Report, roots map[int][]manifestNode, unhealthy map[string]bool) error {
+// manifestReader reads action files batched; *resolve.Resolver is one.
+type manifestReader interface {
+	ReadManifests(ctx context.Context, reqs []ghapi.ActionFileRequest) []ghapi.ActionFileResult
+}
+
+// readManifestGraph reads each root's action.yml at its locked commit, then
+// every recorded child it reaches, batched per level across workflows. Pins
+// in skip (pinKey of NWO and commit) are not read. byKey maps pinKey to each
+// entry's key. Behind the Dependabot proxy a failed read ends the walk: the
+// run aborts on it, so later levels would be read for nothing.
+func readManifestGraph(ctx context.Context, r manifestReader, file parserlock.File, byKey map[string]string, roots map[int][]manifestNode, skip map[string]bool) map[manifestNode]*manifestRead {
 	reads := map[manifestNode]*manifestRead{}
 	var level []manifestNode
 	for _, ri := range slices.Sorted(maps.Keys(roots)) {
@@ -67,7 +69,7 @@ func checkManifests(ctx context.Context, r *resolve.Resolver, file parserlock.Fi
 		for _, n := range level {
 			p, _ := parserlock.ParsePin(n.key)
 			sha := lockedSHA(file.Dependencies[n.key].Commit)
-			if unhealthy[pinKey(p.NWO, sha)] {
+			if skip[pinKey(p.NWO, sha)] {
 				continue
 			}
 			id := pinKey(p.NWO, sha) + ":" + n.path
@@ -82,22 +84,46 @@ func checkManifests(ctx context.Context, r *resolve.Resolver, file parserlock.Fi
 		}
 		results := r.ReadManifests(ctx, reqs)
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return reads
 		}
 		level = nil
 		for i, n := range nodes {
 			rd := readManifest(n, file, byKey, results[nodeReq[i]])
-			if rd.err != nil && ghapi.DependabotProxy() {
-				msg := fmt.Sprintf("could not read locked manifest %s", nodeName(n))
-				return &ghapi.BriefError{Msg: msg + ": " + briefCause(rd.err), Err: fmt.Errorf("%s: %s", msg, verbose(rd.err))}
-			}
 			reads[n] = rd
+			if rd.err != nil && ghapi.DependabotProxy() {
+				return reads
+			}
 			for _, e := range rd.edges {
 				if _, seen := reads[e.to]; e.to.key != "" && !seen {
 					reads[e.to] = nil
 					level = append(level, e.to)
 				}
 			}
+		}
+	}
+	return reads
+}
+
+// checkManifests reports any composite whose manifest, as read by
+// readManifestGraph, uses an action its entry's `uses:` omits. An entry's
+// `uses:` is the union over every path the lockfile reaches, so an edge no
+// reached manifest declares is not reported. roots holds, per report index,
+// where its workflow enters the recorded graph. unhealthy holds the pins
+// parity already reported (pinKey of NWO and commit); they and anything
+// reached only through them are treated as unread.
+func checkManifests(file parserlock.File, report *checks.Report, roots map[int][]manifestNode, unhealthy map[string]bool, reads map[manifestNode]*manifestRead) error {
+	skip := func(n manifestNode) bool {
+		p, _ := parserlock.ParsePin(n.key)
+		return unhealthy[pinKey(p.NWO, lockedSHA(file.Dependencies[n.key].Commit))]
+	}
+	for n := range reads {
+		if skip(n) {
+			reads[n] = nil
+		}
+	}
+	if ghapi.DependabotProxy() {
+		if err := firstManifestErr(roots, reads); err != nil {
+			return err
 		}
 	}
 
@@ -136,6 +162,42 @@ func checkManifests(ctx context.Context, r *resolve.Resolver, file parserlock.Fi
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// firstManifestErr returns, in read order, the first failed read reachable
+// from roots through nodes that were read.
+func firstManifestErr(roots map[int][]manifestNode, reads map[manifestNode]*manifestRead) error {
+	seen := map[manifestNode]bool{}
+	var level []manifestNode
+	for _, ri := range slices.Sorted(maps.Keys(roots)) {
+		for _, n := range roots[ri] {
+			if !seen[n] {
+				seen[n] = true
+				level = append(level, n)
+			}
+		}
+	}
+	for len(level) > 0 {
+		var next []manifestNode
+		for _, n := range level {
+			rd := reads[n]
+			if rd == nil {
+				continue
+			}
+			if rd.err != nil {
+				msg := fmt.Sprintf("could not read locked manifest %s", nodeName(n))
+				return &ghapi.BriefError{Msg: msg + ": " + briefCause(rd.err), Err: fmt.Errorf("%s: %s", msg, verbose(rd.err))}
+			}
+			for _, e := range rd.edges {
+				if e.to.key != "" && !seen[e.to] {
+					seen[e.to] = true
+					next = append(next, e.to)
+				}
+			}
+		}
+		level = next
 	}
 	return nil
 }

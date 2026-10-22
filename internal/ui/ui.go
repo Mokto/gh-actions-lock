@@ -75,6 +75,9 @@ type UI struct {
 	// StopProgress cancels first.
 	progGrace     *time.Timer
 	progGraceDone chan struct{} // closed when the grace goroutine exits
+	// progPending marks a spinner paused before its grace period ended: it
+	// was never shown, so resuming restarts the grace period.
+	progPending bool
 }
 
 // SetLog attaches a narration sink. Once set, narration methods write plain
