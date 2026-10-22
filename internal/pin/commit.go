@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"runtime"
 	"slices"
@@ -35,6 +36,10 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 	}
 	rec.Workflows = committedWorkflows(rec, store, copts)
 	if err := validateRequiredRewrites(rec.Workflows); err != nil {
+		return err
+	}
+	selfRewrites := mergeSelfActionRewrites(rec.Workflows)
+	if err := adoptSharedRewrites(rec, selfRewrites); err != nil {
 		return err
 	}
 
@@ -71,7 +76,7 @@ func Commit(ctx context.Context, rec *Record, store *lockfile.State, copts *Comm
 
 	// Action files can be shared by several workflows, so merge their
 	// rewrites and write each file once, serially.
-	if err := rewriteSelfActionFiles(rec.Workflows); err != nil {
+	if err := rewriteSelfActionFiles(selfRewrites); err != nil {
 		return err
 	}
 
@@ -167,9 +172,9 @@ func rewriteWorkflow(wp WorkflowPlan) error {
 	return os.WriteFile(wp.Path, content, 0o644)
 }
 
-// rewriteSelfActionFiles applies each workflow's rewrites to the in-repo
-// action files it reaches via `$/…`.
-func rewriteSelfActionFiles(plans []WorkflowPlan) error {
+// mergeSelfActionRewrites merges, per in-repo action file reached via `$/…`,
+// the rewrites of every workflow that reaches it.
+func mergeSelfActionRewrites(plans []WorkflowPlan) map[string]map[string]string {
 	merged := make(map[string]map[string]string)
 	for _, wp := range plans {
 		if len(wp.Rewrites) == 0 {
@@ -184,6 +189,76 @@ func rewriteSelfActionFiles(plans []WorkflowPlan) error {
 			}
 		}
 	}
+	return merged
+}
+
+// adoptSharedRewrites records, under each workflow, the pins another
+// workflow's rewrites give the action files they share. A workflow can keep a
+// ref another rewrites (a composite it uses declares that ref), and the
+// runner looks up each `uses:` in a `$/…` action as written, so the workflow
+// must lock both. Rewriting both to one ref would rename the composite's
+// declared edge instead.
+func adoptSharedRewrites(rec *Record, merged map[string]map[string]string) error {
+	type pinKey struct{ wf, key string }
+	adopted := map[pinKey]bool{}
+	for _, wp := range rec.Workflows {
+		for _, path := range wp.SelfActionFiles {
+			foreign := map[string]string{}
+			for oldUses, newUses := range merged[path] {
+				if own, ok := workflowfile.LookupRewrite(oldUses, wp.Rewrites); !ok || own != newUses {
+					foreign[oldUses] = newUses
+				}
+			}
+			if len(foreign) == 0 {
+				continue
+			}
+			wf, err := workflowfile.Load(path)
+			if err != nil {
+				return fmt.Errorf("loading %s: %w", path, err)
+			}
+			for _, oldUses := range slices.Sorted(maps.Keys(foreign)) {
+				newUses := foreign[oldUses]
+				if _, changed, err := wf.RewriteActionRefs(map[string]string{oldUses: newUses}); err != nil {
+					return fmt.Errorf("rewriting %s: %w", path, err)
+				} else if changed == 0 {
+					continue
+				}
+				ref := parserlock.ParseActionRef(newUses)
+				if ref == nil {
+					continue
+				}
+				k := pinKey{wp.Path, strings.ToLower(ref.NWO()) + "@" + lockfile.CanonicalRef(ref.Ref)}
+				if adopted[k] {
+					continue
+				}
+				e, ok := pinnedEntry(rec, ref.NWO(), ref.Ref)
+				if !ok {
+					return fmt.Errorf("rewriting %s for %s: no planned pin for %s", path, wp.Path, ref.NWO()+"@"+ref.Ref)
+				}
+				adopted[k] = true
+				e.Workflows = []string{wp.Path}
+				e.Direct = true
+				e.RequiredBy = nil
+				rec.Entries = append(rec.Entries, e)
+			}
+		}
+	}
+	return nil
+}
+
+func pinnedEntry(rec *Record, nwo, ref string) (Entry, bool) {
+	for _, e := range rec.Entries {
+		if isPinOrVerified(e.Resolution) && e.SHA != "" && strings.EqualFold(e.NWO, nwo) &&
+			lockfile.CanonicalRef(e.Ref) == lockfile.CanonicalRef(ref) {
+			return e, true
+		}
+	}
+	return Entry{}, false
+}
+
+// rewriteSelfActionFiles applies the merged rewrites to the in-repo action
+// files workflows reach via `$/…`, writing each file once.
+func rewriteSelfActionFiles(merged map[string]map[string]string) error {
 	for path, rewrites := range merged {
 		wf, err := workflowfile.Load(path)
 		if err != nil {
