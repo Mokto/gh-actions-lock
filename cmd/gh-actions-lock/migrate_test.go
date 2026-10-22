@@ -278,7 +278,21 @@ jobs:
 	})
 }
 
+// TestMigrateLocalActions_UnparseableWorkflowIsAFinding: a workflow that
+// won't parse doesn't abort migration; it's reported like a default run.
 func TestMigrateLocalActions_UnparseableWorkflowIsAFinding(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+	setupGoSHA := "4a3601121dd01d1626a1e23e37211e3254c1c06c"
+	reg.Register(
+		httpmock.GraphQLForRepo("actions", "setup-go"),
+		httpmock.JSONResponse(map[string]any{
+			"data": map[string]any{
+				"a0": testRepoResponse("actions/setup-go", setupGoSHA, nodeActionYAML),
+			},
+		}),
+	)
+
 	dir := t.TempDir()
 	write := func(rel, content string) {
 		full := filepath.Join(dir, rel)
@@ -290,11 +304,10 @@ func TestMigrateLocalActions_UnparseableWorkflowIsAFinding(t *testing.T) {
 	write(".github/workflows/good.yml", good)
 	write(".github/workflows/bad.yml", "name: [\n")
 	write(".github/actions/foo/action.yml",
-		"name: Foo\nruns:\n  using: composite\n  steps:\n    - run: echo hi\n      shell: bash\n")
+		"name: Foo\nruns:\n  using: composite\n  steps:\n    - uses: actions/setup-go@v6\n")
 	t.Chdir(dir)
 
-	transport := &requestCountingTransport{}
-	stdout, _, err := runCommandWithHTTP(t, transport, "--migrate-local-actions", "--json=valid,findings")
+	stdout, _, err := runCommandWithHTTP(t, reg, "--migrate-local-actions", "--json=valid,findings")
 
 	require.ErrorIs(t, err, errSilent, "the load error blocks the write like a default run")
 	var payload struct {
