@@ -343,3 +343,18 @@ func TestGetBranchHead_SharedRefLayer(t *testing.T) {
 		})
 	}
 }
+
+func TestCompareRefs_SkipsChangedFiles(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+	reg.Register(httpmock.RESTWithQuery("GET", `^/repos/o/r/compare/old\.\.\.new$`, "per_page=1&page=2"),
+		httpmock.JSONResponse(map[string]any{"status": "ahead", "merge_base_commit": map[string]any{"sha": "old"}}))
+	c, err := New("github.com", WithClientTransport(reg))
+	require.NoError(t, err)
+
+	status, base, err := c.CompareRefs(context.Background(), "o", "r", "old", "new")
+
+	require.NoError(t, err)
+	assert.Equal(t, "ahead", status)
+	assert.Equal(t, "old", base)
+}
