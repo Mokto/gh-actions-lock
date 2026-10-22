@@ -480,6 +480,46 @@ func GraphFaults(f parserlock.File, workflowKey string, live func(parserlock.Pin
 	return faults
 }
 
+// UsesCycle returns a `uses:` cycle in workflowKey's recorded closure, as
+// the keys along it with the first repeated last, or nil. The lockfile
+// parser rejects any cycle, so a write must check for one first.
+func UsesCycle(f parserlock.File, workflowKey string) []string {
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := map[string]int{}
+	var stack []string
+	var cycle []string
+	var walk func(key string) bool
+	walk = func(key string) bool {
+		switch state[key] {
+		case visiting:
+			i := slices.Index(stack, key)
+			cycle = append(slices.Clone(stack[i:]), key)
+			return true
+		case done:
+			return false
+		}
+		state[key] = visiting
+		stack = append(stack, key)
+		for _, child := range f.Dependencies[key].Uses {
+			if walk(child) {
+				return true
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[key] = done
+		return false
+	}
+	for _, key := range f.Workflows[workflowKey] {
+		if walk(key) {
+			return cycle
+		}
+	}
+	return nil
+}
+
 // walkClosure walks workflowKey's recorded `uses:` graph from the roots live
 // accepts. Each pin is reported once, as direct when the workflow lists it,
 // so traversal order can't make a root transitive.
@@ -817,6 +857,10 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 				usesSet[u] = true
 			}
 		}
+		// An entry's own key can reach its edges when two names for it
+		// collapse to one (narrowing, spelling). It is the same commit, and
+		// the parser rejects the self-edge as a cycle.
+		delete(usesSet, pinKey)
 		var uses []string
 		if len(usesSet) > 0 {
 			uses = make([]string, 0, len(usesSet))

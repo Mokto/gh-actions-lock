@@ -1062,3 +1062,86 @@ jobs:
 	assert.Contains(t, readTempLockfilePins(t), sha)
 	reg.Verify(t)
 }
+
+// TestRun_SubPathUsingItsRepoLocksWithoutSelfEdge: the workflow uses
+// octo/kit/publish@v1, whose composite uses octo/kit@v1.2.3 at the same
+// commit. Narrowing v1 to v1.2.3 makes them one entry, which must not list
+// itself under `uses:`, and the lockfile the run writes verifies.
+func TestRun_SubPathUsingItsRepoLocksWithoutSelfEdge(t *testing.T) {
+	const kitSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	manifests := map[string]string{"octo/kit/publish": composite("octo/kit@v1.2.3")}
+	commits := map[string]string{"octo/kit": kitSHA}
+	reg := &httpmock.Registry{}
+	registerLockedManifests(reg, manifests)
+	reg.RegisterReusable(httpmock.REST("GET", `repos/octo/kit/tags`),
+		httpmock.JSONResponse(httpmock.TagListResponse("v1.2.3", kitSHA, "v1", kitSHA)))
+	registerLive(reg, manifests, commits)
+	reg.RegisterReusable(httpmock.REST("GET", `repos/octo/kit$`), httpmock.JSONResponse(map[string]any{"id": 1, "owner": map[string]any{"id": 1}}))
+	stubGraph(t, reg, nil, commits, nil)
+	useDefaultTransport(t, reg)
+	path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/kit/publish@v1\n")
+
+	_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", path)
+	require.NoError(t, err, stderr)
+	lock := readTempLockfilePins(t)
+	assert.Contains(t, lock, "'octo/kit@v1.2.3':\n        ref: 'v1.2.3'\n        commit: 'sha1-"+kitSHA+"'\n        owner_id: 1\n        repo_id: 1\n")
+	assert.NotContains(t, lock, "uses:")
+	for _, mode := range []string{"--verify-local", "--verify"} {
+		_, stderr, err := runCommandWithHTTP(t, reg, mode, path)
+		require.NoError(t, err, "%s: %s\n%s", mode, stderr, lock)
+	}
+}
+
+// TestRun_NarrowingNeverMergesEntriesIntoACycle: octo/kit/publish@v1 uses
+// octo/mid@v2.0.0, which uses octo/kit@v1.2.3 at the same commit as v1.
+// Narrowing v1 to v1.2.3 would make kit and mid use each other, so the run
+// keeps v1 and the lockfile it writes verifies. Written as v1.2.3, the
+// cycle is in the graph itself, and the run refuses to write.
+func TestRun_NarrowingNeverMergesEntriesIntoACycle(t *testing.T) {
+	const kitSHA, midSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "dddddddddddddddddddddddddddddddddddddddd"
+	for name, tc := range map[string]struct {
+		ref     string
+		refused bool
+	}{
+		"narrowed":          {ref: "v1"},
+		"written as v1.2.3": {ref: "v1.2.3", refused: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			manifests := map[string]string{
+				"octo/kit/publish": composite("octo/mid@v2.0.0"),
+				"octo/mid":         composite("octo/kit/install@v1.2.3"),
+			}
+			commits := map[string]string{"octo/kit": kitSHA, "octo/mid": midSHA}
+			reg := &httpmock.Registry{}
+			registerLockedManifests(reg, manifests)
+			for nwo, tags := range map[string]any{
+				"octo/kit": httpmock.TagListResponse("v1.2.3", kitSHA, "v1", kitSHA),
+				"octo/mid": httpmock.TagListResponse("v2.0.0", midSHA, "v2", midSHA),
+			} {
+				reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`/tags`), httpmock.JSONResponse(tags))
+				reg.RegisterReusable(httpmock.REST("GET", `repos/`+nwo+`$`), httpmock.JSONResponse(map[string]any{"id": 1, "owner": map[string]any{"id": 1}}))
+			}
+			registerLive(reg, manifests, commits)
+			stubGraph(t, reg, nil, commits, nil)
+			useDefaultTransport(t, reg)
+			path := writeTempWorkflow(t, "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: octo/kit/publish@"+tc.ref+"\n")
+
+			_, stderr, err := runCommandWithHTTP(t, reg, "--no-interactive", path)
+			if tc.refused {
+				require.Error(t, err, stderr)
+				assert.Contains(t, err.Error(), "octo/kit@v1.2.3 uses octo/mid@v2.0.0, which uses octo/kit@v1.2.3")
+				_, statErr := os.Stat(filepath.Join(".github", "workflows", "actions.lock"))
+				assert.ErrorIs(t, statErr, os.ErrNotExist, "nothing is written")
+				return
+			}
+			require.NoError(t, err, stderr)
+			lock := readTempLockfilePins(t)
+			assert.Contains(t, lock, "'octo/kit@v1':\n        ref: 'v1'\n        commit: 'sha1-"+kitSHA+"'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - 'octo/mid@v2.0.0'\n")
+			assert.Contains(t, lock, "'octo/mid@v2.0.0':\n        ref: 'v2.0.0'\n        commit: 'sha1-"+midSHA+"'\n        owner_id: 1\n        repo_id: 1\n        uses:\n            - 'octo/kit@v1.2.3'\n")
+			for _, mode := range []string{"--verify-local", "--verify"} {
+				_, stderr, err := runCommandWithHTTP(t, reg, mode, path)
+				require.NoError(t, err, "%s: %s\n%s", mode, stderr, lock)
+			}
+		})
+	}
+}

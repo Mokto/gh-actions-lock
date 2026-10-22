@@ -54,3 +54,37 @@ func TestDependencyKey(t *testing.T) {
 	d := Dependency{NWO: "actions/checkout", Ref: "v4", SHA: "abc"}
 	assert.Equal(t, "actions/checkout@v4", d.Key())
 }
+
+func TestRekeyParentMap(t *testing.T) {
+	rewrites := map[string]string{"o/c@v1": "o/c@v1.0.0"}
+	for name, tc := range map[string]struct {
+		pm   ParentMap
+		want ParentMap
+	}{
+		"merged children union their parents": {
+			pm:   ParentMap{"o/c@v1": {"o/a@v1", "o/b@v1"}, "o/c@v1.0.0": {"o/b@v1", "o/d@v1"}},
+			want: ParentMap{"o/c@v1.0.0": {"o/a@v1", "o/b@v1", "o/d@v1"}},
+		},
+		"a parent rewritten onto its child is dropped": {
+			pm:   ParentMap{"o/c@v1.0.0": {"o/c@v1", "o/a@v1"}},
+			want: ParentMap{"o/c@v1.0.0": {"o/a@v1"}},
+		},
+		"a child whose only parent becomes itself is removed": {
+			pm:   ParentMap{"o/c@v1.0.0": {"o/c@v1"}, "o/x@v2": {"o/c@v1"}},
+			want: ParentMap{"o/x@v2": {"o/c@v1.0.0"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := ParentMap{}
+			for k, v := range tc.pm {
+				before[k] = append([]string(nil), v...)
+			}
+			got := RekeyParentMap(tc.pm, rewrites)
+			assert.Len(t, got, len(tc.want))
+			for child, parents := range tc.want {
+				assert.ElementsMatch(t, parents, got[child], child)
+			}
+			assert.Equal(t, before, tc.pm, "the input is not mutated")
+		})
+	}
+}

@@ -119,7 +119,9 @@ type ParentMap map[string][]string
 // RekeyParentMap returns a new ParentMap with both child keys and parent
 // values rewritten according to rewrites (e.g. tag narrowing v4 → v4.3.1,
 // or ReverseLookup replacing a SHA with a discovered tag). The input
-// is not mutated.
+// is not mutated. Children that a rewrite merges share their parents, and
+// an edge a rewrite turns into a self-edge is dropped: parent and child are
+// then one lockfile entry at one commit, so the child is already locked.
 func RekeyParentMap(pm ParentMap, rewrites map[string]string) ParentMap {
 	if len(pm) == 0 {
 		return ParentMap{}
@@ -137,15 +139,18 @@ func RekeyParentMap(pm ParentMap, rewrites map[string]string) ParentMap {
 		if rk, ok := rewrites[childKey]; ok {
 			newChild = rk
 		}
-		newParents := make([]string, len(parents))
-		for i, p := range parents {
+		newParents := updated[newChild]
+		for _, p := range parents {
 			if rk, ok := rewrites[p]; ok {
-				newParents[i] = rk
-			} else {
-				newParents[i] = p
+				p = rk
+			}
+			if p != newChild && !slices.Contains(newParents, p) {
+				newParents = append(newParents, p)
 			}
 		}
-		updated[newChild] = newParents
+		if len(newParents) > 0 {
+			updated[newChild] = newParents
+		}
 	}
 	return updated
 }

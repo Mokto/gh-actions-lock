@@ -148,8 +148,26 @@ func updateLockfile(ctx context.Context, rec *Record, workflows []WorkflowPlan, 
 		if faults := lockfile.GraphFaults(f, workflowfile.KeyFromPath(wp.Path), all); len(faults) > 0 {
 			return fmt.Errorf("refusing to write %s: its lock graph is incomplete: %s; run `gh actions-lock --relock` to rebuild it", wp.Path, faults[0])
 		}
+		if cycle := lockfile.UsesCycle(f, workflowfile.KeyFromPath(wp.Path)); cycle != nil {
+			return fmt.Errorf("refusing to write %s: %s; the lockfile can't record actions that use each other, so pin one of them to a different commit", wp.Path, describeCycle(cycle))
+		}
 	}
 	return nil
+}
+
+// describeCycle spells a cycle as "a uses b, which uses c, which uses a".
+func describeCycle(cycle []string) string {
+	var b strings.Builder
+	b.WriteString(cycle[0])
+	for i, key := range cycle[1:] {
+		if i == 0 {
+			b.WriteString(" uses ")
+		} else {
+			b.WriteString(", which uses ")
+		}
+		b.WriteString(key)
+	}
+	return b.String()
 }
 
 func rewriteWorkflow(wp WorkflowPlan) error {
