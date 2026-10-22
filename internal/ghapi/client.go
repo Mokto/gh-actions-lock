@@ -114,8 +114,8 @@ func New(hostname string, opts ...ClientOption) (*Client, error) {
 }
 
 // DependabotProxy reports whether the CLI runs inside Dependabot, behind its
-// REST-only proxy. Dependabot retries on exit 2 and reads back only
-// actions.lock.
+// REST-only proxy. Dependabot reads back only actions.lock and does not
+// retry a failed run.
 func DependabotProxy() bool {
 	return os.Getenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY") == "1"
 }
