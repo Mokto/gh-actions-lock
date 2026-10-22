@@ -39,11 +39,17 @@ type manifestRead struct {
 	local   []*resolve.CompositeLocalPathError
 }
 
+// manifestReader reads action files batched; *resolve.Resolver is one.
+type manifestReader interface {
+	ReadManifests(ctx context.Context, reqs []ghapi.ActionFileRequest) []ghapi.ActionFileResult
+}
+
 // readManifestGraph reads each root's action.yml at its locked commit, then
 // every recorded child it reaches, batched per level across workflows. Pins
 // in skip (pinKey of NWO and commit) are not read. byKey maps pinKey to each
-// entry's key.
-func readManifestGraph(ctx context.Context, r *resolve.Resolver, file parserlock.File, byKey map[string]string, roots map[int][]manifestNode, skip map[string]bool) map[manifestNode]*manifestRead {
+// entry's key. Behind the Dependabot proxy a failed read ends the walk: the
+// run aborts on it, so later levels would be read for nothing.
+func readManifestGraph(ctx context.Context, r manifestReader, file parserlock.File, byKey map[string]string, roots map[int][]manifestNode, skip map[string]bool) map[manifestNode]*manifestRead {
 	reads := map[manifestNode]*manifestRead{}
 	var level []manifestNode
 	for _, ri := range slices.Sorted(maps.Keys(roots)) {
@@ -84,6 +90,9 @@ func readManifestGraph(ctx context.Context, r *resolve.Resolver, file parserlock
 		for i, n := range nodes {
 			rd := readManifest(n, file, byKey, results[nodeReq[i]])
 			reads[n] = rd
+			if rd.err != nil && ghapi.DependabotProxy() {
+				return reads
+			}
 			for _, e := range rd.edges {
 				if _, seen := reads[e.to]; e.to.key != "" && !seen {
 					reads[e.to] = nil
