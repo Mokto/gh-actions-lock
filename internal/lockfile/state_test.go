@@ -1232,3 +1232,64 @@ func TestState_SetReplacesUsesOfReadEntries(t *testing.T) {
 		assert.Empty(t, store.File().Dependencies["o/child@v2"].Uses)
 	})
 }
+
+// TestState_SetDropsSelfEdgeFromSpellings: two spellings of one key name one
+// entry, so an edge between them must not become a self-edge the parser
+// rejects as a cycle.
+func TestState_SetDropsSelfEdgeFromSpellings(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+	store, err := LoadState(dir, fakeMetadataResolver{})
+	require.NoError(t, err)
+	const sha = "cccccccccccccccccccccccccccccccccccccccc"
+	lower := dep.Dependency{NWO: "o/comp", Ref: "v1", SHA: sha, HashAlgo: "sha1"}
+	upper := dep.Dependency{NWO: "O/Comp", Ref: "v1", SHA: sha, HashAlgo: "sha1"}
+
+	require.NoError(t, store.Set(context.Background(), ".github/workflows/ci.yml",
+		[]dep.Dependency{lower, upper},
+		dep.ParentMap{upper.Key(): {lower.Key()}},
+		map[string]bool{lower.Key(): true}))
+
+	assert.Empty(t, store.File().Dependencies["o/comp@v1"].Uses)
+	require.NoError(t, store.Save())
+	_, err = LoadState(dir, fakeMetadataResolver{})
+	require.NoError(t, err)
+}
+
+func TestUsesCycle(t *testing.T) {
+	entries := func(edges map[string][]string) map[string]parserlock.Action {
+		out := map[string]parserlock.Action{}
+		for k, uses := range edges {
+			out[k] = parserlock.Action{Uses: uses}
+		}
+		return out
+	}
+	for name, tc := range map[string]struct {
+		edges map[string][]string
+		want  []string
+	}{
+		"acyclic diamond": {
+			edges: map[string][]string{"o/a@v1": {"o/b@v1", "o/c@v1"}, "o/b@v1": {"o/d@v1"}, "o/c@v1": {"o/d@v1"}, "o/d@v1": nil},
+		},
+		"self-edge": {
+			edges: map[string][]string{"o/a@v1": {"o/a@v1"}},
+			want:  []string{"o/a@v1", "o/a@v1"},
+		},
+		"two hops": {
+			edges: map[string][]string{"o/a@v1": {"o/b@v1"}, "o/b@v1": {"o/a@v1"}},
+			want:  []string{"o/a@v1", "o/b@v1", "o/a@v1"},
+		},
+		"below the root": {
+			edges: map[string][]string{"o/a@v1": {"o/b@v1"}, "o/b@v1": {"o/c@v1"}, "o/c@v1": {"o/b@v1"}},
+			want:  []string{"o/b@v1", "o/c@v1", "o/b@v1"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := parserlock.File{
+				Workflows:    map[string][]string{"ci.yml": {"o/a@v1"}},
+				Dependencies: entries(tc.edges),
+			}
+			assert.Equal(t, tc.want, UsesCycle(f, "ci.yml"))
+		})
+	}
+}

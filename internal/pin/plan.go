@@ -243,7 +243,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 		}
 	}
 
-	narrowDirectDeps(ctx, opts, deps, rewriteTracker, rewrites, preservedDeps)
+	narrowDirectDeps(ctx, opts, deps, parentMap, rewriteTracker, rewrites, preservedDeps)
 	reRecorded := preserveReRecorded(opts, deps, preservedDeps)
 	// A rebuild leaves a root still at its recorded commit as a run that
 	// trusts the lock would: its `uses:` and recorded ref stay.
@@ -444,7 +444,7 @@ func preserveReRecorded(opts PlanOptions, deps []dep.Dependency, preservedDeps m
 
 // narrowDirectDeps rewrites direct partial semver refs to exact patch tags,
 // leaving bare SHA and transitive refs for reverse lookup.
-func narrowDirectDeps(ctx context.Context, opts PlanOptions, deps []dep.Dependency, directTracker lockfile.DirectTracker, rewrites map[string]string, preservedDeps map[int]bool) {
+func narrowDirectDeps(ctx context.Context, opts PlanOptions, deps []dep.Dependency, parentMap dep.ParentMap, directTracker lockfile.DirectTracker, rewrites map[string]string, preservedDeps map[int]bool) {
 	if opts.Tagger == nil {
 		return
 	}
@@ -494,10 +494,61 @@ func narrowDirectDeps(ctx context.Context, opts PlanOptions, deps []dep.Dependen
 		}
 		oldUses := dep.NWO + "@" + dep.Ref
 		newUses := dep.NWO + "@" + patchTag
+		// Narrowing onto another entry's key merges the two; skip it when
+		// the merged entry would reach itself through other entries.
+		if mergeMakesCycle(parentMap, oldUses, newUses) {
+			continue
+		}
 		rewrites[oldUses] = newUses
 		dep.Ref = patchTag
 		preservedDeps[i] = true
 	}
+}
+
+// mergeMakesCycle reports whether merging dep keys a and b into one entry
+// would close a `uses:` cycle through other entries: one reaches the other
+// by a path of two or more edges. A direct edge between them becomes a
+// self-edge, which the lockfile drops.
+func mergeMakesCycle(parentMap dep.ParentMap, a, b string) bool {
+	norm := func(key string) string {
+		nwo, ref, _ := strings.Cut(key, "@")
+		return strings.ToLower(nwo) + "@" + lockfile.CanonicalRef(ref)
+	}
+	children := make(map[string][]string, len(parentMap))
+	for child, parents := range parentMap {
+		for _, p := range parents {
+			children[norm(p)] = append(children[norm(p)], norm(child))
+		}
+	}
+	a, b = norm(a), norm(b)
+	if a == b {
+		return false
+	}
+	reachesByDetour := func(from, to string) bool {
+		seen := map[string]bool{from: true}
+		var queue []string
+		for _, c := range children[from] {
+			if c != to && !seen[c] {
+				seen[c] = true
+				queue = append(queue, c)
+			}
+		}
+		for len(queue) > 0 {
+			n := queue[0]
+			queue = queue[1:]
+			for _, c := range children[n] {
+				if c == to {
+					return true
+				}
+				if !seen[c] {
+					seen[c] = true
+					queue = append(queue, c)
+				}
+			}
+		}
+		return false
+	}
+	return reachesByDetour(a, b) || reachesByDetour(b, a)
 }
 
 // reverseLookupRewrites canonicalizes refs via ReverseLookup, preserving

@@ -43,6 +43,7 @@ func TestNarrowDirectDeps_PreservesRefWhenExactTagIsFromAnotherFamily(t *testing
 		context.Background(),
 		PlanOptions{Tagger: tag.NewListerForTest(t, reg)},
 		deps,
+		nil,
 		direct,
 		rewrites,
 		make(map[int]bool),
@@ -97,7 +98,7 @@ func TestNarrowDirectDeps_SameNWOSiblingRefsNormalizeIndependently(t *testing.T)
 	preserved := make(map[int]bool)
 	tagger := tag.NewListerForTest(t, reg)
 
-	narrowDirectDeps(context.Background(), PlanOptions{Tagger: tagger}, deps, direct, rewrites, preserved)
+	narrowDirectDeps(context.Background(), PlanOptions{Tagger: tagger}, deps, nil, direct, rewrites, preserved)
 
 	resolver, err := resolve.New("github.com", pinpool.New(2, nil), resolve.WithTransport(reg))
 	require.NoError(t, err)
@@ -1249,6 +1250,36 @@ func TestRespellRewrites(t *testing.T) {
 			respellRewrites(&wp, map[string]string{upper: lower})
 			assert.Equal(t, tt.want, wp.Rewrites)
 			assert.Equal(t, tt.wantReq, wp.RequiredRewrites)
+		})
+	}
+}
+
+func TestMergeMakesCycle(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pm   dep.ParentMap
+		want bool
+	}{
+		"direct edge only becomes a dropped self-edge": {
+			pm: dep.ParentMap{"o/kit@v1.2.3": {"o/kit@v1"}},
+		},
+		"path through another entry": {
+			pm:   dep.ParentMap{"o/mid@v2": {"o/kit@v1"}, "o/kit@v1.2.3": {"o/mid@v2"}},
+			want: true,
+		},
+		"path the other way": {
+			pm:   dep.ParentMap{"o/mid@v2": {"o/kit@v1.2.3"}, "o/kit@v1": {"o/mid@v2"}},
+			want: true,
+		},
+		"owner case differs": {
+			pm:   dep.ParentMap{"o/mid@v2": {"O/Kit@v1"}, "o/kit@v1.2.3": {"o/mid@v2"}},
+			want: true,
+		},
+		"unrelated entries": {
+			pm: dep.ParentMap{"o/mid@v2": {"o/kit@v1"}, "o/leaf@v1": {"o/mid@v2"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, mergeMakesCycle(tc.pm, "o/kit@v1", "o/kit@v1.2.3"))
 		})
 	}
 }
