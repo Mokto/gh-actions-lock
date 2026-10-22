@@ -51,10 +51,16 @@ Other flags:
 - `<workflow-path>...` scopes a run to specific workflows. Only a full-directory run prunes entries for deleted workflows.
 - `--json [fields]` prints machine-readable output to stdout.
 - `--accept-moved` accepts pins whose locked commit is no longer upstream. Check why it moved first; never use it in automation.
-- `--migrate-local-actions` / `--ignore-local-actions` handle `./…` actions that use remote actions.
 - `--no-narrow` keeps partial versions (`v4`) as written instead of narrowing to a full tag.
 
 `gh actions-lock --help` is authoritative.
+
+## Limitations
+
+- Reusable workflows called at `jobs.<id>.uses` from another repository are not locked ([#179](https://github.com/github/gh-actions-lock/issues/179)).
+- Local `./…` actions are never followed or locked, so one that uses remote actions is a blocking error until you pass `--migrate-local-actions` (rewrites same-repo `./…` to `$/…`) or `--ignore-local-actions`.
+- Container images are not locked, and any image without an `@sha256:` digest, including one chosen by a `${{ }}` expression, is a warning ([#236](https://github.com/github/gh-actions-lock/issues/236)).
+- A lockfile change that moves a floating ref (`v4`, `main`) back to an older commit in its history isn't detected, so review lockfile diffs or pin exact tags.
 
 ## Learn more
 
