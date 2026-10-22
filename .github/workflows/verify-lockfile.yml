@@ -6,7 +6,9 @@
 # --verify is read-only and calls the GitHub API to check every pin. The
 # job's GITHUB_TOKEN can read public actions and this repository; if your
 # workflows use actions from other private or internal repositories, pass
-# a token that can read them instead. --verify-local works offline but only
+# a token that can read them instead. Keep this on `pull_request`; never
+# switch to `pull_request_target`, since fork PRs should only get a
+# read-only token and no secrets. --verify-local works offline but only
 # checks lockfile coverage, not that the pins are trustworthy.
 #
 # Exit codes: 0 valid, 1 findings to fix, 2 the check itself failed.
