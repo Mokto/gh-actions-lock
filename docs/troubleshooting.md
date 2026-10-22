@@ -128,6 +128,8 @@ The extension can't tell these apart, so it fails closed. **Don't accept the new
 
 If the extension suggests a pin, it's the newest release on a branch of the action's repository. If the locked commit isn't on any branch, ask the action's maintainer to tag releases from a branch. See [Using tags for release management](https://docs.github.com/actions/how-tos/create-and-publish-actions/manage-custom-actions#using-tags-for-release-management).
 
+A `uses:` line that pins a full-length commit SHA gets the same error when no tag or branch of the action's repository contains that commit. The message says it may be a fork or impostor commit: a commit that exists only in a fork, but resolves under the upstream `owner/repo` name because forks share objects with their upstream repository. The extension doesn't lock it. Point `uses:` at a release tag from the action's repository, then run `gh actions-lock`.
+
 Related headlines:
 
 * **Ref no longer exists:** The tag or branch that the lockfile records was deleted. Point `uses:` at a tag or branch that exists, then run `gh actions-lock`.
