@@ -147,8 +147,14 @@ from other private or internal repositories need a token that can read them.
 - A floating ref locked to an older commit in its history isn't detected. Review lockfile diffs or
   pin exact tags.
 
-## More detail
+## Learn more
 
-`gh actions-lock --help` is authoritative for flags. For behavior and troubleshooting, see the
-[README](https://github.com/github/gh-actions-lock#readme) and each finding's `doc_url`. Failed
-runs print the path of a saved run log; attach it to bug reports.
+`gh actions-lock --help` is authoritative for flags. Failed runs print the path of a saved run
+log; attach it to bug reports. Start from these, plus each finding's `doc_url`:
+
+- [Workflow dependency lockfiles](https://docs.github.com/en/actions/concepts/security/workflow-dependency-lockfiles)
+- [Lock workflow dependencies](https://docs.github.com/en/actions/how-tos/secure-your-work/lock-workflow-dependencies)
+- [Enforce workflow lockfiles](https://docs.github.com/en/actions/how-tos/administer/enforce-workflow-lockfiles)
+- [Control workflow execution](https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution)
+- [Troubleshooting](https://github.com/github/gh-actions-lock/blob/main/docs/troubleshooting.md)
+  and the [README](https://github.com/github/gh-actions-lock#readme)
