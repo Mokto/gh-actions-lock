@@ -11,6 +11,12 @@ const (
 	// NotPinned means the workflow has action refs but no
 	// corresponding dependencies entry in the lockfile.
 	NotPinned Category = "not-pinned"
+	// MissingRef means a `uses:` ref (tag, branch, or commit) does not exist
+	// upstream, so there is nothing to pin. Only a source change fixes it.
+	MissingRef Category = "ref-missing"
+	// InvalidWorkflow means a workflow file failed to load, so none of its
+	// actions could be checked.
+	InvalidWorkflow Category = "invalid-workflow"
 	// ShaAsRef means a dependency is pinned to a bare SHA with no
 	// human-readable tag ref alongside it.
 	ShaAsRef Category = "sha-as-ref"

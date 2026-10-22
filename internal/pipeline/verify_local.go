@@ -36,7 +36,7 @@ func VerifyLocalCoverage(parsed []checks.ParsedWorkflow, store *lockfile.State) 
 		if pw.LoadErr != nil {
 			wr.Findings = append(wr.Findings, checks.Finding{
 				WorkflowPath: pw.Path,
-				Category:     checks.NotPinned,
+				Category:     checks.InvalidWorkflow,
 				Severity:     checks.SeverityError,
 				Confidence:   checks.ConfidenceHigh,
 				Detail:       fmt.Sprintf("could not parse workflow: %v", pw.LoadErr),

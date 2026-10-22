@@ -62,17 +62,20 @@ func TestRenderNarrowedEntries_BranchRepair(t *testing.T) {
 func TestReportHasUnfixableErrors_ClassifiesWorkflowNotPinned(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
+		category    checks.Category
 		remediable  bool
 		wantBlocked bool
 	}{
-		{name: "workflow load error", wantBlocked: true},
-		{name: "dependency inventory error", remediable: true},
+		{name: "malformed nested ref", category: checks.NotPinned, wantBlocked: true},
+		{name: "dependency inventory error", category: checks.NotPinned, remediable: true},
+		{name: "workflow load error", category: checks.InvalidWorkflow, wantBlocked: true},
+		{name: "missing ref", category: checks.MissingRef, wantBlocked: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			report := &checks.Report{
 				Workflows: []checks.WorkflowReport{{
 					Findings: []checks.Finding{{
-						Category:   checks.NotPinned,
+						Category:   tt.category,
 						Severity:   checks.SeverityError,
 						Remediable: tt.remediable,
 					}},

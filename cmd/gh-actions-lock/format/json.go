@@ -92,8 +92,7 @@ type Workflow struct {
 	Dependencies []Dependency `json:"dependencies,omitempty"`
 }
 
-// Pin is the post-fix outcome for one action from the pin plan. The other
-// fields describe the pre-fix diagnosis.
+// Pin is the post-fix outcome for one action from the pin plan.
 type Pin struct {
 	Hostname     string `json:"hostname,omitempty"`
 	NWO          string `json:"nwo"`

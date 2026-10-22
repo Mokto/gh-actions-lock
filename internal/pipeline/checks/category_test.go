@@ -36,6 +36,8 @@ func TestCategoryStringsAreFrozen(t *testing.T) {
 		{CooldownConfigIgnored, "cooldown-config-ignored"},
 		{IncompleteLockfile, "incomplete-lockfile"},
 		{ContainerImage, "container-image"},
+		{MissingRef, "ref-missing"},
+		{InvalidWorkflow, "invalid-workflow"},
 	}
 	for _, c := range cases {
 		if string(c.got) != c.want {

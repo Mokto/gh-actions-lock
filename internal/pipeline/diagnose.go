@@ -112,7 +112,7 @@ func diagnoseOneParsed(ctx context.Context, pw checks.ParsedWorkflow, r *resolve
 				nwo := missing.Owner + "/" + missing.Repo
 				wr.Findings = append(wr.Findings, checks.Finding{
 					WorkflowPath: pw.Path,
-					Category:     checks.NotPinned,
+					Category:     checks.MissingRef,
 					Severity:     checks.SeverityError,
 					Confidence:   checks.ConfidenceHigh,
 					Dependency:   &dep.Dependency{NWO: nwo, Ref: missing.Ref},
@@ -228,12 +228,11 @@ func precheckWorkflow(pw checks.ParsedWorkflow, store *lockfile.State) (checks.W
 		wr.SkipCommit = true
 		wr.Findings = append(wr.Findings, checks.Finding{
 			WorkflowPath: pw.Path,
-			Category:     checks.NotPinned,
+			Category:     checks.InvalidWorkflow,
 			Severity:     checks.SeverityError,
 			// High: the YAML failed to load — concrete, file-level fact.
 			Confidence: checks.ConfidenceHigh,
 			Detail:     fmt.Sprintf("failed to load workflow: %s", pw.LoadErr),
-			DocURL:     DocURLFor(checks.NotPinned),
 		})
 		preserveExistingInventory(&wr, pw)
 		return wr, true

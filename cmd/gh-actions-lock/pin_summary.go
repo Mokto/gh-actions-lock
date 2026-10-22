@@ -29,7 +29,7 @@ func reportHasUnfixableErrors(report *checks.Report, acceptMoved bool) bool {
 				continue
 			}
 			switch f.Category {
-			case checks.LocalAction, checks.InvalidSelfRepositoryRef, checks.RepoRenamed, checks.RepoReplaced, checks.RepoUnavailable, checks.ReachabilityUnknown, checks.AncestryUnknown:
+			case checks.LocalAction, checks.InvalidSelfRepositoryRef, checks.MissingRef, checks.InvalidWorkflow, checks.RepoRenamed, checks.RepoReplaced, checks.RepoUnavailable, checks.ReachabilityUnknown, checks.AncestryUnknown:
 				return true
 			case checks.NotPinned:
 				if !f.IsRemediableNotPinned() {
@@ -86,6 +86,8 @@ func reportHasNonInvestigatedUnfixableErrors(report *checks.Report) bool {
 			}
 			if f.Category == checks.LocalAction ||
 				f.Category == checks.InvalidSelfRepositoryRef ||
+				f.Category == checks.MissingRef ||
+				f.Category == checks.InvalidWorkflow ||
 				f.Category == checks.RepoRenamed ||
 				f.Category == checks.RepoReplaced ||
 				f.Category == checks.RepoUnavailable ||

@@ -210,10 +210,15 @@ jobs:
 					stale = append(stale, f)
 				}
 			}
-			require.Len(t, stale, 1, "%+v", p.Findings)
-			assert.Equal(t, "actions/setup-go@v5", stale[0].Dependency)
-			assert.Equal(t, string(checks.SeverityError), stale[0].Severity)
 			assert.Equal(t, !hasError, p.Valid, "valid must agree with severities")
+			if !tc.wantErr {
+				assert.Empty(t, stale, "a fix run reports the state it left")
+				assert.True(t, p.Valid)
+			} else {
+				require.Len(t, stale, 1, "%+v", p.Findings)
+				assert.Equal(t, "actions/setup-go@v5", stale[0].Dependency)
+				assert.Equal(t, string(checks.SeverityError), stale[0].Severity)
+			}
 
 			pins := readTempLockfilePins(t)
 			if tc.wantErr {
@@ -293,7 +298,7 @@ jobs:
 	}{
 		{name: "verify untracked", mode: []string{"--verify"}, otherPins: []string{pin}, wantCategory: checks.NotPinned, wantErr: true},
 		{name: "verify-local untracked", mode: []string{"--verify-local"}, otherPins: []string{pin}, wantCategory: checks.NotPinned, wantErr: true},
-		{name: "fix run adds entry", otherPins: []string{pin}, wantCategory: checks.NotPinned, wantEntry: "'.github/workflows/workflow.yml': []"},
+		{name: "fix run adds entry", otherPins: []string{pin}, wantEntry: "'.github/workflows/workflow.yml': []"},
 		{name: "no-onboard leaves it", mode: []string{"--no-onboard"}, otherPins: []string{pin}, wantCategory: checks.OnboardingRequired},
 		{name: "verify no-onboard opts out", mode: []string{"--verify", "--no-onboard"}, otherPins: []string{pin}, wantCategory: checks.OnboardingRequired},
 		{name: "verify unused pin", mode: []string{"--verify"}, ownPins: []string{pin}, wantCategory: checks.Stale, wantErr: true},
@@ -319,11 +324,7 @@ jobs:
 				hasError = hasError || f.Severity == string(checks.SeverityError)
 				cats = append(cats, f.Category)
 			}
-			// Fix runs report the pre-fix diagnosis, so only the read-only
-			// modes tie errors to the exit code.
-			if len(tc.mode) > 0 {
-				assert.Equal(t, tc.wantErr, hasError, "%+v", p.Findings)
-			}
+			assert.Equal(t, tc.wantErr, hasError, "%+v", p.Findings)
 			assert.Equal(t, !hasError, p.Valid, "valid must agree with severities")
 			if tc.wantCategory != "" {
 				assert.Contains(t, cats, string(tc.wantCategory))
