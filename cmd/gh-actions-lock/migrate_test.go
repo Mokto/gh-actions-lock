@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
 	"github.com/github/gh-actions-lock/internal/ghapi/httpmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -274,4 +276,41 @@ jobs:
 		assert.Contains(t, got, "uses: ./.github/actions/foo", "opt-out leaves the ./… ref in place")
 		assert.NotContains(t, got, "$/", "opt-out means no migration to $/")
 	})
+}
+
+func TestMigrateLocalActions_UnparseableWorkflowIsAFinding(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+	const good = "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.github/actions/foo\n"
+	write(".github/workflows/good.yml", good)
+	write(".github/workflows/bad.yml", "name: [\n")
+	write(".github/actions/foo/action.yml",
+		"name: Foo\nruns:\n  using: composite\n  steps:\n    - run: echo hi\n      shell: bash\n")
+	t.Chdir(dir)
+
+	transport := &requestCountingTransport{}
+	stdout, _, err := runCommandWithHTTP(t, transport, "--migrate-local-actions", "--json=valid,findings")
+
+	require.ErrorIs(t, err, errSilent, "the load error blocks the write like a default run")
+	var payload struct {
+		Valid    bool             `json:"valid"`
+		Findings []format.Finding `json:"findings"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
+	assert.False(t, payload.Valid)
+	var loadErrors []string
+	for _, f := range payload.Findings {
+		if strings.Contains(f.Detail, "failed to load workflow") {
+			loadErrors = append(loadErrors, f.Workflow)
+		}
+	}
+	assert.Equal(t, []string{".github/workflows/bad.yml"}, loadErrors)
+	got, readErr := os.ReadFile(filepath.Join(dir, ".github", "workflows", "good.yml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, good, string(got), "a blocked run rolls back the migration")
 }

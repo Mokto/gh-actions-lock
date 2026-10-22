@@ -748,9 +748,11 @@ func migrateLocalActions(paths []string) (int, func(), error) {
 		if err != nil {
 			return 0, undo, fmt.Errorf("loading %s: %w", path, err)
 		}
+		// A file that won't parse can't be migrated; the scan reports it as
+		// a load finding like any other run, so skip it here.
 		wf, err := workflowfile.Load(path)
 		if err != nil {
-			return 0, undo, fmt.Errorf("loading %s: %w", path, err)
+			continue
 		}
 		content, changed, err := wf.MigrateLocalActionsToSelfRepository()
 		if err != nil {
