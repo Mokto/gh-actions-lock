@@ -43,7 +43,7 @@ Run `gh auth login --hostname TENANT.ghe.com`, then run `gh actions-lock` from t
 | `gh actions-lock` | yes | yes | Onboarding and fixing the lockfile |
 | `gh actions-lock --relock` | yes | yes | Advancing moved refs (`main`, `v4`) to current upstream commits |
 | `gh actions-lock --verify` | no | yes | CI: the same checks as a fix run |
-| `gh actions-lock --verify-local` | no | no | Pre-commit: every `uses:` has a lockfile entry |
+| `gh actions-lock --verify-local` | no | no | Pre-commit: every `uses:` has a lockfile entry (coverage only, not trust) |
 | `gh actions-lock --no-fix` | no | yes | Read-only report |
 
 Other flags:
@@ -60,6 +60,7 @@ Other flags:
 - Reusable workflows called at `jobs.<id>.uses` from another repository are not locked ([#179](https://github.com/github/gh-actions-lock/issues/179)).
 - Local `./…` actions are never followed or locked, so one that uses remote actions is a blocking error until you pass `--migrate-local-actions` (rewrites same-repo `./…` to `$/…`) or `--ignore-local-actions`.
 - Container images are not locked, and any image without an `@sha256:` digest, including one chosen by a `${{ }}` expression, is a warning ([#236](https://github.com/github/gh-actions-lock/issues/236)).
+- `--verify-local` only checks coverage, not that entries are trustworthy, so forged entries (fork-only or impostor commits, retargeted tags) pass it. Use `--verify` in CI.
 - A lockfile change that moves a floating ref (`v4`, `main`) back to an older commit in its history isn't detected, so review lockfile diffs or pin exact tags.
 
 ## Learn more
