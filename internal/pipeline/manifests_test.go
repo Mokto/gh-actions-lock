@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"testing"
 
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/internal/ghapi"
+	"github.com/github/gh-actions-lock/internal/pipeline/checks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -134,6 +136,115 @@ func TestReadManifestGraph_ProxyStopsAtFailedRead(t *testing.T) {
 
 			assert.Equal(t, tt.calls, f.calls)
 			assert.Error(t, firstManifestErr(roots, reads))
+		})
+	}
+}
+
+func TestCheckManifests_RejectedPins(t *testing.T) {
+	const (
+		omits = compositeUsing + "    - uses: acme/extra@v1\n"
+		leaf  = "runs:\n  using: node20\n"
+	)
+	uses := func(to string) string { return compositeUsing + "    - uses: " + to + "\n" }
+	type want map[int][]string // report index -> finding categories
+	tests := []struct {
+		name     string
+		entries  map[string][]string
+		yml      map[string]string // by repo; others are leaves
+		fail     []string          // repos whose reads fail
+		roots    map[int][]string
+		rejected []string
+		want     want
+	}{
+		{
+			name:    "a healthy root's failed read and omitted edge are reported",
+			entries: map[string][]string{"acme/a@v1": nil, "acme/b@v1": nil},
+			yml:     map[string]string{"b": omits},
+			fail:    []string{"a"},
+			roots:   map[int][]string{0: {"acme/a@v1"}, 1: {"acme/b@v1"}},
+			want:    want{0: {"reachability-unknown"}, 1: {"incomplete-lockfile"}},
+		},
+		{
+			name:     "a rejected root's failed read and omitted edge are not",
+			entries:  map[string][]string{"acme/a@v1": nil, "acme/b@v1": nil},
+			yml:      map[string]string{"b": omits},
+			fail:     []string{"a"},
+			roots:    map[int][]string{0: {"acme/a@v1"}, 1: {"acme/b@v1"}},
+			rejected: []string{"acme/a@v1", "acme/b@v1"},
+			want:     want{},
+		},
+		{
+			name:     "a rejected intermediate node's failed read is not reported",
+			entries:  map[string][]string{"acme/a@v1": {"acme/b@v1"}, "acme/b@v1": nil},
+			yml:      map[string]string{"a": uses("acme/b@v1")},
+			fail:     []string{"b"},
+			roots:    map[int][]string{0: {"acme/a@v1"}},
+			rejected: []string{"acme/b@v1"},
+			want:     want{},
+		},
+		{
+			name:     "a rejected intermediate node's omitted edge is not reported",
+			entries:  map[string][]string{"acme/a@v1": {"acme/b@v1"}, "acme/b@v1": nil},
+			yml:      map[string]string{"a": uses("acme/b@v1"), "b": omits},
+			roots:    map[int][]string{0: {"acme/a@v1"}},
+			rejected: []string{"acme/b@v1"},
+			want:     want{},
+		},
+		{
+			name:     "a descendant reachable only through a rejected node is not checked",
+			entries:  map[string][]string{"acme/a@v1": {"acme/b@v1"}, "acme/b@v1": {"acme/d@v1"}, "acme/d@v1": nil},
+			yml:      map[string]string{"a": uses("acme/b@v1"), "b": uses("acme/d@v1"), "d": omits},
+			roots:    map[int][]string{0: {"acme/a@v1"}},
+			rejected: []string{"acme/b@v1"},
+			want:     want{},
+		},
+		{
+			name: "a shared descendant is still checked through a healthy workflow",
+			entries: map[string][]string{
+				"acme/r@v1": {"acme/d@v1"}, "acme/h@v1": {"acme/d@v1"}, "acme/d@v1": nil,
+			},
+			yml:      map[string]string{"r": uses("acme/d@v1"), "h": uses("acme/d@v1"), "d": omits},
+			roots:    map[int][]string{0: {"acme/r@v1"}, 1: {"acme/h@v1"}},
+			rejected: []string{"acme/r@v1"},
+			want:     want{1: {"incomplete-lockfile"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, byKey := manifestFile(tt.entries)
+			roots := map[int][]manifestNode{}
+			report := &checks.Report{}
+			for ri := range len(tt.roots) {
+				report.Workflows = append(report.Workflows, checks.WorkflowReport{Path: fmt.Sprintf(".github/workflows/w%d.yml", ri)})
+				for _, k := range tt.roots[ri] {
+					roots[ri] = append(roots[ri], manifestNode{key: k})
+				}
+			}
+			unhealthy := map[string]bool{}
+			for _, k := range tt.rejected {
+				p, _ := parserlock.ParsePin(k)
+				unhealthy[pinKey(p.NWO, lockedSHA(file.Dependencies[k].Commit))] = true
+			}
+			yml := map[string]string{}
+			for k := range tt.entries {
+				p, _ := parserlock.ParsePin(k)
+				yml[p.Repo] = leaf
+			}
+			maps.Copy(yml, tt.yml)
+			for _, repo := range tt.fail {
+				delete(yml, repo)
+			}
+			reads := readManifestGraph(context.Background(), &fakeManifests{yml: yml}, file, byKey, roots, nil)
+
+			require.NoError(t, checkManifests(file, report, roots, unhealthy, reads))
+
+			for ri, wr := range report.Workflows {
+				var got []string
+				for _, f := range wr.Findings {
+					got = append(got, string(f.Category))
+				}
+				assert.Equal(t, tt.want[ri], got, wr.Path)
+			}
 		})
 	}
 }
