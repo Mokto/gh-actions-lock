@@ -60,6 +60,9 @@ To check without writing anything, for example in CI, run:
 gh actions-lock --verify
 ```
 
+For a ready-to-copy CI job that runs this on pull requests, see
+[`.github/workflows/verify-lockfile.yml`](.github/workflows/verify-lockfile.yml).
+
 If the GitHub API is unreachable or rate-limited, `--verify` retries for up to
 about 2 minutes in CI (a few seconds elsewhere), then fails (exit 1) with the pins it couldn't verify. Their
 `--json` findings carry `"retryable": true`; re-run the check once the API is
