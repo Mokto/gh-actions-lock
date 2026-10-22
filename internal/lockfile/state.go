@@ -817,6 +817,10 @@ func (s *State) Set(ctx context.Context, workflowKey string, deps []dep.Dependen
 				usesSet[u] = true
 			}
 		}
+		// An entry's own key can reach its edges when two names for it
+		// collapse to one (narrowing, spelling). It is the same commit, and
+		// the parser rejects the self-edge as a cycle.
+		delete(usesSet, pinKey)
 		var uses []string
 		if len(usesSet) > 0 {
 			uses = make([]string, 0, len(usesSet))
