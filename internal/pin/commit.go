@@ -201,6 +201,7 @@ func mergeSelfActionRewrites(plans []WorkflowPlan) map[string]map[string]string 
 func adoptSharedRewrites(rec *Record, merged map[string]map[string]string) error {
 	type pinKey struct{ wf, key string }
 	adopted := map[pinKey]bool{}
+	displaced := map[string][]*parserlock.ActionRef{}
 	for _, wp := range rec.Workflows {
 		for _, path := range wp.SelfActionFiles {
 			foreign := map[string]string{}
@@ -223,6 +224,9 @@ func adoptSharedRewrites(rec *Record, merged map[string]map[string]string) error
 				} else if changed == 0 {
 					continue
 				}
+				if old := parserlock.ParseActionRef(oldUses); old != nil {
+					displaced[wp.Path] = append(displaced[wp.Path], old)
+				}
 				ref := parserlock.ParseActionRef(newUses)
 				if ref == nil {
 					continue
@@ -243,13 +247,77 @@ func adoptSharedRewrites(rec *Record, merged map[string]map[string]string) error
 			}
 		}
 	}
+	for _, wp := range rec.Workflows {
+		if err := demoteDisplacedRoots(rec, wp, merged, displaced[wp.Path]); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// demoteDisplacedRoots stops recording as a root of wp each displaced ref
+// that wp no longer uses directly once every rewrite is applied. Its pin
+// stays, with the edges of the composites that require it.
+func demoteDisplacedRoots(rec *Record, wp WorkflowPlan, merged map[string]map[string]string, displaced []*parserlock.ActionRef) error {
+	if len(displaced) == 0 {
+		return nil
+	}
+	var used []*parserlock.ActionRef
+	files := map[string]map[string]string{wp.Path: wp.Rewrites}
+	for _, path := range wp.SelfActionFiles {
+		files[path] = merged[path]
+	}
+	for path, rewrites := range files {
+		wf, err := workflowfile.Load(path)
+		if err != nil {
+			return fmt.Errorf("loading %s: %w", path, err)
+		}
+		content, _, err := wf.RewriteActionRefs(rewrites)
+		if err != nil {
+			return fmt.Errorf("rewriting %s: %w", path, err)
+		}
+		if wf, err = workflowfile.Parse(path, content); err != nil {
+			return fmt.Errorf("parsing %s: %w", path, err)
+		}
+		for _, v := range wf.UsesValues() {
+			if ref := parserlock.ParseActionRef(v); ref != nil {
+				used = append(used, ref)
+			}
+		}
+	}
+	for _, old := range displaced {
+		if slices.ContainsFunc(used, func(u *parserlock.ActionRef) bool { return sameRef(u.NWO(), u.Ref, old.NWO(), old.Ref) }) {
+			continue
+		}
+		for i := range rec.Entries {
+			e := &rec.Entries[i]
+			if !e.Direct || !slices.Contains(e.Workflows, wp.Path) ||
+				!sameRef(e.NWO, e.Ref, old.NWO(), old.Ref) {
+				continue
+			}
+			if len(e.Workflows) == 1 {
+				e.Direct = false
+				continue
+			}
+			e.Workflows = slices.DeleteFunc(slices.Clone(e.Workflows), func(w string) bool { return w == wp.Path })
+			demoted := *e
+			demoted.Workflows = []string{wp.Path}
+			demoted.Direct = false
+			rec.Entries = append(rec.Entries, demoted)
+		}
+	}
+	return nil
+}
+
+// sameRef reports whether two refs name one lockfile key: owner/repo and
+// full SHAs compare case-insensitively.
+func sameRef(nwoA, refA, nwoB, refB string) bool {
+	return strings.EqualFold(nwoA, nwoB) && lockfile.CanonicalRef(refA) == lockfile.CanonicalRef(refB)
 }
 
 func pinnedEntry(rec *Record, nwo, ref string) (Entry, bool) {
 	for _, e := range rec.Entries {
-		if isPinOrVerified(e.Resolution) && e.SHA != "" && strings.EqualFold(e.NWO, nwo) &&
-			lockfile.CanonicalRef(e.Ref) == lockfile.CanonicalRef(ref) {
+		if isPinOrVerified(e.Resolution) && e.SHA != "" && sameRef(e.NWO, e.Ref, nwo, ref) {
 			return e, true
 		}
 	}

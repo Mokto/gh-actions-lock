@@ -235,3 +235,9 @@ func TestRewriteActionRefs_SubPathActions(t *testing.T) {
 	assert.Contains(t, out, "actions/cache@v5.0.5")
 	assert.Contains(t, out, "actions/checkout@v3")
 }
+
+func TestUsesValuesListsActionFileSteps(t *testing.T) {
+	f, err := Parse("action.yml", []byte("runs:\n  using: composite\n  steps:\n    - uses: octo/cache/restore@v2 # pinned\n    - run: echo\n    - uses: $/actions/setup\n"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"octo/cache/restore@v2", "$/actions/setup"}, f.UsesValues())
+}
