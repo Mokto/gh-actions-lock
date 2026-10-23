@@ -55,6 +55,16 @@ Other flags:
 
 `gh actions-lock --help` is authoritative.
 
+## Automated dependency updates
+
+Dependency update tools should edit the `uses:` ref, then run the lock command without `--relock`:
+
+```bash
+gh actions-lock --no-onboard --no-narrow --no-interactive [<workflow-path>...]
+```
+
+Only entries whose ref changed are resolved again. Every other pin, including floating refs like `v4` that have moved upstream, is kept as locked, so the lockfile diff only shows the bumped action and anything it brings in transitively. `--no-onboard` stops the run from adding workflows that aren't in the lockfile yet, and `--no-narrow` keeps the ref exactly as the tool wrote it. Use `--relock` only when you want to update every floating ref to its current commit, such as for a scheduled refresh.
+
 ## Limitations
 
 - Reusable workflows called at `jobs.<id>.uses` from another repository are not locked ([#179](https://github.com/github/gh-actions-lock/issues/179)).
