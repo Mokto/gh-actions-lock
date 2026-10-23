@@ -15,16 +15,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type proximaTransport func(*http.Request) (*http.Response, error)
+type roundTripFunc func(*http.Request) (*http.Response, error)
 
-func (f proximaTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 const tenantSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const publicSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-func proximaFixture(t *testing.T, publicStatus int) http.RoundTripper {
+func tenantFixture(t *testing.T, publicStatus int) http.RoundTripper {
 	t.Helper()
-	return proximaTransport(func(req *http.Request) (*http.Response, error) {
+	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		tenant := req.URL.Host == "api.tenant.ghe.com"
 		if tenant {
 			assert.NotEmpty(t, req.Header.Get("Authorization"))
@@ -87,7 +87,7 @@ jobs:
       - uses: actions/public@v2
 `)
 	args := []string{"--hostname", "tenant.ghe.com", "--no-interactive", "--no-narrow", "--no-migrate-local-actions", "--json", path}
-	_, _, err := runCommandWithHTTP(t, proximaFixture(t, 200), args...)
+	_, _, err := runCommandWithHTTP(t, tenantFixture(t, 200), args...)
 	require.NoError(t, err)
 	raw := readTempLockfilePins(t)
 	file, err := parserlock.Parse([]byte(raw))
@@ -106,12 +106,12 @@ jobs:
 	assert.EqualValues(t, 22, public.OwnerID)
 	assert.EqualValues(t, 222, public.RepoID)
 
-	_, _, err = runCommandWithHTTP(t, proximaFixture(t, 200), args...)
+	_, _, err = runCommandWithHTTP(t, tenantFixture(t, 200), args...)
 	require.NoError(t, err)
 	assert.Equal(t, raw, readTempLockfilePins(t), "repeat generation must retain hosts and IDs")
 
-	base := proximaFixture(t, 200)
-	pinnedTransport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+	base := tenantFixture(t, 200)
+	pinnedTransport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		assert.False(t, req.URL.Host == "api.tenant.ghe.com" && req.URL.Path == "/repos/actions/public",
 			"recorded dotcom pins must bypass tenant namesakes")
 		return base.RoundTrip(req)
@@ -125,7 +125,7 @@ jobs:
 	explicit := strings.Replace(raw, "'tenant/internal@v1':\n", "'tenant/internal@v1':\n        hostname: 'tenant.ghe.com'\n", 1)
 	require.NotEqual(t, raw, explicit)
 	require.NoError(t, os.WriteFile(parserlock.Path, []byte(explicit), 0o600))
-	_, _, err = runCommandWithHTTP(t, proximaFixture(t, 200), args...)
+	_, _, err = runCommandWithHTTP(t, tenantFixture(t, 200), args...)
 	require.NoError(t, err)
 	assert.Equal(t, raw, readTempLockfilePins(t))
 }
@@ -146,7 +146,7 @@ jobs:
 			raw = strings.ReplaceAll(raw, "owner_id: 1", "owner_id: 22")
 			raw = strings.ReplaceAll(raw, "repo_id: 1", "repo_id: 222")
 			require.NoError(t, os.WriteFile(parserlock.Path, []byte(raw), 0o600))
-			transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				assert.Equal(t, "api.tenant.ghe.com", req.URL.Host, "omitted pins must not fall back to dotcom")
 				assert.NotEmpty(t, req.Header.Get("Authorization"))
 				if req.URL.Path == "/graphql" {
@@ -215,7 +215,7 @@ jobs:
 `)
 			before, err := os.ReadFile(path)
 			require.NoError(t, err)
-			stdout, _, err := runCommandWithHTTP(t, proximaFixture(t, status),
+			stdout, _, err := runCommandWithHTTP(t, tenantFixture(t, status),
 				"--hostname", "tenant.ghe.com", "--no-narrow", "--no-migrate-local-actions", "--json", path)
 			require.ErrorIs(t, err, errSilent)
 			var result struct {
@@ -250,7 +250,7 @@ jobs:
 				raw = strings.ReplaceAll(raw, "repo_id: 1", "repo_id: 222")
 			}
 			require.NoError(t, os.WriteFile(parserlock.Path, []byte(raw), 0o600))
-			stdout, _, err := runCommandWithHTTP(t, proximaFixture(t, 200),
+			stdout, _, err := runCommandWithHTTP(t, tenantFixture(t, 200),
 				"--hostname", "tenant.ghe.com", "--no-narrow", "--no-migrate-local-actions", "--json", path)
 			if matches {
 				require.NoError(t, err)
@@ -288,8 +288,8 @@ jobs:
 
 	t.Run("github.com pin on a tenant", func(t *testing.T) {
 		path := writeLock(t, "v0.0.3", "github.com")
-		base := proximaFixture(t, 200)
-		transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+		base := tenantFixture(t, 200)
+		transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			assert.False(t, req.URL.Host == "api.tenant.ghe.com" && strings.Contains(req.URL.Path, "actions/public"),
 				"a recorded github.com pin must bypass tenant namesakes: %s", req.URL)
 			if req.URL.Host == "api.tenant.ghe.com" && req.URL.Path == "/graphql" {
@@ -304,7 +304,7 @@ jobs:
 
 	t.Run("pin to another host", func(t *testing.T) {
 		path := writeLock(t, "v0.0.3", "other.ghe.com")
-		transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+		transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			t.Errorf("unexpected request: %s", req.URL)
 			return nil, fmt.Errorf("unexpected request")
 		})

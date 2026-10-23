@@ -2503,7 +2503,7 @@ jobs:
 				// An unselected workflow's entry is no repair candidate: the
 				// run spends no identity check on it.
 				headless := 0
-				counting := proximaTransport(func(req *http.Request) (*http.Response, error) {
+				counting := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 					if req.Body != nil && httpmock.GraphQL(`commit: object\(oid`)(req) {
 						b, err := io.ReadAll(req.Body)
 						require.NoError(t, err)

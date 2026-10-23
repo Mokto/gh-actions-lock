@@ -97,6 +97,9 @@ type Finding struct {
 	RetryReason string
 	RetryAt     time.Time
 	RateLimited bool
+	// AnonymousLimited marks a rate limit on the anonymous github.com
+	// public fallback of a *.ghe.com run, which a tenant token can't raise.
+	AnonymousLimited bool
 	// ImageUses are the places a container-image finding's image is used.
 	ImageUses []uses.Image
 }
@@ -108,11 +111,12 @@ func (f *Finding) MarkRetryable(cause error) {
 	f.Retryable = true
 	f.RetryReason, f.RateLimited = ghapi.Outage(cause)
 	f.RetryAt = ghapi.RetryAt(cause)
-	f.Remediation = "couldn't verify; " + RetryAdvice(f.RetryAt, f.RateLimited)
+	f.AnonymousLimited = ghapi.AnonymousFallbackLimited(cause)
+	f.Remediation = "couldn't verify; " + RetryAdvice(f.RetryAt, f.RateLimited, f.AnonymousLimited)
 }
 
 // RetryAdvice is the next step for a check an outage or rate limit stopped.
-func RetryAdvice(at time.Time, rateLimited bool) string {
+func RetryAdvice(at time.Time, rateLimited, anonymous bool) string {
 	advice := "re-run this check once the GitHub API is reachable"
 	switch {
 	case !at.IsZero():
@@ -120,7 +124,10 @@ func RetryAdvice(at time.Time, rateLimited bool) string {
 	case rateLimited:
 		advice = "re-run once the rate limit resets"
 	}
-	if rateLimited {
+	switch {
+	case anonymous:
+		advice += ", or " + ghapi.AnonymousFallbackHint
+	case rateLimited:
 		advice += ", or use a token with a higher rate limit"
 	}
 	return advice
