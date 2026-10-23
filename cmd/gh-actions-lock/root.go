@@ -105,6 +105,10 @@ For github.com and *.ghe.com, GH_TOKEN takes precedence over GITHUB_TOKEN
 and stored per-host credentials.
 --hostname selects the host; it does not override token variables.
 
+On *.ghe.com, actions from public github.com repositories are read with
+the github.com login from gh auth login --hostname github.com, or
+anonymously without one. Token variables are never sent to github.com.
+
 If an unintended token override causes authentication to fail, check
 stored tenant credentials without exposing tokens:
   env -u GH_TOKEN -u GITHUB_TOKEN gh auth status --hostname TENANT.ghe.com
