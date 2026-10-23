@@ -94,8 +94,17 @@ func TestStoredDotcomToken(t *testing.T) {
 	}
 }
 
-func withDotcomToken(token string) ClientOption {
-	return func(c *clientConfig) { c.dotcomToken = func() string { return token } }
+// withStoredLogin enables the stored-login lookup, which
+// WithClientTransport turns off, and points it at token.
+func withStoredLogin(t *testing.T, token string) ClientOption {
+	t.Helper()
+	hosts := ""
+	if token != "" {
+		hosts = "hosts:\n  github.com:\n    oauth_token: " + token + "\n"
+	}
+	stubGhConfig(t, hosts)
+	fakeGh(t, "")
+	return func(c *clientConfig) { c.noStoredLogin = false }
 }
 
 func TestPublicFallbackCredential(t *testing.T) {
@@ -117,7 +126,7 @@ func TestPublicFallbackCredential(t *testing.T) {
 			reg.Register(hostRequest("api.tenant.ghe.com", `repos/o/r$`), httpmock.StatusResponse(404))
 			reg.Register(hostRequest("api.github.com", `repos/o/r$`),
 				httpmock.JSONResponse(map[string]any{"visibility": "public", "id": 2, "owner": map[string]any{"id": 1}}))
-			c, err := New("tenant.ghe.com", WithClientTransport(reg), withDotcomToken(tt.stored), func(cfg *clientConfig) {
+			c, err := New("tenant.ghe.com", WithClientTransport(reg), withStoredLogin(t, tt.stored), func(cfg *clientConfig) {
 				cfg.authToken = "tenant-only-secret"
 			})
 			require.NoError(t, err)
@@ -144,10 +153,12 @@ func TestPublicFallbackCredential(t *testing.T) {
 func TestPublicFallbackTokenOnlyForTenants(t *testing.T) {
 	t.Setenv(DotcomTokenEnv, "ci-dotcom")
 	for _, host := range []string{"github.com", "github.example.com"} {
-		_, err := New(host, WithClientTransport(&httpmock.Registry{}), func(c *clientConfig) {
-			c.dotcomToken = func() string { t.Errorf("%s looked up a github.com credential", host); return "" }
-		})
+		stubGhConfig(t, "")
+		calls := fakeGh(t, "keyring-dotcom")
+		c, err := New(host, WithClientTransport(&httpmock.Registry{}), func(c *clientConfig) { c.noStoredLogin = false })
 		require.NoError(t, err)
+		assert.Nil(t, c.public, host)
+		assert.Empty(t, readCalls(t, calls), host)
 	}
 
 	reg := &httpmock.Registry{}
@@ -162,12 +173,12 @@ func TestPublicFallbackTokenOnlyForTenants(t *testing.T) {
 	}
 }
 
-func publicLimited(mode string) error {
-	h := http.Header{"X-Ratelimit-Remaining": {"0"}}
-	if mode != "" {
-		h.Set(publicAuthHeader, mode)
+func publicLimited(auth string) error {
+	err := &api.HTTPError{StatusCode: http.StatusForbidden, Headers: http.Header{"X-Ratelimit-Remaining": {"0"}}}
+	if auth == "" {
+		return err
 	}
-	return &api.HTTPError{StatusCode: http.StatusForbidden, Headers: h}
+	return &publicError{auth: auth, err: err}
 }
 
 func TestAnonymousFallbackLimited(t *testing.T) {
@@ -181,7 +192,7 @@ func TestAnonymousFallbackLimited(t *testing.T) {
 		{"anonymous fallback, wrapped", &UnknownOutcomeError{Cause: publicLimited(publicAnonymous)}, true, "github.com rate limit for anonymous public lookups exhausted"},
 		{"stored login", publicLimited(publicStored), false, "GitHub API rate limit exhausted"},
 		{"tenant or proxied", publicLimited(""), false, "GitHub API rate limit exhausted"},
-		{"anonymous but not limited", &api.HTTPError{StatusCode: 500, Headers: http.Header{publicAuthHeader: {publicAnonymous}}}, false, "GitHub API returned 500 Internal Server Error"},
+		{"anonymous but not limited", &publicError{auth: publicAnonymous, err: &api.HTTPError{StatusCode: 500}}, false, "GitHub API returned 500 Internal Server Error"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, AnonymousFallbackLimited(tt.err))
@@ -208,7 +219,7 @@ func TestPublicFallbackCredentialRejected(t *testing.T) {
 		{publicEnv, "GitHub rejected the github.com token in GH_ACTIONS_LOCK_GITHUB_COM_TOKEN (401); check it, or unset it"},
 	} {
 		t.Run(tt.mode, func(t *testing.T) {
-			err := &api.HTTPError{StatusCode: http.StatusUnauthorized, RequestURL: u.URL, Headers: http.Header{publicAuthHeader: {tt.mode}}}
+			err := &publicError{auth: tt.mode, err: &api.HTTPError{StatusCode: http.StatusUnauthorized, RequestURL: u.URL}}
 			got := ConfigError(err)
 			require.Error(t, got)
 			assert.Equal(t, tt.want, got.Error())

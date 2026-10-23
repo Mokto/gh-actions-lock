@@ -171,7 +171,7 @@ func configError(err error) error {
 	if httpErr.RequestURL != nil {
 		host = strings.TrimPrefix(httpErr.RequestURL.Hostname(), "api.")
 	}
-	switch publicAuth(err) {
+	switch publicAuthOf(err) {
 	case publicEnv:
 		return &BriefError{Msg: "GitHub rejected the github.com token in " + DotcomTokenEnv + " (401); check it, or unset it", Err: err}
 	case publicStored:

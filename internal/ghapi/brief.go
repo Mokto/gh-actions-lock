@@ -55,7 +55,7 @@ func Outage(err error) (reason string, limited bool) {
 	}
 	err = cause(err)
 	if rateLimited(err) {
-		if publicAuth(err) == publicAnonymous {
+		if publicAuthOf(err) == publicAnonymous {
 			return "github.com rate limit for anonymous public lookups exhausted", true
 		}
 		return "GitHub API rate limit exhausted", true

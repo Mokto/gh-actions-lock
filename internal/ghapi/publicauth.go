@@ -1,6 +1,7 @@
 package ghapi
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
@@ -8,11 +9,6 @@ import (
 
 	"github.com/cli/go-gh/v2/pkg/config"
 )
-
-// publicAuthHeader marks responses to the github.com public fallback of a
-// *.ghe.com run with how the request was authenticated, so an error can say
-// whether it hit the anonymous per-IP rate limit. It never leaves the process.
-const publicAuthHeader = "X-Gh-Actions-Lock-Public-Auth"
 
 const (
 	publicAnonymous = "anonymous"
@@ -26,13 +22,18 @@ const (
 const DotcomTokenEnv = "GH_ACTIONS_LOCK_GITHUB_COM_TOKEN"
 
 // publicCredential picks the public fallback credential: DotcomTokenEnv,
-// then the stored github.com login, else anonymous.
-func publicCredential(stored func() string) (token, mode string) {
+// then the stored github.com login, else none. Under the Dependabot proxy
+// it is always none, with auth "": the proxy authenticates the request, and
+// its container has no gh login to read.
+func publicCredential(skipStored bool) (token, auth string) {
+	if DependabotProxy() {
+		return "", ""
+	}
 	if token := os.Getenv(DotcomTokenEnv); token != "" {
 		return token, publicEnv
 	}
-	if stored != nil {
-		if token := stored(); token != "" {
+	if !skipStored {
+		if token := storedDotcomToken(); token != "" {
 			return token, publicStored
 		}
 	}
@@ -66,42 +67,47 @@ func storedDotcomToken() string {
 }
 
 // publicTransport sends github.com public fallback requests with token, or
-// with no credentials when token is empty, and marks each response with
-// publicAuthHeader. Under the Dependabot proxy, which supplies its own
-// credential, responses are left unmarked so its messages don't change.
+// with no credentials when token is empty.
 type publicTransport struct {
-	inner   http.RoundTripper
-	token   string
-	mode    string
-	proxied bool
+	inner http.RoundTripper
+	token string
 }
 
 func (t publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	req.Header.Del("Cookie")
-	mode := t.mode
 	if t.token != "" {
 		req.Header.Set("Authorization", "token "+t.token)
 	} else {
-		mode = publicAnonymous
 		req.Header.Del("Authorization")
 	}
-	resp, err := t.inner.RoundTrip(req)
-	if resp != nil && !t.proxied {
-		if resp.Header == nil {
-			resp.Header = http.Header{}
-		}
-		resp.Header.Set(publicAuthHeader, mode)
-	}
-	return resp, err
+	return t.inner.RoundTrip(req)
 }
 
-func publicAuth(err error) string {
-	h, ok := errHeaders(err)
-	if !ok {
-		return ""
+// publicError is an error from a public fallback lookup, with how the
+// lookup was authenticated.
+type publicError struct {
+	auth string
+	err  error
+}
+
+func (e *publicError) Error() string { return e.err.Error() }
+func (e *publicError) Unwrap() error { return e.err }
+
+// publicErr records on err how c's public fallback lookups authenticate.
+func (c *Client) publicErr(err error) error {
+	if c.publicAuth == "" {
+		return err
 	}
-	return h.Get(publicAuthHeader)
+	return &publicError{auth: c.publicAuth, err: err}
+}
+
+func publicAuthOf(err error) string {
+	var pe *publicError
+	if errors.As(err, &pe) {
+		return pe.auth
+	}
+	return ""
 }
 
 // AnonymousFallbackLimited reports whether err's cause is a rate limit on
@@ -112,7 +118,7 @@ func AnonymousFallbackLimited(err error) bool {
 		return false
 	}
 	c := cause(err)
-	return rateLimited(c) && publicAuth(c) == publicAnonymous
+	return rateLimited(c) && publicAuthOf(c) == publicAnonymous
 }
 
 // AnonymousFallbackHint tells the user how to authenticate the github.com

@@ -31,6 +31,10 @@ type Client struct {
 	routeSF  singleflight.Group
 	pinned   map[Repo]string
 
+	// publicAuth is how the github.com public fallback client of a
+	// *.ghe.com run authenticates (see publicCredential); "" otherwise.
+	publicAuth string
+
 	// anonBaseURL overrides the base URL for anonymous REST fallback calls.
 	// Empty uses the default "https://api.<Hostname>". Set in tests.
 	anonBaseURL string
@@ -71,13 +75,8 @@ type clientConfig struct {
 	logIgnore bool   // suppress log env vars (tests)
 	public    bool
 	budget    *retryBudget
-	// dotcomToken returns the github.com credential for the public
-	// fallback of a *.ghe.com run; nil skips the lookup.
-	dotcomToken func() string
-	// publicToken is the public fallback credential, or "" for anonymous;
-	// publicMode says where it came from.
-	publicToken string
-	publicMode  string
+	// noStoredLogin skips the stored github.com login lookup (tests).
+	noStoredLogin bool
 }
 
 // WithClientTransport overrides the HTTP transport. Use in tests with httpmock.
@@ -86,7 +85,7 @@ func WithClientTransport(t http.RoundTripper) ClientOption {
 		c.transport = t
 		c.authToken = "test-placeholder-token"
 		c.logIgnore = true
-		c.dotcomToken = nil
+		c.noStoredLogin = true
 	}
 }
 
@@ -105,24 +104,13 @@ func New(hostname string, opts ...ClientOption) (*Client, error) {
 	}
 	// One retry budget per run: the public fallback client shares it.
 	budget := newRetryBudget()
-	opts = append([]ClientOption{func(c *clientConfig) { c.dotcomToken = storedDotcomToken }}, opts...)
-	opts = append(opts, func(c *clientConfig) { c.budget = budget })
+	opts = append(opts[:len(opts):len(opts)], func(c *clientConfig) { c.budget = budget })
 	local, err := newClient(hostname, opts...)
 	if err != nil || !IsProxima(hostname) {
 		return local, err
 	}
-	var cfg clientConfig
-	for _, o := range opts {
-		o(&cfg)
-	}
-	// The Dependabot proxy authenticates every request itself, and its
-	// container has no gh login to read.
-	token, mode := "", publicAnonymous
-	if !DependabotProxy() {
-		token, mode = publicCredential(cfg.dotcomToken)
-	}
 	publicOpts := append([]ClientOption(nil), opts...)
-	publicOpts = append(publicOpts, func(c *clientConfig) { c.public, c.publicToken, c.publicMode = true, token, mode })
+	publicOpts = append(publicOpts, func(c *clientConfig) { c.public = true })
 	public, err := newClient("github.com", publicOpts...)
 	if err != nil {
 		return nil, err
@@ -168,11 +156,13 @@ func newClient(hostname string, opts ...ClientOption) (*Client, error) {
 	}
 	if cfg.public {
 		// The public fallback never inherits the tenant's credential.
+		token, auth := publicCredential(cfg.noStoredLogin)
+		c.publicAuth = auth
 		apiOpts.AuthToken = "anonymous"
-		if cfg.publicToken != "" {
-			apiOpts.AuthToken = cfg.publicToken
+		if token != "" {
+			apiOpts.AuthToken = token
 		}
-		apiOpts.Transport = publicTransport{inner: apiOpts.Transport, token: cfg.publicToken, mode: cfg.publicMode, proxied: DependabotProxy()}
+		apiOpts.Transport = publicTransport{inner: apiOpts.Transport, token: token}
 		c.restOnly = true
 	}
 
