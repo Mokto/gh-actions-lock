@@ -226,3 +226,24 @@ func TestPublicFallbackCredentialRejected(t *testing.T) {
 		})
 	}
 }
+
+func TestPublicTransportKeepsTokenOnAPIHost(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+	reg.Register(hostRequest("api.github.com", `repos/o/r/tarball$`), func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {"https://codeload.github.com/o/r/tar"}}, Body: http.NoBody, Request: req}, nil
+	})
+	reg.Register(hostRequest("codeload.github.com", `o/r/tar$`), httpmock.StatusResponse(http.StatusOK))
+	reg.Register(hostRequest("api.github.com", `repos/o/r$`), httpmock.StatusResponse(http.StatusOK))
+	client := &http.Client{Transport: publicTransport{inner: reg, token: "dotcom-secret"}}
+
+	for _, u := range []string{"https://api.github.com/repos/o/r/tarball", "https://api.github.com/repos/o/r"} {
+		resp, err := client.Get(u)
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+	require.Len(t, reg.Requests, 3)
+	assert.Equal(t, "token dotcom-secret", reg.Requests[0].Header.Get("Authorization"))
+	assert.Empty(t, reg.Requests[1].Header.Get("Authorization"), "redirect to another host")
+	assert.Equal(t, "token dotcom-secret", reg.Requests[2].Header.Get("Authorization"))
+}

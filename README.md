@@ -48,7 +48,7 @@ In GitHub Actions on GHE.com, the job's `GITHUB_TOKEN` is issued by your tenant,
 - run: gh actions-lock --verify
   env:
     GH_TOKEN: ${{ github.token }}
-    GH_ACTIONS_LOCK_GITHUB_COM_TOKEN: ${{ secrets.GITHUB_COM_PUBLIC_TOKEN }}
+    GH_ACTIONS_LOCK_GITHUB_COM_TOKEN: ${{ secrets.ACTIONS_LOCK_GITHUB_COM_TOKEN }}
 ```
 
 ## Modes

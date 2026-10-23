@@ -67,7 +67,8 @@ func storedDotcomToken() string {
 }
 
 // publicTransport sends github.com public fallback requests with token, or
-// with no credentials when token is empty.
+// with no credentials when token is empty. The token goes only to
+// https://api.github.com, so a redirect elsewhere can't carry it.
 type publicTransport struct {
 	inner http.RoundTripper
 	token string
@@ -76,7 +77,7 @@ type publicTransport struct {
 func (t publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	req.Header.Del("Cookie")
-	if t.token != "" {
+	if t.token != "" && req.URL.Scheme == "https" && strings.EqualFold(req.URL.Host, "api.github.com") {
 		req.Header.Set("Authorization", "token "+t.token)
 	} else {
 		req.Header.Del("Authorization")
