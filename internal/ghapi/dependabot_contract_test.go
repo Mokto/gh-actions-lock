@@ -36,9 +36,10 @@ func fallbackRegistry() *httpmock.Registry {
 }
 
 func TestDependabotContract(t *testing.T) {
-	t.Run("proxy mode never looks up a github.com credential", func(t *testing.T) {
+	t.Run("proxy mode never uses a github.com credential", func(t *testing.T) {
 		t.Setenv("GH_TOKEN", "x-access-token")
 		t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "1")
+		t.Setenv(DotcomTokenEnv, "ci-dotcom")
 		stubGhConfig(t, "hosts:\n  github.com:\n    oauth_token: stored-dotcom\n")
 		calls := fakeGh(t, "stored-dotcom")
 		reg := fallbackRegistry()
@@ -79,6 +80,7 @@ func TestDependabotContract(t *testing.T) {
 	t.Run("proxyless home-host token never reaches github.com", func(t *testing.T) {
 		t.Setenv("GH_TOKEN", "home-host-token")
 		t.Setenv("GH_ACTIONS_LOCK_DEPENDABOT_PROXY", "")
+		t.Setenv(DotcomTokenEnv, "")
 		stubGhConfig(t, "")
 		fakeGh(t, "")
 		reg := fallbackRegistry()

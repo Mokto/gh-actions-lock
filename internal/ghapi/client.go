@@ -74,9 +74,10 @@ type clientConfig struct {
 	// dotcomToken returns the github.com credential for the public
 	// fallback of a *.ghe.com run; nil skips the lookup.
 	dotcomToken func() string
-	// publicToken is the credential dotcomToken returned, or "" for
-	// anonymous public fallback.
+	// publicToken is the public fallback credential, or "" for anonymous;
+	// publicMode says where it came from.
 	publicToken string
+	publicMode  string
 }
 
 // WithClientTransport overrides the HTTP transport. Use in tests with httpmock.
@@ -116,12 +117,12 @@ func New(hostname string, opts ...ClientOption) (*Client, error) {
 	}
 	// The Dependabot proxy authenticates every request itself, and its
 	// container has no gh login to read.
-	token := ""
-	if cfg.dotcomToken != nil && !DependabotProxy() {
-		token = cfg.dotcomToken()
+	token, mode := "", publicAnonymous
+	if !DependabotProxy() {
+		token, mode = publicCredential(cfg.dotcomToken)
 	}
 	publicOpts := append([]ClientOption(nil), opts...)
-	publicOpts = append(publicOpts, func(c *clientConfig) { c.public, c.publicToken = true, token })
+	publicOpts = append(publicOpts, func(c *clientConfig) { c.public, c.publicToken, c.publicMode = true, token, mode })
 	public, err := newClient("github.com", publicOpts...)
 	if err != nil {
 		return nil, err
@@ -171,7 +172,7 @@ func newClient(hostname string, opts ...ClientOption) (*Client, error) {
 		if cfg.publicToken != "" {
 			apiOpts.AuthToken = cfg.publicToken
 		}
-		apiOpts.Transport = publicTransport{inner: apiOpts.Transport, token: cfg.publicToken, proxied: DependabotProxy()}
+		apiOpts.Transport = publicTransport{inner: apiOpts.Transport, token: cfg.publicToken, mode: cfg.publicMode, proxied: DependabotProxy()}
 		c.restOnly = true
 	}
 

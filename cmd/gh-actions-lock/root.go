@@ -106,8 +106,9 @@ and stored per-host credentials.
 --hostname selects the host; it does not override token variables.
 
 On *.ghe.com, actions from public github.com repositories are read with
-the github.com login from gh auth login --hostname github.com, or
-anonymously without one. Token variables are never sent to github.com.
+GH_ACTIONS_LOCK_GITHUB_COM_TOKEN, else the login from
+gh auth login --hostname github.com, else anonymously (60 requests/hour
+per IP). GH_TOKEN and GITHUB_TOKEN are never sent to github.com.
 
 If an unintended token override causes authentication to fail, check
 stored tenant credentials without exposing tokens:
@@ -143,6 +144,12 @@ GH_ACTIONS_LOCK_REPO_ROOT names the repository root instead of
 searching parent directories for .git. Set it when relocking a
 partial checkout without .git. $/ actions resolve against it, and
 the directory must exist and contain the workflows.
+
+GH_ACTIONS_LOCK_GITHUB_COM_TOKEN is a github.com token for reading
+public github.com actions on *.ghe.com, for CI where there is no gh
+login. A GHE.com job's GITHUB_TOKEN is issued by the tenant and doesn't
+work on github.com. Use a fine-grained token with no permissions. It is
+never sent to the tenant, or used when github.com is the selected host.
 
 RUN LOGS
 

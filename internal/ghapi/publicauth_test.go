@@ -101,13 +101,17 @@ func withDotcomToken(token string) ClientOption {
 func TestPublicFallbackCredential(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
+		env      string
 		stored   string
 		wantAuth string
 	}{
 		{name: "stored github.com login authenticates fallback", stored: "dotcom-secret", wantAuth: "token dotcom-secret"},
-		{name: "no stored login stays anonymous"},
+		{name: "token variable authenticates fallback", env: "ci-dotcom", wantAuth: "token ci-dotcom"},
+		{name: "token variable takes precedence over stored login", env: "ci-dotcom", stored: "dotcom-secret", wantAuth: "token ci-dotcom"},
+		{name: "no credential stays anonymous"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(DotcomTokenEnv, tt.env)
 			reg := &httpmock.Registry{}
 			defer reg.Verify(t)
 			reg.Register(hostRequest("api.tenant.ghe.com", `repos/o/r$`), httpmock.StatusResponse(404))
@@ -128,6 +132,9 @@ func TestPublicFallbackCredential(t *testing.T) {
 					assert.Empty(t, req.Header.Get("Cookie"))
 				} else {
 					assert.Contains(t, auth, "tenant-only-secret")
+					if tt.env != "" {
+						assert.NotContains(t, auth, tt.env)
+					}
 				}
 			}
 		})
@@ -135,11 +142,23 @@ func TestPublicFallbackCredential(t *testing.T) {
 }
 
 func TestPublicFallbackTokenOnlyForTenants(t *testing.T) {
+	t.Setenv(DotcomTokenEnv, "ci-dotcom")
 	for _, host := range []string{"github.com", "github.example.com"} {
 		_, err := New(host, WithClientTransport(&httpmock.Registry{}), func(c *clientConfig) {
 			c.dotcomToken = func() string { t.Errorf("%s looked up a github.com credential", host); return "" }
 		})
 		require.NoError(t, err)
+	}
+
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+	reg.Register(hostRequest("api.github.com", `repos/o/r$`), httpmock.JSONResponse(map[string]any{"id": 2, "owner": map[string]any{"id": 1}}))
+	c, err := New("github.com", WithClientTransport(reg))
+	require.NoError(t, err)
+	_, _, err = c.RepoIDs(context.Background(), "o", "r")
+	require.NoError(t, err)
+	for _, req := range reg.Requests {
+		assert.NotContains(t, req.Header.Get("Authorization"), "ci-dotcom", "github.com home host")
 	}
 }
 
@@ -171,6 +190,7 @@ func TestAnonymousFallbackLimited(t *testing.T) {
 			assert.Equal(t, tt.want || strings.Contains(reason, "rate limit"), limited)
 			if tt.want {
 				assert.Contains(t, Brief(tt.err), "gh auth login --hostname github.com")
+				assert.Contains(t, Brief(tt.err), DotcomTokenEnv)
 			} else {
 				assert.NotContains(t, Brief(tt.err), "gh auth login")
 			}
@@ -178,11 +198,20 @@ func TestAnonymousFallbackLimited(t *testing.T) {
 	}
 }
 
-func TestStoredDotcomCredentialRejected(t *testing.T) {
+func TestPublicFallbackCredentialRejected(t *testing.T) {
 	t.Setenv("GH_TOKEN", "tenant-token")
 	u, _ := http.NewRequest(http.MethodGet, "https://api.github.com/repos/o/r", nil)
-	err := &api.HTTPError{StatusCode: http.StatusUnauthorized, RequestURL: u.URL, Headers: http.Header{publicAuthHeader: {publicStored}}}
-	got := ConfigError(err)
-	require.Error(t, got)
-	assert.Equal(t, "GitHub rejected the stored github.com credential used for public lookups (401); run `gh auth login --hostname github.com`", got.Error())
+	for _, tt := range []struct {
+		mode, want string
+	}{
+		{publicStored, "GitHub rejected the stored github.com credential used for public lookups (401); run `gh auth login --hostname github.com`"},
+		{publicEnv, "GitHub rejected the github.com token in GH_ACTIONS_LOCK_GITHUB_COM_TOKEN (401); check it, or unset it"},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			err := &api.HTTPError{StatusCode: http.StatusUnauthorized, RequestURL: u.URL, Headers: http.Header{publicAuthHeader: {tt.mode}}}
+			got := ConfigError(err)
+			require.Error(t, got)
+			assert.Equal(t, tt.want, got.Error())
+		})
+	}
 }

@@ -836,7 +836,8 @@ func TestPresentReadOnlyFailures_GroupsRetryable(t *testing.T) {
 			}(),
 			want: []string{
 				"Couldn't verify 1 pin: github.com rate limit for anonymous public lookups exhausted until 14:05 UTC (in 38m)\n",
-				"  ↳ re-run after 14:05 UTC, or run `gh auth login --hostname github.com`",
+				"  ↳ re-run after 14:05 UTC, or authenticate public github.com lookups",
+				"run `gh auth login --hostname github.com`; in CI, set GH_ACTIONS_LOCK_GITHUB_COM_TOKEN",
 			},
 			unwanted: []string{"higher rate limit"},
 		},

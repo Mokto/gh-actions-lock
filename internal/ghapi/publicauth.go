@@ -17,7 +17,27 @@ const publicAuthHeader = "X-Gh-Actions-Lock-Public-Auth"
 const (
 	publicAnonymous = "anonymous"
 	publicStored    = "stored"
+	publicEnv       = "env"
 )
+
+// DotcomTokenEnv holds a github.com token for the public fallback of a
+// *.ghe.com run, for CI where there is no gh login. A GHE.com job's own
+// token is issued by the tenant, so github.com doesn't accept it.
+const DotcomTokenEnv = "GH_ACTIONS_LOCK_GITHUB_COM_TOKEN"
+
+// publicCredential picks the public fallback credential: DotcomTokenEnv,
+// then the stored github.com login, else anonymous.
+func publicCredential(stored func() string) (token, mode string) {
+	if token := os.Getenv(DotcomTokenEnv); token != "" {
+		return token, publicEnv
+	}
+	if stored != nil {
+		if token := stored(); token != "" {
+			return token, publicStored
+		}
+	}
+	return "", publicAnonymous
+}
 
 // storedDotcomToken returns the credential `gh auth login --hostname
 // github.com` stored, or "". It is go-gh's auth.TokenForHost("github.com")
@@ -52,17 +72,18 @@ func storedDotcomToken() string {
 type publicTransport struct {
 	inner   http.RoundTripper
 	token   string
+	mode    string
 	proxied bool
 }
 
 func (t publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	req.Header.Del("Cookie")
-	mode := publicAnonymous
+	mode := t.mode
 	if t.token != "" {
-		mode = publicStored
 		req.Header.Set("Authorization", "token "+t.token)
 	} else {
+		mode = publicAnonymous
 		req.Header.Del("Authorization")
 	}
 	resp, err := t.inner.RoundTrip(req)
@@ -96,4 +117,5 @@ func AnonymousFallbackLimited(err error) bool {
 
 // AnonymousFallbackHint tells the user how to authenticate the github.com
 // public fallback.
-const AnonymousFallbackHint = "run `gh auth login --hostname github.com`: public github.com lookups from a *.ghe.com run are otherwise anonymous and share a 60 requests/hour per-IP limit"
+const AnonymousFallbackHint = "authenticate public github.com lookups, which are otherwise anonymous and limited to 60 requests/hour per IP: " +
+	"locally, run `gh auth login --hostname github.com`; in CI, set " + DotcomTokenEnv + " to a github.com token with no permissions"
