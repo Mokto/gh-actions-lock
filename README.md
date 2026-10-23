@@ -36,6 +36,21 @@ Make sure you don't check in a corrupt lockfile. Copy [`.github/workflows/verify
 
 Run `gh auth login --hostname TENANT.ghe.com`, then run `gh actions-lock` from the tenant repository checkout. The host comes from the repository remote; you don't need `--hostname` or an exported token.
 
+Actions that aren't on the tenant, such as `actions/checkout`, are read from public github.com repositories. Those lookups never use the tenant token, `GH_TOKEN` or `GITHUB_TOKEN`. They use, in order:
+
+1. `GH_ACTIONS_LOCK_GITHUB_COM_TOKEN`, a github.com token used only for these lookups.
+2. Your `gh auth login --hostname github.com` login.
+3. Otherwise they're anonymous and share GitHub's limit of 60 requests an hour per IP address, which a shared proxy or runner pool can exhaust quickly.
+
+In GitHub Actions on GHE.com, the job's `GITHUB_TOKEN` is issued by your tenant, so github.com doesn't accept it. Create a [fine-grained personal access token](https://docs.github.com/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token) on github.com with public repository access only and no permissions, save it as a secret on the tenant, and pass it in:
+
+```yaml
+- run: gh actions-lock --verify
+  env:
+    GH_TOKEN: ${{ github.token }}
+    GH_ACTIONS_LOCK_GITHUB_COM_TOKEN: ${{ secrets.ACTIONS_LOCK_GITHUB_COM_TOKEN }}
+```
+
 ## Modes
 
 | Command | Writes | Network | Use for |

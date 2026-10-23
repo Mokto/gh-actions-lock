@@ -183,7 +183,7 @@ func (c *Client) anonGet(ctx context.Context, path string, dest any) error {
 			anonRateLimited.Store(c.anonBase()+"/"+parts[1], struct{}{})
 			return &SSORateLimitedError{Host: c.Hostname, Owner: parts[1], Err: herr}
 		}
-		return herr
+		return c.publicErr(herr)
 	}
 	return json.NewDecoder(resp.Body).Decode(dest)
 }
@@ -409,7 +409,7 @@ func (c *Client) anonGetCommitSHA(ctx context.Context, url string) (string, erro
 		return "", &RefNotFoundError{Err: fmt.Errorf("HTTP %d resolving commit", resp.StatusCode)}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("resolving commit: %w", &api.HTTPError{StatusCode: resp.StatusCode, RequestURL: req.URL, Headers: resp.Header})
+		return "", fmt.Errorf("resolving commit: %w", c.publicErr(&api.HTTPError{StatusCode: resp.StatusCode, RequestURL: req.URL, Headers: resp.Header}))
 	}
 
 	var commit struct {
@@ -449,7 +449,7 @@ func (c *Client) anonGetFileContent(ctx context.Context, base, owner, repo, ref,
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", &api.HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("fetching %s", path), Headers: resp.Header}
+		return "", c.publicErr(&api.HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("fetching %s", path), Headers: resp.Header})
 	}
 
 	body, err := io.ReadAll(resp.Body)

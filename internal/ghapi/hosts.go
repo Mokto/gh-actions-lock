@@ -62,8 +62,6 @@ func (c *Client) ForRepo(ctx context.Context, owner, repo string) (*Client, erro
 			selected = c.public
 		}
 		if selected == c.public {
-			// ponytail: anonymous dotcom rate limit; use host-bound credentials
-			// if public fallback volume exceeds that limit.
 			meta, err := c.public.repoMetadata(ctx, owner, repo)
 			if err != nil {
 				return nil, err

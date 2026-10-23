@@ -281,7 +281,7 @@ func TestProximaPrunesBeforeVerifyingHosts(t *testing.T) {
 			}
 			require.NoError(t, os.WriteFile(path, []byte(before), 0o600))
 			staleCalls := 0
-			transport := proximaTransport(func(req *http.Request) (*http.Response, error) {
+			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				assert.Equal(t, "api.tenant.ghe.com", req.URL.Host)
 				switch req.URL.Path {
 				case "/repos/actions/checkout":
