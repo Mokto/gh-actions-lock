@@ -69,8 +69,14 @@ type clientConfig struct {
 	profile   *profile.Session
 	authToken string // non-empty → use explicit token (tests)
 	logIgnore bool   // suppress log env vars (tests)
-	anonymous bool
+	public    bool
 	budget    *retryBudget
+	// dotcomToken returns the github.com credential for the public
+	// fallback of a *.ghe.com run; nil skips the lookup.
+	dotcomToken func() string
+	// publicToken is the credential dotcomToken returned, or "" for
+	// anonymous public fallback.
+	publicToken string
 }
 
 // WithClientTransport overrides the HTTP transport. Use in tests with httpmock.
@@ -79,6 +85,7 @@ func WithClientTransport(t http.RoundTripper) ClientOption {
 		c.transport = t
 		c.authToken = "test-placeholder-token"
 		c.logIgnore = true
+		c.dotcomToken = nil
 	}
 }
 
@@ -97,15 +104,24 @@ func New(hostname string, opts ...ClientOption) (*Client, error) {
 	}
 	// One retry budget per run: the public fallback client shares it.
 	budget := newRetryBudget()
-	opts = append(opts[:len(opts):len(opts)], func(c *clientConfig) { c.budget = budget })
+	opts = append([]ClientOption{func(c *clientConfig) { c.dotcomToken = storedDotcomToken }}, opts...)
+	opts = append(opts, func(c *clientConfig) { c.budget = budget })
 	local, err := newClient(hostname, opts...)
 	if err != nil || !IsProxima(hostname) {
 		return local, err
 	}
-	// GH_TOKEN applies to both dotcom and Proxima in go-gh. Public fallback
-	// must never reuse it across those trust domains.
+	var cfg clientConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	// The Dependabot proxy authenticates every request itself, and its
+	// container has no gh login to read.
+	token := ""
+	if cfg.dotcomToken != nil && !DependabotProxy() {
+		token = cfg.dotcomToken()
+	}
 	publicOpts := append([]ClientOption(nil), opts...)
-	publicOpts = append(publicOpts, func(c *clientConfig) { c.anonymous = true })
+	publicOpts = append(publicOpts, func(c *clientConfig) { c.public, c.publicToken = true, token })
 	public, err := newClient("github.com", publicOpts...)
 	if err != nil {
 		return nil, err
@@ -149,9 +165,13 @@ func newClient(hostname string, opts ...ClientOption) (*Client, error) {
 		}
 		apiOpts.Transport = t
 	}
-	if cfg.anonymous {
+	if cfg.public {
+		// The public fallback never inherits the tenant's credential.
 		apiOpts.AuthToken = "anonymous"
-		apiOpts.Transport = anonymousTransport{inner: apiOpts.Transport}
+		if cfg.publicToken != "" {
+			apiOpts.AuthToken = cfg.publicToken
+		}
+		apiOpts.Transport = publicTransport{inner: apiOpts.Transport, token: cfg.publicToken, proxied: DependabotProxy()}
 		c.restOnly = true
 	}
 
@@ -173,20 +193,11 @@ func newClient(hostname string, opts ...ClientOption) (*Client, error) {
 	if c.anonHTTP == nil {
 		c.anonHTTP = http.DefaultClient
 	}
-	if cfg.anonymous {
+	if cfg.public {
 		c.anonHTTP = &http.Client{Transport: apiOpts.Transport}
 	}
 
 	return c, nil
-}
-
-type anonymousTransport struct{ inner http.RoundTripper }
-
-func (t anonymousTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req = req.Clone(req.Context())
-	req.Header.Del("Authorization")
-	req.Header.Del("Cookie")
-	return t.inner.RoundTrip(req)
 }
 
 // DefaultSleep waits d but returns early when ctx is canceled. Useful for

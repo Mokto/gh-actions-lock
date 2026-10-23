@@ -171,6 +171,9 @@ func configError(err error) error {
 	if httpErr.RequestURL != nil {
 		host = strings.TrimPrefix(httpErr.RequestURL.Hostname(), "api.")
 	}
+	if publicAuth(err) == publicStored {
+		return &BriefError{Msg: "GitHub rejected the stored github.com credential used for public lookups (401); run `gh auth login --hostname github.com`", Err: err}
+	}
 	// A token variable takes precedence over `gh auth login`, so logging in
 	// again wouldn't replace it.
 	if src := tokenSource(host); strings.HasSuffix(src, "_TOKEN") {

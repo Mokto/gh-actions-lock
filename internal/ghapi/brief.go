@@ -18,6 +18,9 @@ func Brief(err error) string {
 	if errors.As(err, &ssoErr) {
 		return ssoErr.Error()
 	}
+	if AnonymousFallbackLimited(err) {
+		return "github.com rate limit for anonymous public lookups exhausted; " + AnonymousFallbackHint
+	}
 	if code, ok := StatusCode(err); ok {
 		msg := fmt.Sprintf("GitHub returned %d %s", code, http.StatusText(code))
 		var httpErr *api.HTTPError
@@ -52,6 +55,9 @@ func Outage(err error) (reason string, limited bool) {
 	}
 	err = cause(err)
 	if rateLimited(err) {
+		if publicAuth(err) == publicAnonymous {
+			return "github.com rate limit for anonymous public lookups exhausted", true
+		}
 		return "GitHub API rate limit exhausted", true
 	}
 	if code, ok := StatusCode(err); ok {
