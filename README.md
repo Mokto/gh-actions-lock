@@ -1,8 +1,5 @@
 # gh-actions-lock
 
-> [!WARNING]
-> **Public preview.** gh-actions-lock is pre-1.0. The lockfile format, flags, and behavior may change between releases.
-
 A [GitHub CLI](https://cli.github.com/) extension that pins every direct and transitive action your workflows use to a verified commit, recorded in `.github/workflows/actions.lock`.
 
 ## Install
