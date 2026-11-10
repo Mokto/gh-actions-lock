@@ -44,6 +44,54 @@ func TestPublicCachePersistsPartialProgress(t *testing.T) {
 	assert.Equal(t, 2, calls["/repos/ocean/second"])
 }
 
+func TestPublicCacheMissingRefs(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		ttl       time.Duration
+		age       time.Duration
+		wantCode  int
+		wantCalls int
+	}{
+		{name: "cached across runs", ttl: 30 * 24 * time.Hour, age: 30 * time.Minute, wantCode: http.StatusNotFound, wantCalls: 1},
+		{name: "new tag found after one hour", ttl: 30 * 24 * time.Hour, age: 2 * time.Hour, wantCode: http.StatusOK, wantCalls: 2},
+		{name: "shorter configured TTL", ttl: 15 * time.Minute, age: 30 * time.Minute, wantCode: http.StatusOK, wantCalls: 2},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			dir := t.TempDir()
+			calls := 0
+			inner := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				code := http.StatusNotFound
+				if calls > 1 {
+					code = http.StatusOK
+				}
+				return &http.Response{StatusCode: code, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(http.StatusText(code)))}, nil
+			})
+			req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/wikibusiness/kubernetes-name-sanitize/git/ref/tags/main", nil)
+			require.NoError(t, err)
+			cache := publicCacheTransport{inner: inner, dir: dir, ttl: scenario.ttl}
+			resp, err := cache.RoundTrip(req)
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+			require.NoError(t, resp.Body.Close())
+			files, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			require.Len(t, files, 1)
+			old := time.Now().Add(-scenario.age)
+			require.NoError(t, os.Chtimes(filepath.Join(dir, files[0].Name()), old, old))
+			cache = publicCacheTransport{inner: inner, dir: dir, ttl: scenario.ttl}
+			resp, err = cache.RoundTrip(req)
+			require.NoError(t, err)
+			assert.Equal(t, scenario.wantCode, resp.StatusCode)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			assert.Equal(t, http.StatusText(scenario.wantCode), string(body))
+			assert.Equal(t, scenario.wantCalls, calls)
+		})
+	}
+}
+
 func TestPublicCacheRefreshesInvalidEntries(t *testing.T) {
 	for _, scenario := range []string{"expired", "future", "corrupt"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -160,7 +208,7 @@ func TestPublicCacheEarlyRefresh(t *testing.T) {
 				after, err := os.Stat(path)
 				require.NoError(t, err)
 				assert.Equal(t, before.ModTime(), after.ModTime())
-			} else if scenario.code == http.StatusOK {
+			} else if scenario.code == http.StatusOK || scenario.code == http.StatusNotFound {
 				after, err := os.Stat(path)
 				require.NoError(t, err)
 				assert.True(t, after.ModTime().After(before.ModTime()))
@@ -171,6 +219,7 @@ func TestPublicCacheEarlyRefresh(t *testing.T) {
 				require.NoError(t, err)
 				require.NoError(t, resp.Body.Close())
 				assert.Equal(t, "updated", string(body))
+				assert.Equal(t, scenario.code, resp.StatusCode)
 				assert.Equal(t, scenario.wantCalls, calls)
 			} else {
 				assert.Equal(t, scenario.code, resp.StatusCode)
@@ -220,7 +269,7 @@ func TestPublicCacheSkipsOtherRequests(t *testing.T) {
 }
 
 func TestPublicCacheDoesNotStoreErrors(t *testing.T) {
-	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests, http.StatusInternalServerError} {
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError} {
 		t.Run(http.StatusText(code), func(t *testing.T) {
 			dir := t.TempDir()
 			cache := publicCacheTransport{dir: dir, ttl: time.Hour, inner: roundTripFunc(func(*http.Request) (*http.Response, error) {

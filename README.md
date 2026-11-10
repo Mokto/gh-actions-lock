@@ -50,9 +50,9 @@ In GitHub Actions on GHE.com, the job's `GITHUB_TOKEN` is issued by your tenant,
 
 ### Persisting anonymous public lookups
 
-Set `GH_ACTIONS_LOCK_CACHE_DIR` to cache successful anonymous github.com API responses across runs on a `*.ghe.com` tenant. Entries are keyed by API URL and representation, so changing one dependency reuses the other dependencies' cached resources. Successful responses are saved immediately, even if other lookups hit the rate limit and the command fails. Errors, authenticated requests, and tenant responses are never cached.
+Set `GH_ACTIONS_LOCK_CACHE_DIR` to cache successful anonymous github.com API responses across runs on a `*.ghe.com` tenant. Entries are keyed by API URL and representation, so changing one dependency reuses the other dependencies' cached resources. Successful responses are saved immediately, even if other lookups hit the rate limit and the command fails. Missing resources (404 responses) are also cached, for at most one hour or the configured TTL if shorter, so missing-tag probes do not repeat on every run. Other errors, authenticated requests, and tenant responses are never cached.
 
-`GH_ACTIONS_LOCK_CACHE_TTL` sets the maximum age of an entry (default `24h`; use `720h` for 30 days). Once an entry reaches half that age, each cache hit has a 1% chance of refreshing it early, spreading refreshes across runs. Rate limits, server errors, and network failures during early refresh keep the still-valid cached response without extending its expiry. Other HTTP errors invalidate the entry. Expired entries always require a successful online lookup.
+`GH_ACTIONS_LOCK_CACHE_TTL` sets the maximum age of an entry (default `24h`; use `720h` for 30 days). Once an entry reaches half that age, each cache hit has a 1% chance of refreshing it early, spreading refreshes across runs. Rate limits, server errors, and network failures during early refresh keep the still-valid cached response without extending its expiry. A 404 replaces the entry with a short-lived missing-resource response; other HTTP errors invalidate it. Expired entries always require an online lookup.
 
 Cached repository identity and ref reachability can be stale for the full TTL; GitHub still validates the lockfile at execution time. Unset the cache directory for fresh online checks. Cache read or write failures fall back to online requests.
 

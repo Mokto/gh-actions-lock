@@ -54,7 +54,8 @@ func (t publicCacheTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		age := time.Since(info.ModTime())
 		if age >= 0 && age < t.ttl {
 			if data, err := os.ReadFile(path); err == nil {
-				if resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(data)), req); err == nil && resp.StatusCode == http.StatusOK {
+				if resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(data)), req); err == nil &&
+					(resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotFound && age < time.Hour) {
 					if age < t.ttl/2 || t.refresh == nil || !t.refresh() {
 						return resp, nil
 					}
@@ -76,7 +77,7 @@ func (t publicCacheTransport) RoundTrip(req *http.Request) (*http.Response, erro
 			return cached, nil
 		}
 		cached.Body.Close()
-		if err == nil && resp.StatusCode != http.StatusOK {
+		if err == nil && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 			os.Remove(path)
 		}
 	}
@@ -85,7 +86,7 @@ func (t publicCacheTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 func (t publicCacheTransport) fetch(req *http.Request, path string) (*http.Response, error) {
 	resp, err := t.inner.RoundTrip(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
+	if err != nil || resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 		return resp, err
 	}
 	data, err := httputil.DumpResponse(resp, true)
